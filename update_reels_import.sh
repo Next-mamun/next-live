@@ -1,0 +1,1 @@
+sed -i 's/import { collection, query, where, orderBy, limit, getDocs, doc, getDoc, updateDoc, deleteDoc, addDoc, onSnapshot, startAfter } from '"'"'firebase\/firestore'"'"';/import { collection, query, where, orderBy, limit, getDocs, doc, getDoc, updateDoc, deleteDoc, addDoc, onSnapshot, startAfter, setDoc } from '"'"'firebase\/firestore'"'"';/g' src/pages/Reels.tsx

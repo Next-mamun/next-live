@@ -1,0 +1,2 @@
+sed -i 's/case '"'"'DELETE_MESSAGE'"'"':/case '"'"'TYPING'"'"':\n      case '"'"'SEEN'"'"':\n        window.dispatchEvent(new CustomEvent('"'"'P2P_SIGNAL'"'"', { detail: { data, peerId } }));\n        break;\n      case '"'"'DELETE_MESSAGE'"'"':/g' src/pages/Cinema.tsx
+sed -i 's/case '"'"'DELETE_MESSAGE'"'"':/case '"'"'TYPING'"'"':\n      case '"'"'SEEN'"'"':\n        window.dispatchEvent(new CustomEvent('"'"'P2P_SIGNAL'"'"', { detail: { data, peerId } }));\n        break;\n      case '"'"'DELETE_MESSAGE'"'"':/g' src/pages/Meet.tsx

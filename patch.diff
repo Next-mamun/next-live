@@ -1,0 +1,39 @@
+--- src/pages/Messages.tsx
++++ src/pages/Messages.tsx
+@@ -1092,20 +1092,19 @@
+             }
+           })
+           .subscribe((status: string, err: any) => {
+             console.log(`🔌 [Chat Realtime Channel Status]: ${status}`, err || '');
+             // Supabase auto-reconnects on TIMED_OUT or CHANNEL_ERROR. 
+             // We no longer manually tear down and recreate the channel because it causes loops and desyncs.
+           });
++          
++          activeChannelRef.current = {
++            isCombined: true,
++            send: (payload: any) => {
++              if (realtimeChannel && realtimeChannel.state === 'joined') {
++                realtimeChannel.send(payload);
++              }
++            },
++            unsub: () => {
++              firebaseUnsub();
++              supabase.removeChannel(realtimeChannel);
++            }
++          };
+       } else {
+-        // Fallback Realtime Listener via Firebase
+-        const qMsgs = selectedChat.is_group 
+-          ? query(collection(db, 'messages'), where('receiver_id', '==', selectedChat.id), orderBy('created_at', 'asc'), limit(100))
+-          : query(collection(db, 'messages'), or(and(where('sender_id', '==', currentUser.id), where('receiver_id', '==', selectedChat.id)), and(where('sender_id', '==', selectedChat.id), where('receiver_id', '==', currentUser.id))), orderBy('created_at', 'asc'), limit(100));
+-        realtimeChannel = { isFirebase: true, unsub: onSnapshot(qMsgs, (snap) => {
+-          const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+-          mergeIncomingMessages(docs);
+-        }) };
++        activeChannelRef.current = { isFirebase: true, unsub: firebaseUnsub };
+       }
+         
+-      activeChannelRef.current = realtimeChannel;
+-
+         
+       // 1. Load local messages first for instant UI

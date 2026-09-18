@@ -1,0 +1,1 @@
+sed -i 's|import { getDoc, doc, setDoc } from '\''firebase/firestore'\'';|import { getDoc, doc, setDoc } from '\''firebase/firestore'\'';\nimport { localDB, getBase64Image } from '\''@/lib/dexie'\'';|g' src/App.tsx

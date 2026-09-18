@@ -1,0 +1,609 @@
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import { db, storage, auth } from '../lib/firebase';
+import { collection, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { dualWritePost, dualWriteMessage } from '@/lib/dbHelper';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import Draggable from 'react-draggable';
+import { Pause, Play, X, RefreshCw } from 'lucide-react';
+import * as idb from 'idb-keyval';
+import * as tus from 'tus-js-client';
+import { invalidatePostsCache, redis } from '@/lib/redis';
+import { triggerNotification } from '@/services/notificationService';
+import { toast } from 'sonner';
+
+import imageCompression from 'browser-image-compression';
+import { scanMediaContent, showAdultContentBlockedAlert } from '@/services/contentModeration';
+
+interface UploadTask {
+  id: string;
+  file?: File | string; // Can be a File or a processed base64 string
+  progress: number;
+  status: 'optimizing' | 'processing' | 'uploading' | 'success' | 'error' | 'paused';
+  type: 'post' | 'story' | 'message' | 'reel' | 'profile';
+  metadata?: any;
+}
+
+
+interface UploadContextType {
+  uploads: UploadTask[];
+  addUpload: (file: File | string, type: 'post' | 'story' | 'message' | 'reel' | 'profile', metadata?: any) => string;
+  removeUpload: (id: string) => void;
+  retryUpload: (id: string) => void;
+  pauseUpload: (id: string) => void;
+  resumeUpload: (id: string) => void;
+}
+
+const UploadContext = createContext<UploadContextType | undefined>(undefined);
+
+export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [uploads, setUploads] = useState<UploadTask[]>([]);
+  const uploadsRef = useRef<UploadTask[]>([]);
+  const intervals = useRef<{ [key: string]: NodeJS.Timeout }>({});
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    uploadsRef.current = uploads;
+  }, [uploads]);
+
+  // Persistence: Load from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('next_uploads');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Set all to paused on reload to allow user to resume
+      setUploads(parsed.map((u: any) => ({ ...u, status: u.status === 'success' ? 'success' : 'paused' })));
+    }
+  }, []);
+
+  // Persistence: Save to localStorage on change
+  useEffect(() => {
+    const toSave = uploads.filter(u => u.status !== 'success');
+    if (toSave.length > 0) {
+      localStorage.setItem('next_uploads', JSON.stringify(toSave.map(({ file, ...rest }) => rest)));
+    } else {
+      localStorage.removeItem('next_uploads');
+    }
+  }, [uploads]);
+
+  const abortControllers = useRef<{ [key: string]: AbortController }>({});
+  const uploadTasks = useRef<{ [key: string]: any }>({}); // To store Firebase upload tasks
+
+  const simulateProgress = (id: string, startProgress: number = 0, max: number = 90, speed: number = 5) => {
+    if (intervals.current[id]) clearInterval(intervals.current[id]);
+    
+    let progress = startProgress;
+    const interval = setInterval(() => {
+      // Smoother progress increment
+      const increment = (Math.random() * speed) / 5; 
+      progress += increment;
+      if (progress > max) {
+        progress = max;
+      }
+      setUploads(prev => prev.map(u => u.id === id ? { ...u, progress: Math.min(progress, max) } : u));
+    }, 100);
+    
+    intervals.current[id] = interval;
+    return interval;
+  };
+
+  const processAndUpload = async (id: string, file: File | string, type: string, metadata: any, startProgress: number = 0) => {
+    const interval = simulateProgress(id, startProgress, 90, 8);
+    const controller = new AbortController();
+    abortControllers.current[id] = controller;
+    
+    try {
+      let mediaUrl = '';
+      let mediaType = metadata?.mediaType || 'text';
+
+      // Check if paused before starting
+      if (uploadsRef.current.find(u => u.id === id)?.status === 'paused') return;
+
+      // If it's a File or a base64 string, we need to process it
+      if (file instanceof File || typeof file === 'string') {
+        const isExplicitVideo = metadata?.payload?.media_type === 'video' || metadata?.media_type === 'video';
+        const isExplicitAudio = metadata?.payload?.media_type === 'audio' || metadata?.media_type === 'audio';
+        const isExplicitDoc = metadata?.payload?.media_type === 'document' || metadata?.media_type === 'document';
+
+        const isVideo = isExplicitVideo || (file instanceof File && (file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm|3gp|flv|wmv|m4v)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:video/') || file.includes('/video/')));
+        const isAudio = isExplicitAudio || (file instanceof File && (file.type.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|aac|opus|flac)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:audio/') || file.includes('/audio/')));
+        const isImage = !isVideo && !isAudio && !isExplicitDoc && ((file instanceof File && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp|svg)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:image/') || file.includes('/image/'))));
+        const isDoc = isExplicitDoc || (!isVideo && !isAudio && !isImage && file instanceof File);
+
+        mediaType = isVideo ? 'video' : isAudio ? 'audio' : isImage ? 'image' : 'document';
+
+        console.log('Processing upload:', { id, mediaType, isVideo, isImage, isAudio, isDoc, fileType: file instanceof File ? file.type : 'base64' });
+
+        if (isVideo || isImage || isAudio || isDoc) {
+          try {
+            // Perform ultra-strict AI content scan for images and videos
+            if (isImage || isVideo) {
+              const moderationCheck = await scanMediaContent(file);
+              if (!moderationCheck.isSafe) {
+                clearInterval(interval);
+                setUploads(prev => prev.filter(x => x.id !== id));
+                idb.del(`file_${id}`);
+                showAdultContentBlockedAlert(moderationCheck.message);
+                return;
+              }
+            }
+
+            let fileBody: File | Blob;
+            
+            if (file instanceof File) {
+              fileBody = file;
+            } else {
+              const res = await fetch(file);
+              fileBody = await res.blob();
+            }
+
+            if (type === 'profile' && false) { // Disabling direct Firebase Storage for profile for now, use Cloudinary fallback or main path below
+              console.log(`Uploading ${mediaType} to Firebase Storage (Profile Picture)...`);
+              setUploads(prev => prev.map(x => x.id === id ? { ...x, status: 'uploading', progress: 0 } : x));
+              clearInterval(interval);
+              
+              let fileExt = 'jpeg';
+              let actualFile = file as File;
+              if (actualFile && actualFile.name) {
+                fileExt = actualFile.name.split('.').pop() || 'jpeg';
+              }
+              
+              if (isImage) {
+                try {
+                  const options = { maxSizeMB: 1, maxWidthOrHeight: 1024, useWebWorker: true };
+                  fileBody = await imageCompression(fileBody as File, options);
+                  if (fileBody.type && fileBody.type.includes('/')) {
+                    fileExt = fileBody.type.split('/')[1] || fileExt;
+                  }
+                } catch (err) {
+                  console.warn('Image optimization failed, uploading raw.', err);
+                }
+              }
+
+              const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+              const filePath = `profiles/${metadata.userId}/${fileName}`;
+              
+              const storageRef = ref(storage, filePath);
+              const uploadTask = uploadBytesResumable(storageRef, fileBody);
+              uploadTasks.current[id] = uploadTask;
+
+              mediaUrl = await new Promise((resolve, reject) => {
+                uploadTask.on('state_changed', 
+                  (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    setUploads(prev => prev.map(x => x.id === id ? { ...x, progress } : x));
+                  }, 
+                  (error) => {
+                    reject(error);
+                  }, 
+                  async () => {
+                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                    resolve(downloadURL);
+                  }
+                );
+                
+                controller.signal.addEventListener('abort', () => {
+                  uploadTask.cancel();
+                  reject(new Error('Aborted'));
+                });
+              });
+
+              console.log('Upload to Firebase successful:', mediaUrl);
+              setUploads(prev => prev.map(x => x.id === id ? { ...x, progress: 100 } : x));
+
+            } else {
+              if (isImage) {
+                try {
+                  const options = {
+                    maxSizeMB: 2,
+                    maxWidthOrHeight: 1920,
+                    useWebWorker: true,
+                  };
+                  fileBody = await imageCompression(fileBody as File, options);
+                } catch (err) {
+                  console.warn('Image optimization failed, uploading raw.', err);
+                }
+              }
+
+              try {
+                console.log(`Uploading ${mediaType} to Cloudinary...`);
+                setUploads(prev => prev.map(x => x.id === id ? { ...x, status: 'uploading', progress: 0 } : x));
+                clearInterval(interval);
+
+                const formData = new FormData();
+                formData.append('file', fileBody);
+                formData.append('upload_preset', 'next_app_uploads'); // User-provided upload preset
+
+                mediaUrl = await new Promise((resolve, reject) => {
+                  const xhr = new XMLHttpRequest();
+                  const cloudName = 'dcwe6ln0h'; // User-provided cloud name
+                  xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`);
+                  
+                  xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                      const percentage = (e.loaded / e.total) * 100;
+                      setUploads(prev => prev.map(x => x.id === id ? { ...x, progress: percentage } : x));
+                    }
+                  };
+
+                  xhr.onload = () => {
+                    if (xhr.status === 200) {
+                      const response = JSON.parse(xhr.responseText);
+                      let finalUrl = response.secure_url;
+                      if (mediaType === 'video' && finalUrl.includes('/upload/')) {
+                        finalUrl = finalUrl.replace('/upload/', '/upload/q_auto/');
+                      }
+                      resolve(finalUrl);
+                      console.log('Upload to Cloudinary successful:', finalUrl);
+                    } else {
+                      reject(new Error(`Cloudinary Upload Error: ${xhr.statusText} ${xhr.responseText}`));
+                    }
+                  };
+
+                  xhr.onerror = () => reject(new Error('Cloudinary Upload failed due to network error.'));
+                  
+                  if (controller.signal.aborted) {
+                    xhr.abort();
+                    return reject(new Error('Aborted'));
+                  }
+
+                  controller.signal.addEventListener('abort', () => {
+                    xhr.abort();
+                    reject(new Error('Aborted'));
+                  });
+
+                  xhr.send(formData);
+                });
+              } catch (cloudinaryError: any) {
+                console.warn('Cloudinary upload failed, attempting Firebase Storage fallback...', cloudinaryError);
+                
+                // Let's check if the abort signal has already been called
+                if (controller.signal.aborted) throw new Error('Aborted');
+
+                // Inform the user of fallback
+                toast.loading('Cloudinary limit/quota reached. Automatically uploading via Firebase Storage...', { id: `fallback-${id}` });
+
+                setUploads(prev => prev.map(x => x.id === id ? { ...x, status: 'uploading', progress: 0 } : x));
+                
+                let fileExt = 'bin';
+                if (file instanceof File && file.name.includes('.')) {
+                  fileExt = file.name.split('.').pop() || 'bin';
+                } else if (fileBody instanceof File && fileBody.name?.includes('.')) {
+                  fileExt = fileBody.name.split('.').pop() || 'bin';
+                } else if (mediaType === 'video') {
+                  fileExt = 'mp4';
+                } else if (mediaType === 'audio') {
+                  fileExt = 'mp3';
+                } else if (mediaType === 'image') {
+                  fileExt = 'jpeg';
+                }
+                
+                const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+                const userId = metadata?.userId || auth.currentUser?.uid || 'anonymous';
+                const filePath = `uploads/${userId}/${type}/${fileName}`;
+                
+                const storageRef = ref(storage, filePath);
+                const uploadTask = uploadBytesResumable(storageRef, fileBody);
+                uploadTasks.current[id] = uploadTask;
+
+                mediaUrl = await new Promise((resolve, reject) => {
+                  uploadTask.on('state_changed', 
+                    (snapshot) => {
+                      const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                      setUploads(prev => prev.map(x => x.id === id ? { ...x, progress } : x));
+                    }, 
+                    (error) => {
+                      reject(error);
+                    }, 
+                    async () => {
+                      const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                      resolve(downloadURL);
+                    }
+                  );
+                  
+                  controller.signal.addEventListener('abort', () => {
+                    uploadTask.cancel();
+                    reject(new Error('Aborted'));
+                  });
+                });
+                
+                console.log('Firebase Storage fallback successful:', mediaUrl);
+                toast.dismiss(`fallback-${id}`);
+                toast.success('Media successfully sent!');
+              }
+            }
+            
+          } catch (storageError: any) {
+             if (storageError.message === 'Aborted') throw storageError;
+
+            console.warn('Failed to upload. Falling back to base64 encoding (not recommended for large files).', storageError);
+            
+            if (mediaType === 'video' || mediaType === 'audio') {
+              throw new Error(`${mediaType} upload failed. ${storageError.message || storageError}`);
+            }
+            
+            // Fallback to base64 if storage fails for images
+            if (file instanceof File) {
+              if (file.size > 1024 * 1024 * 500) { // 500MB limit for base64 fallback
+                throw new Error("File is too large for base64 fallback.");
+              }
+              mediaUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                controller.signal.addEventListener('abort', () => {
+                  reader.abort();
+                  reject(new Error('Aborted'));
+                });
+                reader.readAsDataURL(file);
+              });
+            } else {
+              mediaUrl = file;
+            }
+          }
+        }
+      } else {
+        mediaUrl = file as string; 
+      }
+
+      if (controller.signal.aborted) return;
+
+      // Final check before database call
+      const currentStatus = uploadsRef.current.find(u => u.id === id)?.status;
+      if (currentStatus === 'paused' || currentStatus === undefined) {
+        console.log('Upload paused or undefined, returning:', currentStatus);
+        return;
+      }
+
+      setUploads(prev => prev.map(x => x.id === id ? { ...x, status: 'uploading' } : x));
+
+      if (type === 'post') {
+        let postData: any;
+        if (metadata.payload) {
+          postData = { ...metadata.payload, media_url: mediaUrl, media_type: mediaType };
+        } else {
+          postData = {
+            user_id: metadata.userId,
+            content: metadata.content || '',
+            media_url: mediaUrl,
+            media_type: mediaType,
+            views: 0
+          };
+          if (metadata.category) postData.category = metadata.category;
+        }
+
+        postData.created_at = serverTimestamp();
+        const postDoc = await dualWritePost(postData);
+        await invalidatePostsCache();
+      } else if (type === 'story') {
+        await addDoc(collection(db, 'stories'), {
+          user_id: metadata.userId,
+          media_url: mediaUrl,
+          media_type: mediaType,
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          created_at: serverTimestamp()
+        });
+      } else if (type === 'reel') {
+        const payload = {
+          user_id: metadata.userId,
+          content: metadata.payload.content || metadata.payload.caption || '',
+          media_url: mediaUrl,
+          media_type: 'video',
+          created_at: serverTimestamp(),
+          source_type: metadata.payload.source_type || 'local',
+          youtube_id: metadata.payload.youtube_id || null,
+          views: 0
+        };
+        await dualWritePost(payload);
+      } else if (type === 'message') {
+        const payload = { ...metadata.payload, created_at: serverTimestamp() };
+        if (mediaUrl) payload.media_url = mediaUrl;
+        if (!payload.media_type && mediaType) payload.media_type = mediaType;
+        await dualWriteMessage(payload);
+        
+        // Trigger Push Notification
+        try {
+          triggerNotification(
+            metadata.payload.receiver_id,
+            auth.currentUser?.displayName || 'New Media Message',
+            `Sent a ${metadata.mediaType || 'media'}`,
+            { type: 'message', sender_id: auth.currentUser?.uid }
+          );
+        } catch (notifErr) {
+          console.error('Notification failed:', notifErr);
+        }
+        
+        try {
+          const cacheKey = `messages_cache_${[metadata.payload.sender_id, metadata.payload.receiver_id].sort().join('_')}`;
+          await redis.del(cacheKey);
+        } catch (e) {
+          console.warn('Redis delete failed', e);
+        }
+
+        await addDoc(collection(db, 'notifications'), {
+          user_id: metadata.payload.receiver_id,
+          sender_id: metadata.payload.sender_id,
+          type: 'message',
+          is_read: false,
+          created_at: serverTimestamp()
+        });
+      } else if (type === 'profile') {
+        const payload = { ...metadata.payload };
+        if (mediaUrl) {
+          if ('cover_url' in payload) payload.cover_url = mediaUrl;
+          else payload.avatar_url = mediaUrl;
+        }
+        await updateDoc(doc(db, 'profiles', metadata.userId), payload);
+      }
+
+      clearInterval(interval);
+      setUploads(prev => prev.map(u => u.id === id ? { ...u, progress: 100, status: 'success' } : u));
+      idb.del(`file_${id}`); // Clean up IndexedDB
+
+      if (metadata?.onSuccess) {
+        await metadata.onSuccess();
+      }
+
+      setTimeout(() => {
+        setUploads(prev => prev.filter(u => u.id !== id));
+      }, 3000);
+
+    } catch (error) {
+      clearInterval(interval);
+      if (error instanceof Error && error.message === 'Aborted') {
+        console.log('Upload aborted');
+      } else {
+        console.error('Upload failed:', error);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        toast.error(`Upload Failed: ${errorMessage}`);
+        setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error' } : u));
+      }
+    }
+  };
+
+  const addUpload = useCallback((file: File | string, type: 'post' | 'story' | 'message' | 'reel' | 'profile', metadata?: any) => {
+    const id = Date.now().toString();
+    const newUpload: UploadTask = { id, file, progress: 0, status: 'processing', type, metadata };
+    
+    // Synchronously update the ref so processAndUpload can see it immediately
+    uploadsRef.current = [...uploadsRef.current, newUpload];
+    
+    setUploads(uploadsRef.current);
+    
+    // Save file to IndexedDB for persistence
+    idb.set(`file_${id}`, file);
+
+    processAndUpload(id, file, type, metadata);
+    return id;
+  }, []);
+
+   const pauseUpload = useCallback((id: string) => {
+    console.log('Pausing upload:', id);
+    if (intervals.current[id]) {
+      clearInterval(intervals.current[id]);
+      delete intervals.current[id];
+    }
+    if (uploadTasks.current[id]) {
+       uploadTasks.current[id].pause();
+    }
+    if (abortControllers.current[id]) {
+      abortControllers.current[id].abort();
+      delete abortControllers.current[id];
+    }
+    setUploads(prev => {
+      const next = prev.map(u => u.id === id ? { ...u, status: 'paused' as const } : u);
+      uploadsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const resumeUpload = useCallback(async (id: string) => {
+    const upload = uploadsRef.current.find(u => u.id === id);
+    if (upload) {
+      setUploads(prev => {
+        const next = prev.map(u => u.id === id ? { ...u, status: 'processing' as const } : u);
+        uploadsRef.current = next;
+        return next;
+      });
+      
+      // Retrieve file from IndexedDB
+      let file = upload.file;
+      if (!file) {
+        file = await idb.get(`file_${id}`);
+      }
+      
+      if (file) {
+        if (uploadTasks.current[id] && typeof uploadTasks.current[id].resume === 'function') {
+            uploadTasks.current[id].resume();
+        } else {
+           processAndUpload(id, file, upload.type, upload.metadata, upload.progress);
+        }
+      } else {
+        setUploads(prev => {
+          const next = prev.map(u => u.id === id ? { ...u, status: 'error' as const } : u);
+          uploadsRef.current = next;
+          return next;
+        });
+      }
+    }
+  }, []);
+
+  const removeUpload = useCallback((id: string) => {
+    console.log('Removing upload:', id);
+    if (intervals.current[id]) {
+      clearInterval(intervals.current[id]);
+      delete intervals.current[id];
+    }
+    if (uploadTasks.current[id]) {
+       uploadTasks.current[id].cancel();
+       delete uploadTasks.current[id];
+    }
+    if (abortControllers.current[id]) {
+      abortControllers.current[id].abort();
+      delete abortControllers.current[id];
+    }
+    setUploads(prev => {
+      const next = prev.filter(u => u.id !== id);
+      uploadsRef.current = next;
+      return next;
+    });
+    idb.del(`file_${id}`);
+  }, []);
+
+  const retryUpload = useCallback((id: string) => {
+    const upload = uploadsRef.current.find(u => u.id === id);
+    if (upload) {
+      removeUpload(id);
+      addUpload(upload.file!, upload.type, upload.metadata);
+    }
+  }, [addUpload, removeUpload]);
+
+  return (
+    <UploadContext.Provider value={{ uploads, addUpload, removeUpload, retryUpload, pauseUpload, resumeUpload }}>
+      {children}
+      {/* Circular Progress Indicator */}
+      {uploads.length > 0 && (
+        <div className="fixed top-4 left-4 z-[9999] flex flex-col gap-2">
+          {uploads.map(upload => (
+            <div key={upload.id} className="relative group bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm rounded-full p-2 shadow-lg border border-gray-200 dark:border-gray-700 flex items-center justify-center">
+              <svg className="w-8 h-8" viewBox="0 0 36 36">
+                <path
+                  className="text-gray-200 dark:text-gray-700"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                />
+                <path
+                  className={`${upload.status === 'error' ? 'text-red-500' : 'text-[#1877F2]'} transition-all duration-300`}
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  strokeDasharray={`${upload.progress}, 100`}
+                />
+              </svg>
+              <span className={`absolute text-[10px] font-black ${upload.status === 'error' ? 'text-red-500' : 'text-[#1877F2]'} group-hover:opacity-0 transition-opacity`}>
+                {upload.status === 'error' ? '!' : `${Math.round(upload.progress)}%`}
+              </span>
+              <button 
+                onClick={() => upload.status === 'error' ? retryUpload(upload.id) : removeUpload(upload.id)}
+                className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 rounded-full text-white"
+                title={upload.status === 'error' ? 'Retry Upload' : 'Cancel Upload'}
+              >
+                {upload.status === 'error' ? <RefreshCw size={16} /> : <X size={16} />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </UploadContext.Provider>
+  );
+};
+
+export const useUpload = () => {
+  const context = useContext(UploadContext);
+  if (context === undefined) {
+    throw new Error('useUpload must be used within an UploadProvider');
+  }
+  return context;
+};
