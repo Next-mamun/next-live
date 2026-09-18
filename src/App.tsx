@@ -5,6 +5,7 @@ import Navbar from '@/components/Navbar';
 import Sidebar from '@/components/Sidebar';
 import BottomNav from '@/components/BottomNav';
 import NextoRobot from '@/components/NextoRobot';
+import OTAUpdateBanner from '@/components/OTAUpdateBanner';
 import { UserProfile as User } from '@/types';
 import { auth, db } from '@/lib/firebase';
 import { generateBio } from '@/services/geminiService';
@@ -761,6 +762,7 @@ const App: React.FC = () => {
           <DeepLinkRouterGuard>
             <AppLayout />
             {nextoEnabled && <NextoRobot />}
+            <OTAUpdateBanner />
           </DeepLinkRouterGuard>
         </BrowserRouter>
       </ThemeContext.Provider>
