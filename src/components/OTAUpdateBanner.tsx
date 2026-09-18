@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import { RefreshCw, X, Sparkles } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
@@ -10,6 +11,7 @@ export const OTAUpdateBanner: React.FC = () => {
   const lastCheckRef = useRef<number>(0);
   const isCheckingRef = useRef<boolean>(false);
 
+  const location = useLocation();
   const { currentUser } = useAuth();
   const isChatOpen = useGlobalStore((state) => state.isChatOpen);
 
@@ -147,7 +149,8 @@ export const OTAUpdateBanner: React.FC = () => {
   }
 
   // Adjust bottom spacing on mobile when bottom navigation bar is visible
-  const hasBottomNav = currentUser && !isChatOpen;
+  const isMessages = location.pathname.startsWith('/messages');
+  const hasBottomNav = currentUser && !(isMessages && isChatOpen);
   const bottomPositionClass = hasBottomNav
     ? 'bottom-20 md:bottom-6'
     : 'bottom-4 md:bottom-6';

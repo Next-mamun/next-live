@@ -242,6 +242,7 @@ const Messages: React.FC = () => {
     
     if (selectedChat?.id !== contact.id) {
       setSelectedChat(contact);
+      setIsChatOpen(true);
       setMessages([]);
     }
     if (showNewFriends) setShowNewFriends(false);
@@ -1584,16 +1585,18 @@ const Messages: React.FC = () => {
     const handlePopState = (e: PopStateEvent) => {
       if (!e.state || e.state.chatOpen !== stateId) {
         setSelectedChat(null);
+        setIsChatOpen(false);
       }
     };
     window.addEventListener('popstate', handlePopState);
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [selectedChat]);
+  }, [selectedChat, setIsChatOpen]);
 
   const handleBackToSidebar = () => {
     setSelectedChat(null);
+    setIsChatOpen(false);
     if (window.history.state?.chatOpen) {
       window.history.back();
     }

@@ -56,6 +56,17 @@ const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const isMessages = location.pathname.startsWith('/messages');
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
+  const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
+
+  // Automatically reset isChatOpen if user navigates away from messages
+  useEffect(() => {
+    if (!isMessages && isChatOpen) {
+      setIsChatOpen(false);
+    }
+  }, [isMessages, isChatOpen, setIsChatOpen]);
+
+  // Hide bottom controls ONLY when inside messages AND an active conversation is open
+  const shouldHideBottomNav = isMessages && isChatOpen;
 
   const [touchStart, setTouchStart] = useState<{ x: number, y: number } | null>(null);
 
@@ -278,7 +289,7 @@ const AppLayout: React.FC = () => {
           </div>
         </main>
       </div>
-      {currentUser && !isChatOpen && (
+      {currentUser && !shouldHideBottomNav && (
         <div className="z-[100] relative w-full shrink-0 md:hidden">
           <BottomNav />
         </div>
