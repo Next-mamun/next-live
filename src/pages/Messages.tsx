@@ -1,6 +1,6 @@
 import { localDB } from "@/lib/dexie";
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock } from 'lucide-react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
@@ -156,13 +156,16 @@ const Messages: React.FC = () => {
   const [groupMembers, setGroupMembers] = useState<any[]>([]);
 
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
+  const setActiveChatId = useGlobalStore(state => state.setActiveChatId);
   
   useEffect(() => {
     setIsChatOpen(!!selectedChat);
+    setActiveChatId(selectedChat ? selectedChat.id : null);
     return () => {
       setIsChatOpen(false);
+      setActiveChatId(null);
     };
-  }, [selectedChat, setIsChatOpen]);
+  }, [selectedChat, setIsChatOpen, setActiveChatId]);
 
   useEffect(() => {
     if (showGroupDetails && selectedChat?.is_group) {
@@ -596,18 +599,9 @@ const Messages: React.FC = () => {
   const docInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (location.state?.userId) {
-      const fetchUser = async () => {
-        const docSnap = await getDoc(doc(db, 'profiles', location.state.userId));
-        if (docSnap.exists()) {
-           setSelectedChat({ id: docSnap.id, ...docSnap.data() });
-        }
-      };
-      fetchUser();
-      navigate(location.pathname, { replace: true, state: {} });
-    }
-  }, [location.state, location.pathname, navigate]);
+  const { id: routeChatId } = useParams<{ id?: string }>();
+
+
 
   useEffect(() => {
     const handleUndelete = () => {
@@ -905,8 +899,56 @@ const Messages: React.FC = () => {
     },
     enabled: !!currentUser,
     staleTime: 60 * 1000, 
-    gcTime: Infinity,
   });
+ 
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const targetUserId = routeChatId || location.state?.userId || searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId');
+
+    if (targetUserId) {
+      // 1. Instant match in already loaded contacts (0ms latency)
+      const foundInContacts = contacts.find((c: any) => c.id === targetUserId);
+      if (foundInContacts) {
+        setSelectedChat(foundInContacts);
+        setIsChatOpen(true);
+        setActiveChatId(foundInContacts.id);
+        return;
+      }
+
+      // 2. Fast match in local Dexie database
+      localDB.users.get(targetUserId).then((cached) => {
+        if (cached) {
+          setSelectedChat({ id: cached.id, ...cached });
+          setIsChatOpen(true);
+          setActiveChatId(cached.id);
+        }
+      }).catch(() => {});
+
+      // 3. Network fetch fallback from Firestore or Supabase
+      const fetchTarget = async () => {
+        try {
+          const docSnap = await getDoc(doc(db, 'profiles', targetUserId));
+          if (docSnap.exists()) {
+            const profileData = { id: docSnap.id, ...docSnap.data() };
+            setSelectedChat(profileData);
+            setIsChatOpen(true);
+            setActiveChatId(docSnap.id);
+            localDB.users.put(profileData as any).catch(() => {});
+          } else {
+            const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
+            if (groupSnap.exists()) {
+              setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
+              setIsChatOpen(true);
+              setActiveChatId(groupSnap.id);
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to open chat from deep link / location state:", e);
+        }
+      };
+      fetchTarget();
+    }
+  }, [routeChatId, location.state, location.search, contacts, setIsChatOpen, setActiveChatId]);
 
   const [messages, setMessages] = useState<any[]>([]);
 
@@ -1526,6 +1568,9 @@ const Messages: React.FC = () => {
         payload: newMessage,
         receiver_id: selectedChat.id,
         sender_id: currentUser!.id,
+        sender_name: currentUser?.display_name || currentUser?.username || 'User',
+        sender_username: currentUser?.username || '',
+        sender_avatar: currentUser?.avatar_url || '',
         onSuccess: async () => {
             setMessages((prev: any[]) => prev.map(m => m.id === tempId ? { ...m, is_pending: false } : m));
             queryClient.invalidateQueries({ queryKey: ['messages', selectedChat.id] });
@@ -1707,12 +1752,21 @@ const Messages: React.FC = () => {
     const chatId = [currentUser!.id, selectedChat.id].sort().join('_');
     const localCreatedAt = new Date().toISOString();
 
+    const senderUsername = currentUser?.username || (currentUser as any)?.email?.split('@')[0] || '';
+    const senderName = currentUser?.display_name || (currentUser as any)?.displayName || currentUser?.username || senderUsername || 'User';
+    const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+    const senderTitle = `${senderName}${usernameTag}`;
+    const senderAvatar = currentUser?.avatar_url || (currentUser as any)?.photoURL || '';
+
     const newMessage: any = {
        id: msgRefId, // Use real ID
        chat_id: chatId, // Normalize chat_id
        chatId: chatId,
        sender_id: currentUser!.id,
        receiver_id: selectedChat.id,
+       sender_name: senderName,
+       sender_username: senderUsername,
+       sender_avatar: senderAvatar,
        content: JSON.stringify(payloadExtra),
        created_at: localCreatedAt, // Use local string initially to match exactly in UI and DB before server sync
        local_created_at: localCreatedAt,
@@ -1770,14 +1824,63 @@ const Messages: React.FC = () => {
       
       setMessages(prev => prev.map(m => m.id === msgRefId ? { ...m, is_pending: false } : m));
       
-      // Trigger Push Notification
+      // Trigger Push & In-App Notification with username & deep link
       try {
-        triggerNotification(
-          selectedChat.id,
-          currentUser?.display_name || 'New Message',
-          messageText,
-          { type: 'message', sender_id: currentUser?.id }
-        );
+        const notifPayload = {
+          type: 'message',
+          sender_id: currentUser?.id,
+          sender_name: senderName,
+          sender_username: senderUsername,
+          sender_avatar: senderAvatar,
+          chat_id: selectedChat.id,
+          url: `/messages?user=${currentUser?.id}`,
+          content: messageText
+        };
+
+        if (!selectedChat.is_group) {
+          addDoc(collection(db, 'notifications'), {
+            user_id: selectedChat.id,
+            sender_id: currentUser?.id,
+            sender_name: senderName,
+            sender_username: senderUsername,
+            sender_avatar: senderAvatar,
+            type: 'message',
+            content: messageText,
+            is_read: false,
+            created_at: new Date().toISOString()
+          }).catch((err) => console.warn('Notification doc write warning:', err));
+
+          triggerNotification(
+            selectedChat.id,
+            senderTitle,
+            messageText,
+            notifPayload
+          );
+        } else if (selectedChat.members && Array.isArray(selectedChat.members)) {
+          selectedChat.members.forEach((memberId: string) => {
+            if (memberId !== currentUser?.id) {
+              addDoc(collection(db, 'notifications'), {
+                user_id: memberId,
+                sender_id: currentUser?.id,
+                sender_name: senderName,
+                sender_username: senderUsername,
+                sender_avatar: currentUser?.avatar_url || '',
+                type: 'message',
+                content: `[${selectedChat.name || 'Group'}]: ${messageText}`,
+                group_id: selectedChat.id,
+                is_read: false,
+                created_at: new Date().toISOString()
+              }).catch(() => {});
+
+              triggerNotification(
+                memberId,
+                `${senderTitle} in ${selectedChat.name || 'Group'}`,
+                messageText,
+                { ...notifPayload, url: `/messages?user=${selectedChat.id}`, group_id: selectedChat.id }
+              );
+            }
+          });
+        }
       } catch (notifErr) {
         console.error('Notification failed:', notifErr);
       }
@@ -1886,6 +1989,9 @@ const Messages: React.FC = () => {
       payload: newMessage,
       receiver_id: selectedChat.id,
       sender_id: currentUser.id,
+      sender_name: currentUser?.display_name || currentUser?.username || 'User',
+      sender_username: currentUser?.username || '',
+      sender_avatar: currentUser?.avatar_url || '',
       onSuccess: async () => {
         setMessages((prev: any[]) => prev.map(m => m.id === tempId ? { ...m, is_pending: false } : m));
         queryClient.invalidateQueries({ queryKey: ['messages', selectedChat.id] });
@@ -1956,6 +2062,9 @@ const Messages: React.FC = () => {
       payload: newMessage,
       receiver_id: selectedChat.id,
       sender_id: currentUser.id,
+      sender_name: currentUser?.display_name || currentUser?.username || 'User',
+      sender_username: currentUser?.username || '',
+      sender_avatar: currentUser?.avatar_url || '',
       onSuccess: async () => {
         setMessages((prev: any[]) => prev.map(m => m.id === tempId ? { ...m, is_pending: false } : m));
         queryClient.invalidateQueries({ queryKey: ['messages', selectedChat.id] });

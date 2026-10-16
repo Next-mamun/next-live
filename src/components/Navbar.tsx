@@ -52,32 +52,39 @@ const Navbar: React.FC = () => {
 
     return combined.map(n => {
       const sender = profilesCache[n.sender_id] || null;
-      let text = `${sender?.display_name || 'Someone'} interacted with you.`;
+      const displayName = n.sender_name || sender?.display_name || 'Someone';
+      const username = n.sender_username || sender?.username || '';
+      const usernameTag = username ? ` (@${username})` : '';
+      const avatar = n.sender_avatar || sender?.avatar_url;
+
+      let text = `${displayName}${usernameTag} interacted with you.`;
       let link = `/profile/${currentUser.username}`;
       
       if (n.type === 'friend_request') {
-        text = `${sender?.display_name || 'Someone'} sent you a friend request.`;
+        text = `${displayName}${usernameTag} sent you a friend request.`;
         link = '/friends';
       } else if (n.type === 'friend_accept') {
-        text = `${sender?.display_name || 'Someone'} accepted your friend request.`;
+        text = `${displayName}${usernameTag} accepted your friend request.`;
         link = '/friends';
       } else if (n.type === 'message') {
-        text = `${sender?.display_name || 'Someone'} sent you a message.`;
-        link = '/messages';
+        text = `${displayName}${usernameTag}: ${n.content || 'Sent a message'}`;
+        link = `/messages?user=${n.sender_id}`;
       } else if (n.type === 'like') {
-        text = `${sender?.display_name || 'Someone'} liked your post.`;
+        text = `${displayName}${usernameTag} liked your post.`;
+        if (n.post_id) link = `/post/${n.post_id}`;
       } else if (n.type === 'comment') {
-        text = `${sender?.display_name || 'Someone'} commented on your post.`;
+        text = `${displayName}${usernameTag} commented on your post: ${n.content ? `"${n.content.slice(0, 30)}"` : ''}`;
+        if (n.post_id) link = `/post/${n.post_id}`;
       }
 
       return {
         id: n.id,
         sender_id: n.sender_id,
-        display_name: sender?.display_name,
-        username: sender?.username,
+        display_name: displayName,
+        username: username,
         type: n.type,
         text,
-        avatar: sender?.avatar_url,
+        avatar,
         link,
         state: n.type === 'message' ? { userId: n.sender_id } : undefined,
         created_at: n.created_at,
@@ -155,21 +162,27 @@ const Navbar: React.FC = () => {
  
   const handleNotificationClick = async (e: React.MouseEvent, notif: any) => {
     setShowNotifications(false);
+    
+    // Mark as read in Firestore
     if (!notif.id.toString().startsWith('msg-')) {
       try { await updateDoc(doc(db, 'notifications', notif.id), { is_read: true }); } catch(e) {}
-    } else if (notif.type === 'message' && notif.real_msg_id) {
-      e.preventDefault(); // Prevent standard link so we can control navigation
-      // Navigate using the notification's link with the state passed to open the chat window directly.
-      navigate('/messages', { state: { userId: notif.sender_id } });
-
-      const store = useGlobalStore.getState();
-      const updatedMessages = store.messages.map(m => 
-        m.sender_id === notif.sender_id ? { ...m, is_read: true } : m
-      );
-      const unreadCount = updatedMessages.filter(m => m.is_read === false && m.receiver_id === currentUser?.id).length;
-      useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
-      
+    } else if (notif.real_msg_id) {
       try { await updateDoc(doc(db, 'messages', notif.real_msg_id), { is_read: true }); } catch(e) {}
+    }
+
+    if (notif.type === 'message') {
+      e.preventDefault();
+      const targetSenderId = notif.sender_id;
+      if (targetSenderId) {
+        navigate(`/messages?user=${targetSenderId}`, { state: { userId: targetSenderId } });
+
+        const store = useGlobalStore.getState();
+        const updatedMessages = store.messages.map(m => 
+          m.sender_id === targetSenderId ? { ...m, is_read: true } : m
+        );
+        const unreadCount = updatedMessages.filter(m => m.is_read === false && m.receiver_id === currentUser?.id).length;
+        useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
+      }
     }
   };
 

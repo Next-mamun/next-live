@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { UploadCloud, X, RefreshCw, Link as LinkIcon, Clapperboard, Image as ImageIcon, Film } from 'lucide-react';
+import { UploadCloud, X, RefreshCw, Link as LinkIcon, Clapperboard, Image as ImageIcon, Film, Camera } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { db } from '../lib/firebase';
 import { collection, addDoc } from 'firebase/firestore';
@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useUpload } from '@/contexts/UploadContext';
 import { invalidatePostsCache } from '@/lib/redis';
 import { useContentFilter } from '@/hooks/useContentFilter';
+import { CameraStudioModal } from '@/components/camera/CameraStudioModal';
 
 const CreatePost = () => {
   const { currentUser } = useAuth();
@@ -29,6 +30,7 @@ const CreatePost = () => {
   const [customCategory, setCustomCategory] = useState('');
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
+  const [showCamera, setShowCamera] = useState(false);
 
   const videoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -293,6 +295,14 @@ const CreatePost = () => {
                     </button>
                     <button 
                       type="button" 
+                      onClick={() => setShowCamera(true)}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-full font-bold text-xs md:text-sm shadow-md flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
+                    >
+                      <Camera size={16} />
+                      <span>Camera Filters</span>
+                    </button>
+                    <button 
+                      type="button" 
                       onClick={() => mediaInputRef.current?.click()}
                       className="bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 px-5 py-2.5 rounded-full font-bold text-xs md:text-sm shadow-sm flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
                     >
@@ -518,6 +528,26 @@ const CreatePost = () => {
           </div>
         </div>
       </div>
+
+      {showCamera && (
+        <CameraStudioModal
+          onCapture={async (mediaDataUrl, type) => {
+            setShowCamera(false);
+            try {
+              const res = await fetch(mediaDataUrl);
+              const blob = await res.blob();
+              const ext = type === 'video' ? 'webm' : 'jpg';
+              const capturedFile = new File([blob], `camera_capture_${Date.now()}.${ext}`, {
+                type: type === 'video' ? 'video/webm' : 'image/jpeg',
+              });
+              await processFile(capturedFile);
+            } catch (err) {
+              console.error('Failed to convert captured photo to file:', err);
+            }
+          }}
+          onCancel={() => setShowCamera(false)}
+        />
+      )}
     </div>
   );
 };

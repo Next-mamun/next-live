@@ -1,4 +1,5 @@
-import { MoreVertical, Flag, Bookmark } from 'lucide-react';
+import { MoreVertical, Flag, Bookmark, Camera } from 'lucide-react';
+import CameraFilterModal from '@/components/camera/CameraFilterModal';
 
 import React, { useState, useEffect, useRef } from 'react';
 import { ThumbsUp, MessageSquare, Trash2, Eye, Send, MessageCircle, Share2, Clapperboard } from 'lucide-react';
@@ -43,6 +44,7 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
   const [commentsCount, setCommentsCount] = useState(post.comment_count !== undefined ? post.comment_count : (post.comments?.length || 0));
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [hasFetchedComments, setHasFetchedComments] = useState(false);
+  const [showCameraFilter, setShowCameraFilter] = useState(false);
   
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -175,9 +177,16 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
         await setDoc(likeDocRef, { post_id: post.id, user_id: currentUser.id, created_at: new Date().toISOString() });
         
         if (post.user_id !== currentUser.id) {
+          const senderName = currentUser.display_name || currentUser.username || 'Someone';
+          const usernameTag = currentUser.username ? ` (@${currentUser.username})` : '';
+
           await addDoc(collection(db, 'notifications'), {
             user_id: post.user_id,
             sender_id: currentUser.id,
+            sender_name: senderName,
+            sender_username: currentUser.username || '',
+            sender_avatar: currentUser.avatar_url || '',
+            post_id: post.id,
             type: 'like',
             is_read: false,
             created_at: new Date().toISOString()
@@ -185,9 +194,17 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
           
           triggerNotification(
             post.user_id,
-            'New Like',
-            `${currentUser.display_name || 'Someone'} liked your post.`,
-            { type: 'like', post_id: post.id, sender_id: currentUser.id }
+            `${senderName}${usernameTag}`,
+            'liked your post.',
+            {
+              type: 'like',
+              post_id: post.id,
+              sender_id: currentUser.id,
+              sender_name: senderName,
+              sender_username: currentUser.username || '',
+              sender_avatar: currentUser.avatar_url || '',
+              url: `/post/${post.id}`
+            }
           );
 
           queryClient.invalidateQueries({ queryKey: ['notifications', post.user_id] });
@@ -298,19 +315,35 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       });
 
       if (post.user_id !== currentUser.id) {
+        const senderName = currentUser.display_name || currentUser.username || 'Someone';
+        const usernameTag = currentUser.username ? ` (@${currentUser.username})` : '';
+
         await addDoc(collection(db, 'notifications'), {
           user_id: post.user_id,
           sender_id: currentUser.id,
+          sender_name: senderName,
+          sender_username: currentUser.username || '',
+          sender_avatar: currentUser.avatar_url || '',
+          post_id: post.id,
           type: 'comment',
+          content: commentText,
           is_read: false,
           created_at: new Date().toISOString()
         }).catch(() => {});
         
         triggerNotification(
           post.user_id,
-          'New Comment',
-          `${currentUser.display_name || 'Someone'} commented: ${commentText}`,
-          { type: 'comment', post_id: post.id, sender_id: currentUser.id }
+          `${senderName}${usernameTag}`,
+          `commented: "${commentText.slice(0, 35)}..."`,
+          {
+            type: 'comment',
+            post_id: post.id,
+            sender_id: currentUser.id,
+            sender_name: senderName,
+            sender_username: currentUser.username || '',
+            sender_avatar: currentUser.avatar_url || '',
+            url: `/post/${post.id}`
+          }
         );
 
         queryClient.invalidateQueries({ queryKey: ['notifications', post.user_id] });
@@ -400,6 +433,18 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
               {post.profiles?.display_name || post.profiles?.name || 'User'}
               {post.profiles?.is_verified && <VerifiedBadge />}
               {post.category && <span className="text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded-full border border-orange-100 dark:border-orange-800">{post.category}</span>}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowCameraFilter(true);
+                }}
+                className="p-1 hover:bg-pink-50 dark:hover:bg-pink-900/30 text-pink-500 rounded-full transition-transform hover:scale-110 active:scale-95 ml-1"
+                title="ক্যামেরা ফিল্টার (AR Camera Filter)"
+              >
+                <Camera size={15} />
+              </button>
             </p>
             <p className="text-[12px] text-gray-500 dark:text-gray-400 font-medium">{formatTime(post.created_at || new Date().toISOString(), { showYear: true })}</p>
           </div>
@@ -586,6 +631,13 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
             </div>
           </div>
         </div>
+      )}
+
+      {showCameraFilter && (
+        <CameraFilterModal
+          isOpen={showCameraFilter}
+          onClose={() => setShowCameraFilter(false)}
+        />
       )}
     </div>
   );

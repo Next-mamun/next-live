@@ -2,7 +2,7 @@ import { useGlobalStore } from '@/store/useGlobalStore';
 
 import React, { useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Users, Settings, UserCircle, Home, MessageCircle, BookOpen, Tv } from 'lucide-react';
+import { Users, Settings, UserCircle, Home, MessageCircle, BookOpen, Tv, Camera } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -72,7 +72,8 @@ const Sidebar: React.FC = () => {
       />
       <SidebarItem icon={<div className="relative p-1.5 rounded-xl bg-gradient-to-tr from-pink-500 via-red-500 to-yellow-500 text-white shadow-md shadow-pink-500/20"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div>} label={<span className="font-bold bg-clip-text text-transparent bg-gradient-to-r from-pink-500 to-orange-500">Reels</span>} to="/reels" />
       <SidebarItem icon={<BookOpen size={24} className="text-blue-500" />} label="Lab (E-Books)" to="/lab" />
-      <SidebarItem icon={<Tv size={24} className="text-purple-500" />} label="Watch Party" to="/cinema" />
+      <SidebarItem icon={<Tv size={24} className="text-purple-500" />} label="Theatre" to="/cinema" />
+      <SidebarItem icon={<Camera size={24} className="text-pink-500" />} label="Camera Filters" to="/camera" />
       <SidebarItem icon={<Settings size={24} />} label="Settings" to="/settings" />
 
       <div className="mt-auto p-4 text-[13px] text-gray-500 dark:text-gray-400">

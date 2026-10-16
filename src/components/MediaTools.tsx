@@ -4,6 +4,7 @@ import { X, Camera, Video, RotateCcw, Check, Scissors, Type, Smile, Download, Cr
 import Draggable from 'react-draggable';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 import Cropper from 'react-easy-crop';
+import { CameraStudioModal } from './camera/CameraStudioModal';
 
 interface MediaEditorProps {
   mediaUrl: string;
@@ -486,90 +487,5 @@ interface CameraCaptureProps {
 }
 
 export const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onCancel }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
-
-  useEffect(() => {
-    startCamera();
-    return () => stream?.getTracks().forEach(t => t.stop());
-  }, [facingMode]);
-
-  const startCamera = async () => {
-    try {
-      if (stream) stream.getTracks().forEach(t => t.stop());
-      const newStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode }, 
-        audio: true 
-      });
-      setStream(newStream);
-      if (videoRef.current) videoRef.current.srcObject = newStream;
-    } catch (err) {
-      console.error('Camera error:', err);
-      alert('Could not access camera.');
-      onCancel();
-    }
-  };
-
-  const takePhoto = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d')?.drawImage(video, 0, 0);
-    onCapture(canvas.toDataURL('image/jpeg'), 'image');
-  };
-
-  const startRecording = () => {
-    if (!stream) return;
-    const recorder = new MediaRecorder(stream);
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (e) => chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const reader = new FileReader();
-      reader.onloadend = () => onCapture(reader.result as string, 'video');
-      reader.readAsDataURL(blob);
-    };
-    recorder.start();
-    mediaRecorderRef.current = recorder;
-    setIsRecording(true);
-  };
-
-  const stopRecording = () => {
-    mediaRecorderRef.current?.stop();
-    setIsRecording(false);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black z-[1000] flex flex-col items-center justify-center">
-      <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-      
-      <div className="absolute top-6 left-6 right-6 flex justify-between">
-        <button type="button" onClick={onCancel} className="p-3 bg-black/50 rounded-full text-white"><X /></button>
-        <button type="button" onClick={() => setFacingMode(facingMode === 'user' ? 'environment' : 'user')} className="p-3 bg-black/50 rounded-full text-white"><RotateCcw /></button>
-      </div>
-
-      <div className="absolute bottom-10 flex items-center gap-10">
-        <button 
-          type="button"
-          onClick={isRecording ? stopRecording : startRecording}
-          className={`w-20 h-20 rounded-full border-4 border-white flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 scale-110' : 'bg-transparent'}`}
-        >
-          <Video size={32} className="text-white" />
-        </button>
-        
-        <button 
-          type="button"
-          onClick={takePhoto}
-          className="w-16 h-16 rounded-full bg-white flex items-center justify-center shadow-xl hover:scale-110 transition-all"
-        >
-          <Camera size={28} className="text-black" />
-        </button>
-      </div>
-    </div>
-  );
+  return <CameraStudioModal onCapture={onCapture} onCancel={onCancel} />;
 };

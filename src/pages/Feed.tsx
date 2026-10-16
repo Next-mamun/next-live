@@ -12,6 +12,7 @@ import { doc, getDoc, updateDoc, collection, query, where, getDocs, limit, incre
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { CameraCapture, MediaEditor } from '@/components/MediaTools';
+import CameraFilterModal from '@/components/camera/CameraFilterModal';
 
 import PostCard from '@/components/PostCard';
 import AdSenseAd from '@/components/AdSenseAd';
@@ -867,13 +868,15 @@ const Feed: React.FC = () => {
 
       {/* Camera & Editor Modals */}
       {showCamera && (
-        <CameraCapture 
-          onCapture={(url, type) => {
+        <CameraFilterModal 
+          isOpen={showCamera}
+          onCaptureMedia={(url, type) => {
             setSelectedFile(url);
+            setPreviewUrl(url);
             setFileType(type);
             setShowCamera(false);
           }}
-          onCancel={() => setShowCamera(false)}
+          onClose={() => setShowCamera(false)}
         />
       )}
 

@@ -400,13 +400,31 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!payload.media_type && mediaType) payload.media_type = mediaType;
         await dualWriteMessage(payload);
         
-        // Trigger Push Notification
+        // Trigger Push & In-App Notification with sender's username and deep link
+        const senderUsername = metadata.sender_username || auth.currentUser?.displayName?.toLowerCase().replace(/\s+/g, '') || auth.currentUser?.email?.split('@')[0] || '';
+        const senderName = metadata.sender_name || auth.currentUser?.displayName || senderUsername || 'User';
+        const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+        const senderTitle = `${senderName}${usernameTag}`;
+        const mediaLabel = metadata.mediaType || payload.media_type || 'media';
+        const notifBody = `Sent a ${mediaLabel}`;
+        const senderId = metadata.payload.sender_id || auth.currentUser?.uid;
+        const receiverId = metadata.payload.receiver_id;
+        const senderAvatar = metadata.sender_avatar || auth.currentUser?.photoURL || '';
+
         try {
           triggerNotification(
-            metadata.payload.receiver_id,
-            auth.currentUser?.displayName || 'New Media Message',
-            `Sent a ${metadata.mediaType || 'media'}`,
-            { type: 'message', sender_id: auth.currentUser?.uid }
+            receiverId,
+            senderTitle,
+            notifBody,
+            {
+              type: 'message',
+              sender_id: senderId,
+              sender_name: senderName,
+              sender_username: senderUsername,
+              sender_avatar: senderAvatar,
+              url: `/messages?user=${senderId}`,
+              content: notifBody
+            }
           );
         } catch (notifErr) {
           console.error('Notification failed:', notifErr);
@@ -420,12 +438,16 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
 
         await addDoc(collection(db, 'notifications'), {
-          user_id: metadata.payload.receiver_id,
-          sender_id: metadata.payload.sender_id,
+          user_id: receiverId,
+          sender_id: senderId,
+          sender_name: senderName,
+          sender_username: senderUsername,
+          sender_avatar: senderAvatar,
           type: 'message',
+          content: notifBody,
           is_read: false,
-          created_at: serverTimestamp()
-        });
+          created_at: new Date().toISOString()
+        }).catch((err) => console.warn('Notification doc write warning:', err));
       } else if (type === 'profile') {
         const payload = { ...metadata.payload };
         if (mediaUrl) {

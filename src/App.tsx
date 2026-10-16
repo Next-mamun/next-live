@@ -39,6 +39,7 @@ import CreatePost from '@/pages/CreatePost';
 import Lab from '@/pages/Lab';
 import Cinema from '@/pages/Cinema';
 import Meet from '@/pages/Meet';
+import CameraStudio from '@/pages/CameraStudio';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 
 // Less common pages can remain lazy
@@ -55,6 +56,7 @@ const AppLayout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const isMessages = location.pathname.startsWith('/messages');
+  const isCamera = location.pathname.startsWith('/camera');
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
 
@@ -65,8 +67,8 @@ const AppLayout: React.FC = () => {
     }
   }, [isMessages, isChatOpen, setIsChatOpen]);
 
-  // Hide bottom controls ONLY when inside messages AND an active conversation is open
-  const shouldHideBottomNav = isMessages && isChatOpen;
+  // Hide bottom controls ONLY when inside messages AND an active conversation is open, or when camera is active
+  const shouldHideBottomNav = (isMessages && isChatOpen) || isCamera;
 
   const [touchStart, setTouchStart] = useState<{ x: number, y: number } | null>(null);
 
@@ -232,11 +234,11 @@ const AppLayout: React.FC = () => {
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
-        {currentUser && <Navbar />}
-        {currentUser && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
+        {currentUser && !isCamera && <Navbar />}
+        {currentUser && !isCamera && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
         <main 
           ref={mainRef}
-          className={`w-full flex-1 flex flex-col min-w-0 pt-14 md:pb-0 ${isMessages ? 'overflow-hidden bg-white dark:bg-black' : 'overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
+          className={`w-full flex-1 flex flex-col min-w-0 ${isCamera ? 'p-0 overflow-hidden' : isMessages ? 'pt-14 md:pb-0 overflow-hidden bg-white dark:bg-black' : 'pt-14 md:pb-0 overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
         >
           {/* Pull to Refresh Indicator */}
           {(pullProgress > 0 || isRefreshing) && (
@@ -281,6 +283,7 @@ const AppLayout: React.FC = () => {
               <Route path="/lab" element={currentUser ? <Lab /> : <Navigate to="/login" />} />
               <Route path="/cinema" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
               <Route path="/cinema/:id" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
+              <Route path="/camera" element={currentUser ? <CameraStudio /> : <Navigate to="/login" />} />
               <Route path="/meet" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
               <Route path="/meet/:id" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
               <Route path="*" element={<Navigate to="/" replace />} />

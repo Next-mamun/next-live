@@ -7,6 +7,7 @@ import { collection, query, where, onSnapshot, orderBy, limit, getDocs, getDoc, 
 import { toast } from 'sonner';
 import { getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
+import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
 
 interface Post {
   id: string;
@@ -37,8 +38,10 @@ interface GlobalState {
   deletedPostIds: string[];
   isSupabaseActive: boolean;
   isChatOpen: boolean;
+  activeChatId: string | null;
   triggerFirebaseFallback: () => void;
   setIsChatOpen: (isOpen: boolean) => void;
+  setActiveChatId: (id: string | null) => void;
   
   setCurrentUser: (user: any) => void;
   setFeedPosts: (posts: Post[]) => void;
@@ -54,6 +57,111 @@ interface GlobalState {
 let messageUnsub: (() => void) | null = null;
 let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
+const notifiedMessageIds = new Set<string>();
+
+export const getTimestampMs = (val: any): number => {
+  if (!val) return Date.now();
+  if (typeof val === 'number') return val;
+  if (typeof val.toMillis === 'function') return val.toMillis();
+  if (typeof val.toDate === 'function') return val.toDate().getTime();
+  if (typeof val === 'string') {
+    const t = new Date(val).getTime();
+    return isNaN(t) ? Date.now() : t;
+  }
+  if (val.seconds) return val.seconds * 1000;
+  return Date.now();
+};
+
+const handleIncomingMessageNotification = async (
+  msg: any,
+  currentUserId: string,
+  stateGetter: () => GlobalState
+) => {
+  if (!msg || !msg.id || notifiedMessageIds.has(msg.id)) return;
+  if (msg.sender_id === currentUserId || msg.receiver_id !== currentUserId) return;
+  if (msg.is_read) return;
+
+  const msgTime = getTimestampMs(msg.created_at || msg.local_created_at);
+  if (Date.now() - msgTime > 120000) return;
+
+  notifiedMessageIds.add(msg.id);
+  if (notifiedMessageIds.size > 200) {
+    const firstKey = notifiedMessageIds.values().next().value;
+    if (firstKey) notifiedMessageIds.delete(firstKey);
+  }
+
+  const { isChatOpen, activeChatId } = stateGetter();
+  if (isChatOpen && activeChatId === msg.sender_id) {
+    playNotificationSound();
+    return;
+  }
+
+  let senderName = msg.sender_name;
+  let senderUsername = msg.sender_username;
+  let senderAvatar = msg.sender_avatar;
+
+  if (!senderName || !senderUsername) {
+    try {
+      const { localDB } = await import('@/lib/dexie');
+      const cached = await localDB.users.get(msg.sender_id);
+      if (cached) {
+        senderName = senderName || cached.display_name || cached.name || cached.username;
+        senderUsername = senderUsername || cached.username;
+        senderAvatar = senderAvatar || cached.avatar_url || cached.avatar;
+      } else {
+        const snap = await getDoc(doc(db, 'profiles', msg.sender_id));
+        if (snap.exists()) {
+          const p = snap.data();
+          senderName = senderName || p.display_name || p.username;
+          senderUsername = senderUsername || p.username;
+          senderAvatar = senderAvatar || p.avatar_url;
+          localDB.users.put({ id: snap.id, username: p.username || '', display_name: p.display_name, avatar_url: p.avatar_url }).catch(() => {});
+        }
+      }
+    } catch (e) {}
+  }
+
+  senderName = senderName || 'User';
+  const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+  const title = `${senderName}${usernameTag}`;
+  
+  let body = 'Sent a message';
+  if (msg.content) {
+    if (typeof msg.content === 'string' && msg.content.includes('"JSON_PAYLOAD"')) {
+      try {
+        const parsed = JSON.parse(msg.content);
+        body = parsed.text || (parsed.filename ? `Sent a file: ${parsed.filename}` : (parsed.is_view_once ? 'Sent a view-once message' : 'Sent a message'));
+      } catch (e) {
+        body = msg.content;
+      }
+    } else {
+      body = msg.content;
+    }
+  } else if (msg.text) {
+    body = msg.text;
+  } else if (msg.media_type) {
+    body = `Sent a ${msg.media_type}`;
+  }
+
+  const targetUrl = `/messages?user=${msg.sender_id}`;
+
+  playNotificationSound();
+
+  showNotification(title, {
+    body,
+    icon: senderAvatar || '/favicon.ico',
+    data: { url: targetUrl, type: 'message', sender_id: msg.sender_id }
+  });
+
+  showInAppNotificationToast({
+    title,
+    body,
+    avatar: senderAvatar,
+    url: targetUrl,
+    type: 'message',
+    senderId: msg.sender_id
+  });
+};
 
 export const useGlobalStore = create<GlobalState>()(
   persist(
@@ -71,7 +179,9 @@ export const useGlobalStore = create<GlobalState>()(
       deletedPostIds: [],
       isSupabaseActive: true,
       isChatOpen: false,
+      activeChatId: null,
       setIsChatOpen: (isOpen: boolean) => set({ isChatOpen: isOpen }),
+      setActiveChatId: (id: string | null) => set({ activeChatId: id }),
 
       triggerFirebaseFallback: () => {
         if (get().isSupabaseActive) {
@@ -376,6 +486,7 @@ export const useGlobalStore = create<GlobalState>()(
           };
 
           fetchInitialMessages().then(() => {
+            initialMessageLoad = false;
             const unsubs: Array<() => void> = [];
 
             // 3. Setup Listener: Supabase Realtime
@@ -406,6 +517,11 @@ export const useGlobalStore = create<GlobalState>()(
                       const unread = updated.filter(m => m.is_read === false && m.receiver_id === userId).length;
                       return { messages: updated, unreadMessagesCount: unread };
                     });
+
+                    // Trigger instant notification for incoming messages
+                    if (!initialMessageLoad && data.sender_id !== userId && data.receiver_id === userId) {
+                      handleIncomingMessageNotification(formattedMsg, userId, get);
+                    }
   
                     try {
                       localDB.messages.put(formattedMsg as any);
@@ -419,8 +535,6 @@ export const useGlobalStore = create<GlobalState>()(
                           localStorage.setItem(deletedKey, JSON.stringify(newIds));
                           // Trigger re-render of contacts query globally
                           import('@tanstack/react-query').then(({ QueryClient }) => {
-                            // Can't easily use queryClient here without importing it from the app instance,
-                            // but react-query usually responds to localStorage events or we can rely on polling.
                             window.dispatchEvent(new Event('chat_undeleted'));
                           });
                         }
@@ -454,6 +568,17 @@ export const useGlobalStore = create<GlobalState>()(
                   const merged = Array.from(map.values());
                   return { messages: merged, unreadMessagesCount: unread };
                 });
+
+                if (!initialMessageLoad) {
+                  snapshot.docChanges().forEach((change) => {
+                    if (change.type === 'added') {
+                      const msgData = { id: change.doc.id, ...change.doc.data() } as any;
+                      if (msgData.sender_id !== userId && msgData.receiver_id === userId && !msgData.is_read) {
+                        handleIncomingMessageNotification(msgData, userId, get);
+                      }
+                    }
+                  });
+                }
                 
                 if (msgs.length > 0) {
                   try {
@@ -501,16 +626,120 @@ export const useGlobalStore = create<GlobalState>()(
       initNotificationListener: (userId: string) => {
         if (notifUnsub) return notifUnsub;
 
+        // Query by user_id without orderBy to avoid Firestore composite index requirement
         const qNotifs = query(
           collection(db, 'notifications'),
-          where('user_id', '==', userId),
-          orderBy('created_at', 'desc')
+          where('user_id', '==', userId)
         );
 
+        let initialNotifLoad = true;
+        const processedNotifIds = new Set<string>();
+
         notifUnsub = onSnapshot(qNotifs, (snapshot) => {
-          const notifs = snapshot.docs.map(document => ({ id: document.id, ...document.data() })) as Notification[];
-          const unread = notifs.filter(n => n.is_read === false).length;
-          set({ notifications: notifs, unreadNotificationsCount: unread });
+          const rawNotifs = snapshot.docs.map(document => ({ id: document.id, ...document.data() })) as Notification[];
+          
+          // Sort in memory by created_at descending
+          rawNotifs.sort((a, b) => getTimestampMs(b.created_at) - getTimestampMs(a.created_at));
+          
+          const unread = rawNotifs.filter(n => n.is_read === false).length;
+          set({ notifications: rawNotifs, unreadNotificationsCount: unread });
+
+          if (initialNotifLoad) {
+            snapshot.docs.forEach(d => processedNotifIds.add(d.id));
+            initialNotifLoad = false;
+            return;
+          }
+
+          snapshot.docChanges().forEach(async (change) => {
+            if (change.type === 'added') {
+              const docId = change.doc.id;
+              if (processedNotifIds.has(docId)) return;
+              processedNotifIds.add(docId);
+              if (processedNotifIds.size > 200) {
+                const firstKey = processedNotifIds.values().next().value;
+                if (firstKey) processedNotifIds.delete(firstKey);
+              }
+
+              const n = change.doc.data() as any;
+              if (n.is_read) return;
+
+              const notifTime = getTimestampMs(n.created_at);
+              if (Date.now() - notifTime > 120000) return;
+
+              let senderName = n.sender_name;
+              let senderUsername = n.sender_username;
+              let senderAvatar = n.sender_avatar;
+
+              if (!senderName || !senderUsername) {
+                if (n.sender_id) {
+                  try {
+                    const { localDB } = await import('@/lib/dexie');
+                    const cached = await localDB.users.get(n.sender_id);
+                    if (cached) {
+                      senderName = senderName || cached.display_name || cached.name || cached.username;
+                      senderUsername = senderUsername || cached.username;
+                      senderAvatar = senderAvatar || cached.avatar_url;
+                    } else {
+                      const pDoc = await getDoc(doc(db, 'profiles', n.sender_id));
+                      if (pDoc.exists()) {
+                        const pData = pDoc.data();
+                        senderName = senderName || pData.display_name || pData.username;
+                        senderUsername = senderUsername || pData.username;
+                        senderAvatar = senderAvatar || pData.avatar_url;
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
+
+              senderName = senderName || 'Someone';
+              const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+              let title = `${senderName}${usernameTag}`;
+              let body = 'interacted with you';
+              let targetUrl = '/';
+
+              if (n.type === 'message') {
+                body = n.content || (n.media_type ? `Sent a ${n.media_type}` : 'Sent you a message');
+                targetUrl = `/messages?user=${n.sender_id}`;
+              } else if (n.type === 'like') {
+                body = 'liked your post';
+                targetUrl = n.post_id ? `/post/${n.post_id}` : '/';
+              } else if (n.type === 'comment') {
+                body = n.content ? `commented: "${n.content.slice(0, 35)}..."` : 'commented on your post';
+                targetUrl = n.post_id ? `/post/${n.post_id}` : '/';
+              } else if (n.type === 'friend_request') {
+                body = 'sent you a friend request';
+                targetUrl = '/friends';
+              } else if (n.type === 'friend_accept') {
+                body = 'accepted your friend request';
+                targetUrl = '/friends';
+              }
+
+              // Only show if user isn't actively chatting with this user right now
+              const { isChatOpen, activeChatId } = get();
+              if (n.type === 'message' && isChatOpen && activeChatId === n.sender_id) {
+                playNotificationSound();
+                return;
+              }
+
+              playNotificationSound();
+
+              showNotification(title, {
+                body,
+                icon: senderAvatar || '/favicon.ico',
+                data: { url: targetUrl, type: n.type, sender_id: n.sender_id }
+              });
+
+              showInAppNotificationToast({
+                title,
+                body,
+                avatar: senderAvatar,
+                url: targetUrl,
+                type: n.type,
+                senderId: n.sender_id
+              });
+            }
+          });
         }, (error) => {
           console.warn("Notifications snapshot listener error (handled):", error?.message || error);
         });

@@ -1,3 +1,5 @@
+import React from 'react';
+import { toast } from 'sonner';
 import { messaging, db, auth } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
 import { doc, updateDoc, getDoc } from 'firebase/firestore';
@@ -138,17 +140,169 @@ export const triggerNotification = async (receiverId: string, title: string, bod
   return null;
 };
 
-export const showNotification = (title: string, options?: NotificationOptions) => {
-  if (Notification.permission === "granted") {
-    // Only show if the tab is not focused or as per user preference
-    const notification = new Notification(title, {
-      icon: '/favicon.ico', // You can use a generic icon or sender's avatar
-      badge: '/favicon.ico',
-      ...options
-    });
-    notification.onclick = () => {
-      window.focus();
-      notification.close();
-    };
+export const playNotificationSound = () => {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.35, ctx.currentTime + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.38);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.38);
+    }
+  } catch (e) {
+    // AudioContext failure fallback
   }
+
+  if ('vibrate' in navigator) {
+    try {
+      navigator.vibrate([100, 50, 100]);
+    } catch (e) {}
+  }
+};
+
+export const showInAppNotificationToast = ({
+  title,
+  body,
+  avatar,
+  url,
+  type,
+  senderId
+}: {
+  title: string;
+  body: string;
+  avatar?: string;
+  url: string;
+  type?: string;
+  senderId?: string;
+}) => {
+  // Play sound and vibration
+  playNotificationSound();
+
+  toast.custom(
+    (t) =>
+      React.createElement(
+        'div',
+        {
+          onClick: () => {
+            toast.dismiss(t);
+            if ((window as any).__appNavigate) {
+              (window as any).__appNavigate(url);
+            } else {
+              window.location.href = url;
+            }
+          },
+          className:
+            'flex items-center gap-3 bg-white dark:bg-[#1A1A1A] border border-gray-200 dark:border-gray-800 p-3.5 rounded-2xl shadow-xl hover:shadow-2xl cursor-pointer w-full max-w-sm transition-all transform active:scale-95 select-none pointer-events-auto'
+        },
+        React.createElement(
+          'div',
+          { className: 'relative shrink-0' },
+          avatar
+            ? React.createElement('img', {
+                src: avatar,
+                alt: '',
+                className: 'w-10 h-10 rounded-full object-cover border border-gray-100 dark:border-gray-700'
+              })
+            : React.createElement(
+                'div',
+                {
+                  className:
+                    'w-10 h-10 rounded-full bg-[#1877F2] text-white font-bold flex items-center justify-center text-sm shadow-sm'
+                },
+                title.charAt(0).toUpperCase()
+              ),
+          React.createElement('div', {
+            className:
+              'absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white dark:border-[#1A1A1A]'
+          })
+        ),
+        React.createElement(
+          'div',
+          { className: 'flex-1 min-w-0 text-left' },
+          React.createElement(
+            'p',
+            {
+              className: 'text-sm font-bold text-gray-900 dark:text-gray-100 truncate leading-tight'
+            },
+            title
+          ),
+          React.createElement(
+            'p',
+            {
+              className: 'text-xs text-gray-600 dark:text-gray-400 truncate mt-1'
+            },
+            body
+          )
+        ),
+        React.createElement(
+          'div',
+          { className: 'shrink-0 flex items-center' },
+          React.createElement(
+            'span',
+            {
+              className:
+                'text-xs font-semibold text-[#1877F2] bg-blue-50 dark:bg-blue-900/30 px-2.5 py-1 rounded-lg'
+            },
+            'Open'
+          )
+        )
+      ),
+    {
+      duration: 5000,
+      position: 'top-center'
+    }
+  );
+};
+
+export const showNotification = (title: string, options?: NotificationOptions) => {
+  if (typeof window !== 'undefined' && "Notification" in window && Notification.permission === "granted") {
+    try {
+      const notification = new Notification(title, {
+        icon: '/favicon.ico',
+        badge: '/favicon.ico',
+        ...options
+      });
+      notification.onclick = (e) => {
+        e.preventDefault();
+        window.focus();
+        notification.close();
+        const targetUrl = (options?.data as any)?.url || '/messages';
+        if ((window as any).__appNavigate) {
+          (window as any).__appNavigate(targetUrl);
+        } else {
+          window.location.href = targetUrl;
+        }
+      };
+    } catch (e) {
+      console.warn("Desktop notification display warning:", e);
+    }
+  }
+};
+
+export const listenForegroundMessages = async (onMessageReceived: (payload: any) => void) => {
+  try {
+    const msg = await messaging();
+    if (msg) {
+      const { onMessage } = await import('firebase/messaging');
+      return onMessage(msg, (payload) => {
+        console.log('[Foreground FCM Message]', payload);
+        onMessageReceived(payload);
+      });
+    }
+  } catch (e) {
+    console.warn("Foreground FCM message setup error:", e);
+  }
+  return () => {};
 };

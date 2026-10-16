@@ -287,9 +287,15 @@ const Friends: React.FC = () => {
             if (docSnap.exists()) {
               const friendship = docSnap.data();
               const otherId = friendship.sender_id === currentUser?.id ? friendship.receiver_id : friendship.sender_id;
+              const senderName = currentUser?.display_name || currentUser?.username || 'Someone';
+              const usernameTag = currentUser?.username ? ` (@${currentUser.username})` : '';
+
               await addDoc(collection(db, 'notifications'), {
                 user_id: otherId,
                 sender_id: currentUser?.id,
+                sender_name: senderName,
+                sender_username: currentUser?.username || '',
+                sender_avatar: currentUser?.avatar_url || '',
                 type: 'friend_accept',
                 is_read: false,
                 created_at: new Date().toISOString()
@@ -297,9 +303,16 @@ const Friends: React.FC = () => {
               
               triggerNotification(
                 otherId,
-                'Friend Request Accepted',
-                `${currentUser?.display_name || 'Someone'} accepted your friend request!`,
-                { type: 'friend_accept', sender_id: currentUser?.id }
+                `${senderName}${usernameTag}`,
+                'accepted your friend request!',
+                {
+                  type: 'friend_accept',
+                  sender_id: currentUser?.id,
+                  sender_name: senderName,
+                  sender_username: currentUser?.username || '',
+                  sender_avatar: currentUser?.avatar_url || '',
+                  url: '/friends'
+                }
               );
 
               queryClient.invalidateQueries({ queryKey: ['notifications', otherId] });
@@ -337,9 +350,15 @@ const Friends: React.FC = () => {
 
     try {
       await addDoc(collection(db, 'friendships'), { sender_id: currentUser?.id, receiver_id: targetId, status: 'pending' });
+      const senderName = currentUser?.display_name || currentUser?.username || 'Someone';
+      const usernameTag = currentUser?.username ? ` (@${currentUser.username})` : '';
+
       await addDoc(collection(db, 'notifications'), {
         user_id: targetId,
         sender_id: currentUser?.id,
+        sender_name: senderName,
+        sender_username: currentUser?.username || '',
+        sender_avatar: currentUser?.avatar_url || '',
         type: 'friend_request',
         is_read: false,
         created_at: new Date().toISOString()
@@ -347,9 +366,16 @@ const Friends: React.FC = () => {
 
       triggerNotification(
         targetId,
-        'New Friend Request',
-        `${currentUser?.display_name || 'Someone'} sent you a friend request!`,
-        { type: 'friend_request', sender_id: currentUser?.id }
+        `${senderName}${usernameTag}`,
+        'sent you a friend request!',
+        {
+          type: 'friend_request',
+          sender_id: currentUser?.id,
+          sender_name: senderName,
+          sender_username: currentUser?.username || '',
+          sender_avatar: currentUser?.avatar_url || '',
+          url: '/friends'
+        }
       );
 
       queryClient.invalidateQueries({ queryKey: ['notifications', targetId] });

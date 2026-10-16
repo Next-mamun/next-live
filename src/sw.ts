@@ -84,19 +84,30 @@ self.addEventListener('notificationclick', (event: any) => {
        urlToOpen = `/messages?user=${data.sender_id}`;
     } else if (data.url) {
       urlToOpen = data.url;
+    } else if (data.post_id) {
+      urlToOpen = `/post/${data.post_id}`;
+    } else if (data.type === 'friend_request' || data.type === 'friend_accept') {
+      urlToOpen = '/friends';
     }
   }
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients: any) => {
-      // Check if there is already a window/tab open with the target URL
-      for (let i = 0; i < windowClients.length; i++) {
-        const client = windowClients[i];
-        if (client.url.includes(urlToOpen) && 'focus' in client) {
+      // If a window is already open, focus it and navigate
+      if (windowClients && windowClients.length > 0) {
+        const client = windowClients[0];
+        try {
+          client.postMessage({ type: 'NAVIGATE', url: urlToOpen });
+        } catch (e) {}
+        if ('navigate' in client) {
+          client.navigate(urlToOpen);
+        }
+        if ('focus' in client) {
           return client.focus();
         }
+        return client;
       }
-      // If not, open the target URL in a new window/tab.
+      // If no open tab, launch a new window with the deep link target
       if (self.clients.openWindow) {
         return self.clients.openWindow(urlToOpen);
       }

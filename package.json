@@ -14,6 +14,7 @@
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
     "@google/genai": "^1.42.0",
+    "@mediapipe/tasks-vision": "^1.0.1",
     "@supabase/supabase-js": "^2.97.0",
     "@tailwindcss/vite": "^4.2.1",
     "@tanstack/query-async-storage-persister": "^5.100.5",
