@@ -18,23 +18,26 @@ const Notifications: React.FC = () => {
     queryFn: async () => {
       if (!currentUser) return [];
       
-      // Query notifications without composite index requirement
       const qNotifs = query(
         collection(db, 'notifications'),
-        where('user_id', '==', currentUser.id)
+        where('user_id', '==', currentUser.id),
+        orderBy('created_at', 'desc'),
+        limit(50)
       );
       const notifsSnap = await getDocs(qNotifs);
       const notifs = notifsSnap.docs.map(d => ({id: d.id, ...d.data()}) as any);
       
-      // Query messages without composite index requirement
       const qMsgs = query(
         collection(db, 'messages'),
-        where('receiver_id', '==', currentUser.id)
+        where('receiver_id', '==', currentUser.id),
+        where('is_read', '==', false),
+        orderBy('created_at', 'desc'),
+        limit(50)
       );
       const unreadMsgsSnap = await getDocs(qMsgs);
       const unreadMsgs = unreadMsgsSnap.docs
         .map(d => ({id: d.id, ...d.data()}) as any)
-        .filter((msg: any) => msg.is_read === false && !msg.deleted_for_everyone && !(msg.deleted_for || []).includes(currentUser.id));
+        .filter((msg: any) => !msg.deleted_for_everyone && !(msg.deleted_for || []).includes(currentUser.id));
         
       const validNotifs = notifs || [];
       const validMsgs = unreadMsgs || [];
@@ -50,28 +53,14 @@ const Notifications: React.FC = () => {
             type: 'message',
             sender_id: msg.sender_id,
             created_at: msg.created_at,
-            content: msg.content || msg.text || '',
             is_read: false,
             real_msg_id: msg.id
           });
         }
       });
 
-      const getTimestampMs = (val: any): number => {
-        if (!val) return Date.now();
-        if (typeof val === 'number') return val;
-        if (typeof val.toMillis === 'function') return val.toMillis();
-        if (typeof val.toDate === 'function') return val.toDate().getTime();
-        if (typeof val === 'string') {
-          const t = new Date(val).getTime();
-          return isNaN(t) ? Date.now() : t;
-        }
-        if (val.seconds) return val.seconds * 1000;
-        return Date.now();
-      };
-
       const combined = [...validNotifs, ...msgNotifs]
-        .sort((a, b) => getTimestampMs(b.created_at) - getTimestampMs(a.created_at))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
         .slice(0, 50);
       
       if (combined.length === 0) return [];
@@ -147,20 +136,19 @@ const Notifications: React.FC = () => {
   };
 
   const getMessage = (n: any) => {
-    const sender = n.sender;
-    const name = n.sender_name || sender?.display_name || sender?.name || 'Someone';
-    const username = n.sender_username || sender?.username || '';
+    const name = n.sender?.display_name || n.sender_name || 'Someone';
+    const username = n.sender?.username || n.sender_username;
     const usernameTag = username ? ` (@${username})` : '';
-    const senderTitle = `${name}${usernameTag}`;
+    const userLabel = `${name}${usernameTag}`;
 
     switch (n.type) {
-      case 'like': return <><span className="font-bold">{senderTitle}</span> liked your post.</>;
-      case 'comment': return <><span className="font-bold">{senderTitle}</span> commented on your post: {n.content ? `"${n.content.slice(0, 30)}"` : ''}</>;
-      case 'friend_request': return <><span className="font-bold">{senderTitle}</span> sent you a friend request.</>;
-      case 'friend_accept': return <><span className="font-bold">{senderTitle}</span> accepted your friend request.</>;
-      case 'story_view': return <><span className="font-bold">{senderTitle}</span> viewed your story.</>;
-      case 'message': return <><span className="font-bold">{senderTitle}</span> sent you a message: {n.content ? `"${n.content.slice(0, 40)}"` : ''}</>;
-      default: return <><span className="font-bold">{senderTitle}</span> interacted with you.</>;
+      case 'like': return <><span className="font-bold">{userLabel}</span> liked your post.</>;
+      case 'comment': return <><span className="font-bold">{userLabel}</span> commented on your post{n.content ? `: "${n.content.slice(0, 35)}"` : '.'}</>;
+      case 'friend_request': return <><span className="font-bold">{userLabel}</span> sent you a friend request.</>;
+      case 'friend_accept': return <><span className="font-bold">{userLabel}</span> accepted your friend request.</>;
+      case 'story_view': return <><span className="font-bold">{userLabel}</span> viewed your story.</>;
+      case 'message': return <><span className="font-bold">{userLabel}</span>: {n.content || 'sent you a message.'}</>;
+      default: return <><span className="font-bold">{userLabel}</span> interacted with you.</>;
     }
   };
 
@@ -172,17 +160,11 @@ const Notifications: React.FC = () => {
     }
     queryClient.invalidateQueries({ queryKey: ['notifications', currentUser?.id] });
     
-    if (n.type === 'friend_request' || n.type === 'friend_accept') {
-      navigate('/friends');
-    } else if (n.type === 'message') {
-      navigate(`/messages?user=${n.sender_id}`, { state: { userId: n.sender_id } });
-    } else if (n.type === 'story_view') {
-      navigate('/');
-    } else if (n.post_id) {
-      navigate(`/post/${n.post_id}`);
-    } else {
-      navigate(`/profile/${currentUser?.username}`); // generic fallback
-    }
+    if (n.type === 'friend_request' || n.type === 'friend_accept') navigate('/friends');
+    else if (n.type === 'message') navigate(`/messages?user=${n.sender_id}`, { state: { userId: n.sender_id } });
+    else if (n.type === 'story_view') navigate('/');
+    else if (n.post_id) navigate(`/post/${n.post_id}`);
+    else navigate(`/profile/${currentUser?.username}`);
   };
 
   return (

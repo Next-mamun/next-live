@@ -39,7 +39,6 @@ import CreatePost from '@/pages/CreatePost';
 import Lab from '@/pages/Lab';
 import Cinema from '@/pages/Cinema';
 import Meet from '@/pages/Meet';
-import CameraStudio from '@/pages/CameraStudio';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 
 // Less common pages can remain lazy
@@ -50,15 +49,69 @@ const ChildSafety = lazy(() => import('@/pages/ChildSafety'));
 
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { AuthContext, AuthContextType, ThemeContext, ThemeContextType, useAuth, useTheme } from '@/contexts/AuthContext';
+import { playNotificationSound, showInAppNotificationToast, listenForegroundMessages } from '@/services/notificationService';
 
 const AppLayout: React.FC = () => {
   const { currentUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const isMessages = location.pathname.startsWith('/messages');
-  const isCamera = location.pathname.startsWith('/camera');
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
+
+  // Global navigator for push notification clicks
+  useEffect(() => {
+    (window as any).__appNavigate = (url: string) => {
+      navigate(url);
+    };
+    return () => {
+      delete (window as any).__appNavigate;
+    };
+  }, [navigate]);
+
+  // Handle messages from service worker (e.g. notificationclick navigation)
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      const handleSwMsg = (event: MessageEvent) => {
+        if (event.data?.type === 'NAVIGATE' && event.data?.url) {
+          navigate(event.data.url);
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', handleSwMsg);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleSwMsg);
+      };
+    }
+  }, [navigate]);
+
+  // Foreground FCM message listener
+  useEffect(() => {
+    let unsubForeground: any;
+    listenForegroundMessages((payload) => {
+      const senderId = payload.data?.sender_id;
+      const targetUrl = payload.data?.url || (payload.data?.type === 'message' && senderId ? `/messages?user=${senderId}` : '/');
+      const title = payload.notification?.title || payload.data?.title || 'New Notification';
+      const body = payload.notification?.body || payload.data?.body || 'You have a new message';
+
+      playNotificationSound();
+      showInAppNotificationToast({
+        title,
+        body,
+        avatar: payload.data?.sender_avatar,
+        url: targetUrl,
+        type: payload.data?.type,
+        senderId
+      });
+    }).then(unsub => {
+      unsubForeground = unsub;
+    });
+
+    return () => {
+      if (typeof unsubForeground === 'function') {
+        unsubForeground();
+      }
+    };
+  }, []);
 
   // Automatically reset isChatOpen if user navigates away from messages
   useEffect(() => {
@@ -67,8 +120,8 @@ const AppLayout: React.FC = () => {
     }
   }, [isMessages, isChatOpen, setIsChatOpen]);
 
-  // Hide bottom controls ONLY when inside messages AND an active conversation is open, or when camera is active
-  const shouldHideBottomNav = (isMessages && isChatOpen) || isCamera;
+  // Hide bottom controls ONLY when inside messages AND an active conversation is open
+  const shouldHideBottomNav = isMessages && isChatOpen;
 
   const [touchStart, setTouchStart] = useState<{ x: number, y: number } | null>(null);
 
@@ -234,11 +287,11 @@ const AppLayout: React.FC = () => {
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
-        {currentUser && !isCamera && <Navbar />}
-        {currentUser && !isCamera && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
+        {currentUser && <Navbar />}
+        {currentUser && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
         <main 
           ref={mainRef}
-          className={`w-full flex-1 flex flex-col min-w-0 ${isCamera ? 'p-0 overflow-hidden' : isMessages ? 'pt-14 md:pb-0 overflow-hidden bg-white dark:bg-black' : 'pt-14 md:pb-0 overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
+          className={`w-full flex-1 flex flex-col min-w-0 pt-14 md:pb-0 ${isMessages ? 'overflow-hidden bg-white dark:bg-black' : 'overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
         >
           {/* Pull to Refresh Indicator */}
           {(pullProgress > 0 || isRefreshing) && (
@@ -283,7 +336,6 @@ const AppLayout: React.FC = () => {
               <Route path="/lab" element={currentUser ? <Lab /> : <Navigate to="/login" />} />
               <Route path="/cinema" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
               <Route path="/cinema/:id" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
-              <Route path="/camera" element={currentUser ? <CameraStudio /> : <Navigate to="/login" />} />
               <Route path="/meet" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
               <Route path="/meet/:id" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
               <Route path="*" element={<Navigate to="/" replace />} />
@@ -593,18 +645,18 @@ const App: React.FC = () => {
       }
 
       // Initialize global listeners via Zustand Store after UI mounts and Dexie hydrates
+      let cancelled = false;
       let unsubMessages: any;
       let unsubNotifs: any;
       
       localDB.open().then(() => {
-        // Adding a slight delay allows ProfileAvatar components to pull from Dexie first
-        setTimeout(() => {
-          unsubMessages = useGlobalStore.getState().initMessageListener(currentUser.id);
-          unsubNotifs = useGlobalStore.getState().initNotificationListener(currentUser.id);
-        }, 500);
-      });
+        if (cancelled) return;
+        unsubMessages = useGlobalStore.getState().initMessageListener(currentUser.id);
+        unsubNotifs = useGlobalStore.getState().initNotificationListener(currentUser.id);
+      }).catch(console.warn);
 
       return () => {
+        cancelled = true;
         if (unsubMessages) unsubMessages();
         if (unsubNotifs) unsubNotifs();
       };

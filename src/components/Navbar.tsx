@@ -162,26 +162,24 @@ const Navbar: React.FC = () => {
  
   const handleNotificationClick = async (e: React.MouseEvent, notif: any) => {
     setShowNotifications(false);
-    
-    // Mark as read in Firestore
     if (!notif.id.toString().startsWith('msg-')) {
       try { await updateDoc(doc(db, 'notifications', notif.id), { is_read: true }); } catch(e) {}
-    } else if (notif.real_msg_id) {
-      try { await updateDoc(doc(db, 'messages', notif.real_msg_id), { is_read: true }); } catch(e) {}
     }
-
+    
     if (notif.type === 'message') {
       e.preventDefault();
-      const targetSenderId = notif.sender_id;
-      if (targetSenderId) {
-        navigate(`/messages?user=${targetSenderId}`, { state: { userId: targetSenderId } });
+      // Navigate directly into that user's chatbox
+      navigate(`/messages?user=${notif.sender_id}`, { state: { userId: notif.sender_id } });
 
-        const store = useGlobalStore.getState();
-        const updatedMessages = store.messages.map(m => 
-          m.sender_id === targetSenderId ? { ...m, is_read: true } : m
-        );
-        const unreadCount = updatedMessages.filter(m => m.is_read === false && m.receiver_id === currentUser?.id).length;
-        useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
+      const store = useGlobalStore.getState();
+      const updatedMessages = store.messages.map(m => 
+        m.sender_id === notif.sender_id ? { ...m, is_read: true } : m
+      );
+      const unreadCount = updatedMessages.filter(m => m.is_read === false && m.receiver_id === currentUser?.id).length;
+      useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
+      
+      if (notif.real_msg_id) {
+        try { await updateDoc(doc(db, 'messages', notif.real_msg_id), { is_read: true }); } catch(e) {}
       }
     }
   };

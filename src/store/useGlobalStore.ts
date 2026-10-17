@@ -59,19 +59,6 @@ let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
 const notifiedMessageIds = new Set<string>();
 
-export const getTimestampMs = (val: any): number => {
-  if (!val) return Date.now();
-  if (typeof val === 'number') return val;
-  if (typeof val.toMillis === 'function') return val.toMillis();
-  if (typeof val.toDate === 'function') return val.toDate().getTime();
-  if (typeof val === 'string') {
-    const t = new Date(val).getTime();
-    return isNaN(t) ? Date.now() : t;
-  }
-  if (val.seconds) return val.seconds * 1000;
-  return Date.now();
-};
-
 const handleIncomingMessageNotification = async (
   msg: any,
   currentUserId: string,
@@ -81,8 +68,8 @@ const handleIncomingMessageNotification = async (
   if (msg.sender_id === currentUserId || msg.receiver_id !== currentUserId) return;
   if (msg.is_read) return;
 
-  const msgTime = getTimestampMs(msg.created_at || msg.local_created_at);
-  if (Date.now() - msgTime > 120000) return;
+  const msgTime = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
+  if (Date.now() - msgTime > 90000) return;
 
   notifiedMessageIds.add(msg.id);
   if (notifiedMessageIds.size > 200) {
@@ -100,49 +87,31 @@ const handleIncomingMessageNotification = async (
   let senderUsername = msg.sender_username;
   let senderAvatar = msg.sender_avatar;
 
-  if (!senderName || !senderUsername) {
+  if (!senderName) {
     try {
       const { localDB } = await import('@/lib/dexie');
       const cached = await localDB.users.get(msg.sender_id);
       if (cached) {
-        senderName = senderName || cached.display_name || cached.name || cached.username;
-        senderUsername = senderUsername || cached.username;
-        senderAvatar = senderAvatar || cached.avatar_url || cached.avatar;
+        senderName = cached.display_name || cached.name || cached.username;
+        senderUsername = cached.username;
+        senderAvatar = cached.avatar_url || cached.avatar;
       } else {
         const snap = await getDoc(doc(db, 'profiles', msg.sender_id));
         if (snap.exists()) {
           const p = snap.data();
-          senderName = senderName || p.display_name || p.username;
-          senderUsername = senderUsername || p.username;
-          senderAvatar = senderAvatar || p.avatar_url;
+          senderName = p.display_name || p.username;
+          senderUsername = p.username;
+          senderAvatar = p.avatar_url;
           localDB.users.put({ id: snap.id, username: p.username || '', display_name: p.display_name, avatar_url: p.avatar_url }).catch(() => {});
         }
       }
     } catch (e) {}
   }
 
-  senderName = senderName || 'User';
+  senderName = senderName || 'Someone';
   const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
   const title = `${senderName}${usernameTag}`;
-  
-  let body = 'Sent a message';
-  if (msg.content) {
-    if (typeof msg.content === 'string' && msg.content.includes('"JSON_PAYLOAD"')) {
-      try {
-        const parsed = JSON.parse(msg.content);
-        body = parsed.text || (parsed.filename ? `Sent a file: ${parsed.filename}` : (parsed.is_view_once ? 'Sent a view-once message' : 'Sent a message'));
-      } catch (e) {
-        body = msg.content;
-      }
-    } else {
-      body = msg.content;
-    }
-  } else if (msg.text) {
-    body = msg.text;
-  } else if (msg.media_type) {
-    body = `Sent a ${msg.media_type}`;
-  }
-
+  const body = msg.content || (msg.media_type ? `Sent a ${msg.media_type}` : 'Sent a message');
   const targetUrl = `/messages?user=${msg.sender_id}`;
 
   playNotificationSound();
@@ -611,6 +580,7 @@ export const useGlobalStore = create<GlobalState>()(
               unsubs.forEach(u => {
                 try { u(); } catch (e) {}
               });
+              messageUnsub = null;
             };
           });
         });
@@ -626,70 +596,47 @@ export const useGlobalStore = create<GlobalState>()(
       initNotificationListener: (userId: string) => {
         if (notifUnsub) return notifUnsub;
 
-        // Query by user_id without orderBy to avoid Firestore composite index requirement
+        // Query notifications by user_id without composite index requirements
         const qNotifs = query(
           collection(db, 'notifications'),
-          where('user_id', '==', userId)
+          where('user_id', '==', userId),
+          limit(50)
         );
 
         let initialNotifLoad = true;
-        const processedNotifIds = new Set<string>();
-
         notifUnsub = onSnapshot(qNotifs, (snapshot) => {
-          const rawNotifs = snapshot.docs.map(document => ({ id: document.id, ...document.data() })) as Notification[];
-          
-          // Sort in memory by created_at descending
-          rawNotifs.sort((a, b) => getTimestampMs(b.created_at) - getTimestampMs(a.created_at));
-          
-          const unread = rawNotifs.filter(n => n.is_read === false).length;
-          set({ notifications: rawNotifs, unreadNotificationsCount: unread });
+          const rawDocs = snapshot.docs.map(document => ({ id: document.id, ...document.data() })) as Notification[];
+          const notifs = rawDocs.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+          const unread = notifs.filter(n => n.is_read === false).length;
+          set({ notifications: notifs, unreadNotificationsCount: unread });
 
           if (initialNotifLoad) {
-            snapshot.docs.forEach(d => processedNotifIds.add(d.id));
             initialNotifLoad = false;
             return;
           }
 
           snapshot.docChanges().forEach(async (change) => {
             if (change.type === 'added') {
-              const docId = change.doc.id;
-              if (processedNotifIds.has(docId)) return;
-              processedNotifIds.add(docId);
-              if (processedNotifIds.size > 200) {
-                const firstKey = processedNotifIds.values().next().value;
-                if (firstKey) processedNotifIds.delete(firstKey);
-              }
-
               const n = change.doc.data() as any;
               if (n.is_read) return;
 
-              const notifTime = getTimestampMs(n.created_at);
-              if (Date.now() - notifTime > 120000) return;
+              const notifTime = n.created_at ? new Date(n.created_at).getTime() : Date.now();
+              if (Date.now() - notifTime > 90000) return;
 
               let senderName = n.sender_name;
               let senderUsername = n.sender_username;
               let senderAvatar = n.sender_avatar;
 
-              if (!senderName || !senderUsername) {
-                if (n.sender_id) {
-                  try {
-                    const { localDB } = await import('@/lib/dexie');
-                    const cached = await localDB.users.get(n.sender_id);
-                    if (cached) {
-                      senderName = senderName || cached.display_name || cached.name || cached.username;
-                      senderUsername = senderUsername || cached.username;
-                      senderAvatar = senderAvatar || cached.avatar_url;
-                    } else {
-                      const pDoc = await getDoc(doc(db, 'profiles', n.sender_id));
-                      if (pDoc.exists()) {
-                        const pData = pDoc.data();
-                        senderName = senderName || pData.display_name || pData.username;
-                        senderUsername = senderUsername || pData.username;
-                        senderAvatar = senderAvatar || pData.avatar_url;
-                      }
-                    }
-                  } catch (e) {}
-                }
+              if (!senderName && n.sender_id) {
+                try {
+                  const pDoc = await getDoc(doc(db, 'profiles', n.sender_id));
+                  if (pDoc.exists()) {
+                    const pData = pDoc.data();
+                    senderName = pData.display_name || pData.username;
+                    senderUsername = pData.username;
+                    senderAvatar = pData.avatar_url;
+                  }
+                } catch (e) {}
               }
 
               senderName = senderName || 'Someone';
@@ -771,8 +718,13 @@ export const useGlobalStore = create<GlobalState>()(
         });
 
         return () => {
-          if (notifUnsub) notifUnsub();
-          if (deletedUnsub) deletedUnsub();
+          if (notifUnsub) {
+            notifUnsub();
+            notifUnsub = null;
+          }
+          if (deletedUnsub) {
+            deletedUnsub();
+          }
         };
       },
 

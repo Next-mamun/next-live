@@ -24,6 +24,7 @@
     "@tensorflow/tfjs": "^4.22.0",
     "@upstash/redis": "^1.37.0",
     "browser-image-compression": "^2.0.2",
+    "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "dexie": "^4.4.5",
     "dexie-react-hooks": "^4.4.0",
@@ -52,6 +53,7 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^5.0.6",
     "@types/node": "^22.14.0",
     "@types/react-dropzone": "^4.2.2",

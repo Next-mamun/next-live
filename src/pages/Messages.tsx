@@ -1,6 +1,6 @@
 import { localDB } from "@/lib/dexie";
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock } from 'lucide-react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
@@ -599,9 +599,44 @@ const Messages: React.FC = () => {
   const docInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const { id: routeChatId } = useParams<{ id?: string }>();
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const targetUserId = location.state?.userId || searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId');
 
+    if (targetUserId) {
+      const fetchTarget = async () => {
+        try {
+          const { localDB } = await import('@/lib/dexie');
+          const localUser = await localDB.users.get(targetUserId);
+          if (localUser) {
+            setSelectedChat({ id: localUser.id, ...localUser });
+            setIsChatOpen(true);
+            setActiveChatId(localUser.id);
+          }
 
+          const docSnap = await getDoc(doc(db, 'profiles', targetUserId));
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setSelectedChat({ id: docSnap.id, ...data });
+            setIsChatOpen(true);
+            setActiveChatId(docSnap.id);
+            localDB.users.put({ id: docSnap.id, username: data?.username || docSnap.id, ...data } as any).catch(() => {});
+          } else {
+            const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
+            if (groupSnap.exists()) {
+              setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
+              setIsChatOpen(true);
+              setActiveChatId(groupSnap.id);
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to open chat from deep link / location state:", e);
+        }
+      };
+      fetchTarget();
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location.state, location.search, location.pathname, navigate, setIsChatOpen, setActiveChatId]);
 
   useEffect(() => {
     const handleUndelete = () => {
@@ -899,56 +934,8 @@ const Messages: React.FC = () => {
     },
     enabled: !!currentUser,
     staleTime: 60 * 1000, 
+    gcTime: Infinity,
   });
- 
-  useEffect(() => {
-    const searchParams = new URLSearchParams(location.search);
-    const targetUserId = routeChatId || location.state?.userId || searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId');
-
-    if (targetUserId) {
-      // 1. Instant match in already loaded contacts (0ms latency)
-      const foundInContacts = contacts.find((c: any) => c.id === targetUserId);
-      if (foundInContacts) {
-        setSelectedChat(foundInContacts);
-        setIsChatOpen(true);
-        setActiveChatId(foundInContacts.id);
-        return;
-      }
-
-      // 2. Fast match in local Dexie database
-      localDB.users.get(targetUserId).then((cached) => {
-        if (cached) {
-          setSelectedChat({ id: cached.id, ...cached });
-          setIsChatOpen(true);
-          setActiveChatId(cached.id);
-        }
-      }).catch(() => {});
-
-      // 3. Network fetch fallback from Firestore or Supabase
-      const fetchTarget = async () => {
-        try {
-          const docSnap = await getDoc(doc(db, 'profiles', targetUserId));
-          if (docSnap.exists()) {
-            const profileData = { id: docSnap.id, ...docSnap.data() };
-            setSelectedChat(profileData);
-            setIsChatOpen(true);
-            setActiveChatId(docSnap.id);
-            localDB.users.put(profileData as any).catch(() => {});
-          } else {
-            const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
-            if (groupSnap.exists()) {
-              setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
-              setIsChatOpen(true);
-              setActiveChatId(groupSnap.id);
-            }
-          }
-        } catch (e) {
-          console.warn("Failed to open chat from deep link / location state:", e);
-        }
-      };
-      fetchTarget();
-    }
-  }, [routeChatId, location.state, location.search, contacts, setIsChatOpen, setActiveChatId]);
 
   const [messages, setMessages] = useState<any[]>([]);
 
@@ -1079,26 +1066,20 @@ const Messages: React.FC = () => {
         queryClient.invalidateQueries({ queryKey: ['totalUnread'] });
       }
 
-      finalDataToProcess.forEach(async (m: any) => {
-        if (m.sender_id === selectedChat.id && !m.is_read) {
-          sendP2PSignal({ type: 'SEEN', msgId: m.id });
-          const { isSupabaseActive, triggerFirebaseFallback } = useGlobalStore.getState();
-          if (isSupabaseActive) {
-            try {
-              const { error } = await supabase.from('messages').update({ is_read: true }).eq('id', m.id);
-              if (error) throw error;
-            } catch(e) {
-              console.warn("Supabase mark as read failed, triggering fallback", e);
-              triggerFirebaseFallback();
-            }
-          }
-          if (!useGlobalStore.getState().isSupabaseActive) {
-            try {
-              await updateDoc(doc(db, 'messages', m.id), { is_read: true });
-            } catch(e) {}
-          }
+      const unreadIds = finalDataToProcess
+        .filter((m: any) => m.sender_id === selectedChat.id && !m.is_read)
+        .map((m: any) => m.id);
+
+      if (unreadIds.length > 0) {
+        sendP2PSignal({ type: 'SEEN', msgIds: unreadIds });
+        const { isSupabaseActive } = useGlobalStore.getState();
+        if (isSupabaseActive) {
+          Promise.resolve(supabase.from('messages').update({ is_read: true }).in('id', unreadIds)).catch(console.warn);
         }
-      });
+        unreadIds.forEach(id => {
+          updateDoc(doc(db, 'messages', id), { is_read: true }).catch(() => {});
+        });
+      }
     };
 
     let realtimeChannel: any = null;
@@ -1107,67 +1088,107 @@ const Messages: React.FC = () => {
     const initializeChat = async () => {
       const chatId = [currentUser.id, selectedChat.id].sort().join('_');
 
-      // FETCH INITIAL DATA ONCE TO AVOID DUPLICATE ONSNAPSHOT BILLING
+      // 1. WhatsApp-Style Dexie IndexedDB 0ms Instant Cache Load
+      let cachedMessages: any[] = [];
       try {
-        let docs: any[] = [];
-        
-        // 1. Try local cache first for instant load
-        try {
-          const { localDB } = await import('@/lib/dexie');
-          let localMsgs = [];
-          if (selectedChat.is_group) {
-             localMsgs = await localDB.messages
-              .filter((m: any) => m.receiver_id === selectedChat.id)
-              .toArray();
-          } else {
-             localMsgs = await localDB.messages
-              .filter((m: any) => (m.sender_id === currentUser.id && m.receiver_id === selectedChat.id) || (m.sender_id === selectedChat.id && m.receiver_id === currentUser.id))
-              .toArray();
-          }
-          if (localMsgs.length > 0) {
-            mergeIncomingMessages(localMsgs);
-            docs = localMsgs;
-          }
-        } catch (e) {}
-
-        const { isSupabaseActive } = useGlobalStore.getState();
-        let fetchedFromRemote = false;
-
-        // 2. Fetch from Supabase (Zero Firebase Reads)
-        if (isSupabaseActive) {
-          try {
-            let supaQuery = supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(100);
-            if (selectedChat.is_group) {
-              supaQuery = supaQuery.eq('receiver_id', selectedChat.id);
-            } else {
-              supaQuery = supaQuery.or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedChat.id}),and(sender_id.eq.${selectedChat.id},receiver_id.eq.${currentUser.id})`);
-            }
-            const { data, error } = await supaQuery;
-            if (!error && data) {
-              docs = data.reverse();
-              mergeIncomingMessages(docs);
-              fetchedFromRemote = true;
-            }
-          } catch (e) {}
+        const { localDB } = await import('@/lib/dexie');
+        if (selectedChat.is_group) {
+          cachedMessages = await localDB.messages
+            .filter((m: any) => m.receiver_id === selectedChat.id)
+            .toArray();
+        } else {
+          cachedMessages = await localDB.messages
+            .filter((m: any) => 
+              (m.sender_id === currentUser.id && m.receiver_id === selectedChat.id) || 
+              (m.sender_id === selectedChat.id && m.receiver_id === currentUser.id) ||
+              m.chat_id === chatId || m.chatId === chatId
+            )
+            .toArray();
         }
 
-        // 3. Fallback to Firebase ONLY if Supabase failed or inactive
-        if (!fetchedFromRemote) {
-          const qMsgs = selectedChat.is_group 
-            ? query(collection(db, 'messages'), where('receiver_id', '==', selectedChat.id), orderBy('created_at', 'desc'), limit(100))
-            : query(collection(db, 'messages'), or(and(where('sender_id', '==', currentUser.id), where('receiver_id', '==', selectedChat.id)), and(where('sender_id', '==', selectedChat.id), where('receiver_id', '==', currentUser.id))), orderBy('created_at', 'desc'), limit(100));
-          
-          const snap = await getDocs(qMsgs);
-          const fbDocs = snap.docs.map(d => ({ id: d.id, ...d.data() })).reverse();
-          mergeIncomingMessages(fbDocs);
+        if (cachedMessages.length > 0) {
+          cachedMessages.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+          mergeIncomingMessages(cachedMessages);
         }
-      } catch (err) {
-        console.warn("Messages initial fetch failed", err);
+      } catch (e) {
+        console.warn("Error reading local Dexie cache:", e);
       }
 
-      // No longer duplicate onSnapshot for messages here; useGlobalStore covers incoming.
+      // Determine latest cached timestamp for incremental/delta fetch
+      let lastTimestamp: string | null = null;
+      if (cachedMessages.length > 0) {
+        const latest = cachedMessages[cachedMessages.length - 1];
+        if (latest && latest.created_at) {
+          lastTimestamp = typeof latest.created_at === 'string' ? latest.created_at : new Date(latest.created_at).toISOString();
+        }
+      }
 
-      // 3. Setup Listener
+      // 2. Incremental Remote Sync (Zero duplicate loading; only load delta if cached)
+      const { isSupabaseActive } = useGlobalStore.getState();
+      let fetchedRemote = false;
+
+      if (isSupabaseActive) {
+        try {
+          let supaQuery = supabase.from('messages').select('*');
+          if (selectedChat.is_group) {
+            supaQuery = supaQuery.eq('receiver_id', selectedChat.id);
+          } else {
+            supaQuery = supaQuery.or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedChat.id}),and(sender_id.eq.${selectedChat.id},receiver_id.eq.${currentUser.id})`);
+          }
+
+          if (lastTimestamp) {
+            // Delta fetch: Only pull messages newer than the newest cached message
+            supaQuery = supaQuery.gt('created_at', lastTimestamp).order('created_at', { ascending: true });
+          } else {
+            // First time load: Fetch latest 50
+            supaQuery = supaQuery.order('created_at', { ascending: false }).limit(50);
+          }
+
+          const { data: supaMsgs, error: supaErr } = await supaQuery;
+          if (!supaErr && supaMsgs) {
+            const rawList = lastTimestamp ? supaMsgs : supaMsgs.reverse();
+            const parsed = rawList.map((m: any) => ({
+              ...m,
+              content: m.content || m.text,
+              chat_id: chatId,
+              chatId: chatId,
+              created_at: m.created_at || new Date().toISOString()
+            }));
+
+            if (parsed.length > 0) {
+              mergeIncomingMessages(parsed);
+              import('@/lib/dexie').then(({ localDB }) => {
+                localDB.messages.bulkPut(parsed).catch(console.warn);
+              });
+            }
+            fetchedRemote = true;
+          }
+        } catch (err) {
+          console.warn("Supabase conversation fetch error:", err);
+        }
+      }
+
+      // 3. Fallback to Firebase only if Supabase is offline and no cached messages
+      if (!fetchedRemote && !useGlobalStore.getState().isSupabaseActive && cachedMessages.length === 0) {
+        try {
+          const qMsgs = selectedChat.is_group 
+            ? query(collection(db, 'messages'), where('receiver_id', '==', selectedChat.id), limit(50))
+            : query(collection(db, 'messages'), or(and(where('sender_id', '==', currentUser.id), where('receiver_id', '==', selectedChat.id)), and(where('sender_id', '==', selectedChat.id), where('receiver_id', '==', currentUser.id))), limit(50));
+          
+          const snap = await getDocs(qMsgs);
+          const fbDocs = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a: any, b: any) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+          if (fbDocs.length > 0) {
+            mergeIncomingMessages(fbDocs);
+            import('@/lib/dexie').then(({ localDB }) => {
+              localDB.messages.bulkPut(fbDocs as any[]).catch(console.warn);
+            });
+          }
+        } catch (fbErr) {
+          console.warn("Firebase fetch fallback error:", fbErr);
+        }
+      }
+
+      // 4. Setup Realtime Channel with WebSocket Broadcast & Postgres Changes
       if (useGlobalStore.getState().isSupabaseActive) {
         const channelId = `chat:${chatId}`;
         realtimeChannel = supabase.channel(channelId, {
@@ -1186,13 +1207,14 @@ const Messages: React.FC = () => {
               table: 'messages',
             },
             (payload: any) => {
-              console.log('📡 [Chat Realtime] Event Received:', payload.eventType, payload.new);
               if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
                 const item = payload.new;
-                if (
-                  selectedChat.is_group ? item.receiver_id === selectedChat.id : ((item.sender_id === currentUser.id && item.receiver_id === selectedChat.id) || (item.sender_id === selectedChat.id && item.receiver_id === currentUser.id))
-                ) {
-                  console.log('✅ [Chat Realtime] Matching message merged into active chat:', item.id);
+                if (!item) return;
+                const isMatch = selectedChat.is_group 
+                  ? item.receiver_id === selectedChat.id 
+                  : ((item.sender_id === currentUser.id && item.receiver_id === selectedChat.id) || (item.sender_id === selectedChat.id && item.receiver_id === currentUser.id));
+
+                if (isMatch) {
                   const formatted = {
                     id: item.id,
                     ...item,
@@ -1202,8 +1224,13 @@ const Messages: React.FC = () => {
                     created_at: item.created_at || new Date().toISOString()
                   };
                   mergeIncomingMessages([formatted]);
-                } else {
-                  console.log('ℹ️ [Chat Realtime] Ignored message (does not belong to current chat):', item);
+                  import('@/lib/dexie').then(({ localDB }) => {
+                    localDB.messages.put(formatted).catch(console.warn);
+                  });
+                  if (item.sender_id === selectedChat.id && !item.is_read) {
+                    sendP2PSignal({ type: 'SEEN', msgIds: [item.id] });
+                    Promise.resolve(supabase.from('messages').update({ is_read: true }).eq('id', item.id)).catch(console.warn);
+                  }
                 }
               } else if (payload.eventType === 'DELETE') {
                 const deletedId = payload.old?.id;
@@ -1217,111 +1244,91 @@ const Messages: React.FC = () => {
             }
           )
           .on('broadcast', { event: 'chat_signal' }, (payload: any) => {
-            const data = payload.payload;
-            if (data?.sender_id === selectedChat.id) {
-              if (data.type === 'TYPING') {
-                setOtherUserTyping(Boolean(data.isTyping));
-                if (remoteTypingTimeoutRef.current) clearTimeout(remoteTypingTimeoutRef.current);
-                if (data.isTyping) {
-                  remoteTypingTimeoutRef.current = setTimeout(() => setOtherUserTyping(false), 3000);
-                }
-              } else if (data.type === 'SEEN') {
-                setMessages(prev => prev.map(m => m.id === data.msgId ? { ...m, p2p_seen: true } : m));
-              } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {
-                setLiveStatus('receiving_proposal');
-              } else if (data.type === 'LIVE_PROPOSAL_ACCEPTED') {
-                setLiveStatus('active');
-                setLiveText('');
-              } else if (data.type === 'LIVE_PROPOSAL_REJECTED' || data.type === 'LIVE_STOP') {
-                setLiveStatus('inactive');
-                setLiveText('');
-              } else if (data.type === 'LIVE_TEXT_STREAM') {
-                setLiveText(data.text);
+            const data = payload?.payload;
+            if (!data) return;
+
+            if (data.type === 'TYPING' && data.sender_id === selectedChat.id) {
+              setOtherUserTyping(Boolean(data.isTyping));
+              if (remoteTypingTimeoutRef.current) clearTimeout(remoteTypingTimeoutRef.current);
+              if (data.isTyping) {
+                remoteTypingTimeoutRef.current = setTimeout(() => setOtherUserTyping(false), 3000);
               }
+            } else if (data.type === 'SEEN') {
+              // Real-Time Red Double Check Mark activation
+              const seenIds: string[] = Array.isArray(data.msgIds) ? data.msgIds : (data.msgId ? [data.msgId] : []);
+              if (seenIds.length > 0) {
+                const setObj = new Set(seenIds);
+                setMessages(prev => prev.map(m => (setObj.has(m.id) || setObj.has(m.tempId)) ? { ...m, is_read: true, p2p_seen: true } : m));
+                import('@/lib/dexie').then(({ localDB }) => {
+                  seenIds.forEach(id => localDB.messages.update(id, { is_read: true }).catch(() => {}));
+                });
+              } else {
+                setMessages(prev => prev.map(m => m.sender_id === currentUser.id ? { ...m, is_read: true, p2p_seen: true } : m));
+              }
+            } else if (data.type === 'DELETE_MESSAGE') {
+              // Instant real-time delete across peers
+              const delId = data.msgId;
+              if (delId) {
+                setMessages(prev => prev.filter(m => m.id !== delId && m.tempId !== delId));
+                import('@/lib/dexie').then(({ localDB }) => {
+                  localDB.messages.delete(delId).catch(console.warn);
+                });
+              }
+            } else if (data.type === 'NEW_MESSAGE_BROADCAST') {
+              // Low-latency direct peer message reception
+              if (data.message && data.message.sender_id === selectedChat.id) {
+                const incoming = {
+                  ...data.message,
+                  chat_id: chatId,
+                  chatId: chatId
+                };
+                mergeIncomingMessages([incoming]);
+                import('@/lib/dexie').then(({ localDB }) => {
+                  localDB.messages.put(incoming).catch(console.warn);
+                });
+                sendP2PSignal({ type: 'SEEN', msgIds: [incoming.id] });
+              }
+            } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {
+              setLiveStatus('receiving_proposal');
+            } else if (data.type === 'LIVE_PROPOSAL_ACCEPTED') {
+              setLiveStatus('active');
+              setLiveText('');
+            } else if (data.type === 'LIVE_PROPOSAL_REJECTED' || data.type === 'LIVE_STOP') {
+              setLiveStatus('inactive');
+              setLiveText('');
+            } else if (data.type === 'LIVE_TEXT_STREAM') {
+              setLiveText(data.text);
             }
           })
           .subscribe((status: string, err: any) => {
             console.log(`🔌 [Chat Realtime Channel Status]: ${status}`, err || '');
-            // Supabase auto-reconnects on TIMED_OUT or CHANNEL_ERROR. 
-            // We no longer manually tear down and recreate the channel because it causes loops and desyncs.
           });
-      } else {
-        activeChannelRef.current = { isFirebase: true, unsub: () => { if (typeof firebaseUnsub === "function") if (typeof firebaseUnsub === "function") firebaseUnsub(); } };
-      }
 
-      if (useGlobalStore.getState().isSupabaseActive) {
         activeChannelRef.current = {
           isCombined: true,
           send: (payload: any) => {
-            if (realtimeChannel && realtimeChannel.state === "joined") {
-              realtimeChannel.send(payload);
+            if (realtimeChannel) {
+              try {
+                realtimeChannel.send(payload);
+              } catch (e) {
+                console.warn("Realtime send warning:", e);
+              }
             }
           },
           unsub: () => {
             if (typeof firebaseUnsub === "function") firebaseUnsub();
-            supabase.removeChannel(realtimeChannel);
+            if (realtimeChannel) supabase.removeChannel(realtimeChannel);
+          }
+        };
+      } else {
+        activeChannelRef.current = {
+          isFirebase: true,
+          send: () => {},
+          unsub: () => {
+            if (typeof firebaseUnsub === "function") firebaseUnsub();
           }
         };
       }
-
-      
-      // 1. Load local messages first for instant UI
-      try {
-        const locals = await localDB.messages
-          .filter((m: any) => selectedChat.is_group ? (m.receiver_id === selectedChat.id) : (m.chat_id === chatId || m.chatId === chatId || (m.sender_id === currentUser.id && m.receiver_id === selectedChat.id) || (m.receiver_id === currentUser.id && m.sender_id === selectedChat.id)))
-          .toArray();
-        if (locals.length > 0) mergeIncomingMessages(locals);
-      } catch (e) {
-        console.warn("Error reading local messages:", e);
-      }
-
-      // 2. Fetch recent conversation messages
-      const { isSupabaseActive, triggerFirebaseFallback } = useGlobalStore.getState();
-
-      if (isSupabaseActive) {
-        try {
-          let supaQuery = supabase.from('messages').select('*');
-          if (selectedChat.is_group) {
-            supaQuery = supaQuery.eq('receiver_id', selectedChat.id);
-          } else {
-            supaQuery = supaQuery.or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedChat.id}),and(sender_id.eq.${selectedChat.id},receiver_id.eq.${currentUser.id})`);
-          }
-          const { data: supaMsgs, error: supaErr } = await supaQuery.order('created_at', { ascending: true }).limit(100);
-  
-          if (supaErr) throw supaErr;
-          if (supaMsgs) {
-            const parsed = supaMsgs.map(m => ({
-              ...m,
-              content: m.content || m.text,
-              chat_id: chatId,
-              chatId: chatId,
-              created_at: m.created_at || new Date().toISOString()
-            }));
-            mergeIncomingMessages(parsed);
-          }
-        } catch (err) {
-          console.warn("Supabase fetch conversation error. Triggering failover...", err);
-          triggerFirebaseFallback();
-        }
-      }
-
-      if (!useGlobalStore.getState().isSupabaseActive) {
-        // Fallback fetch & realtime
-        try {
-          const qMsgs = selectedChat.is_group 
-          ? query(collection(db, 'messages'), where('receiver_id', '==', selectedChat.id), orderBy('created_at', 'asc'), limit(100))
-          : query(collection(db, 'messages'), or(and(where('sender_id', '==', currentUser.id), where('receiver_id', '==', selectedChat.id)), and(where('sender_id', '==', selectedChat.id), where('receiver_id', '==', currentUser.id))), orderBy('created_at', 'asc'), limit(100));
-          
-          firebaseUnsub = onSnapshot(qMsgs, (snap) => {
-            const parsed = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-            mergeIncomingMessages(parsed);
-          });
-        } catch(e) {
-          console.warn("Firebase fetch conversation fallback error:", e);
-        }
-      }
-
-      
     };
 
     initializeChat();
@@ -1752,21 +1759,12 @@ const Messages: React.FC = () => {
     const chatId = [currentUser!.id, selectedChat.id].sort().join('_');
     const localCreatedAt = new Date().toISOString();
 
-    const senderUsername = currentUser?.username || (currentUser as any)?.email?.split('@')[0] || '';
-    const senderName = currentUser?.display_name || (currentUser as any)?.displayName || currentUser?.username || senderUsername || 'User';
-    const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
-    const senderTitle = `${senderName}${usernameTag}`;
-    const senderAvatar = currentUser?.avatar_url || (currentUser as any)?.photoURL || '';
-
     const newMessage: any = {
        id: msgRefId, // Use real ID
        chat_id: chatId, // Normalize chat_id
        chatId: chatId,
        sender_id: currentUser!.id,
        receiver_id: selectedChat.id,
-       sender_name: senderName,
-       sender_username: senderUsername,
-       sender_avatar: senderAvatar,
        content: JSON.stringify(payloadExtra),
        created_at: localCreatedAt, // Use local string initially to match exactly in UI and DB before server sync
        local_created_at: localCreatedAt,
@@ -1824,14 +1822,21 @@ const Messages: React.FC = () => {
       
       setMessages(prev => prev.map(m => m.id === msgRefId ? { ...m, is_pending: false } : m));
       
+      // Instant peer-to-peer delivery over Supabase Broadcast
+      sendP2PSignal({ type: 'NEW_MESSAGE_BROADCAST', message: optimisticMsg });
+      
       // Trigger Push & In-App Notification with username & deep link
       try {
+        const senderName = currentUser?.display_name || currentUser?.username || 'User';
+        const senderUsername = currentUser?.username || '';
+        const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+        const senderTitle = `${senderName}${usernameTag}`;
         const notifPayload = {
           type: 'message',
           sender_id: currentUser?.id,
           sender_name: senderName,
           sender_username: senderUsername,
-          sender_avatar: senderAvatar,
+          sender_avatar: currentUser?.avatar_url || '',
           chat_id: selectedChat.id,
           url: `/messages?user=${currentUser?.id}`,
           content: messageText
@@ -1843,7 +1848,7 @@ const Messages: React.FC = () => {
             sender_id: currentUser?.id,
             sender_name: senderName,
             sender_username: senderUsername,
-            sender_avatar: senderAvatar,
+            sender_avatar: currentUser?.avatar_url || '',
             type: 'message',
             content: messageText,
             is_read: false,
@@ -2086,38 +2091,40 @@ const Messages: React.FC = () => {
     const id = deleteConfirmId;
     setDeleteConfirmId(null);
 
-    const msgObj = messages.find((m: any) => m.id === id);
-    const isMine = msgObj?.sender_id === currentUser?.id;
-
-    // Optimistic delete from UI state
-    setMessages((prev: any[]) => prev.filter(msg => msg.id !== id));
+    // 1. Instant optimistic delete from UI state
+    setMessages((prev: any[]) => prev.filter(msg => msg.id !== id && msg.tempId !== id));
     
     if (selectedChat) {
       queryClient.setQueryData(['messages', selectedChat.id], (oldData: any[]) => {
         if (!oldData) return oldData;
-        return oldData.filter(msg => msg.id !== id);
+        return oldData.filter(msg => msg.id !== id && msg.tempId !== id);
       });
     }
 
+    // 2. Broadcast delete event to peer immediately for instant 0ms removal
+    sendP2PSignal({ type: 'DELETE_MESSAGE', msgId: id });
+
+    // 3. Delete locally from Dexie IndexedDB
     try {
-      // Safe Deletion Logic: Delete locally from Dexie
-      try {
-        const { localDB } = await import('@/lib/dexie');
-        await localDB.messages.delete(id);
-      } catch (e) {}
+      const { localDB } = await import('@/lib/dexie');
+      await localDB.messages.delete(id);
+    } catch (e) {}
 
-      // Delete from Supabase messages table
-      await supabase.from('messages').delete().eq('id', id);
+    // 4. Delete from Supabase and Firebase in parallel
+    try {
+      await Promise.allSettled([
+        supabase.from('messages').delete().eq('id', id),
+        deleteDoc(doc(db, 'messages', id)).catch(() => {})
+      ]);
 
-      toast.success("Message deleted!");
+      toast.success("Message deleted");
 
       if (selectedChat && currentUser) {
         const cacheKey = `messages_cache_${[currentUser.id, selectedChat.id].sort().join('_')}`;
         try { await redis.del(cacheKey); } catch (e) {}
       }
     } catch(error: any) { 
-       console.error(error);
-       toast.error("Failed to delete message: " + error.message);
+       console.error("Delete message error:", error);
     }
   };
 
@@ -2127,6 +2134,9 @@ const Messages: React.FC = () => {
     setDeleteConfirmId(null);
     if (!idsToDelete.length || !currentUser) return;
 
+    // 1. Instant optimistic delete from UI state
+    setMessages((prev: any[]) => prev.filter(msg => !idsToDelete.includes(msg.id)));
+
     if (selectedChat) {
       queryClient.setQueryData(['messages', selectedChat.id], (oldData: any[]) => {
         if (!oldData) return oldData;
@@ -2135,13 +2145,13 @@ const Messages: React.FC = () => {
     }
 
     try {
-      // Update locally in Dexie
+      // 2. Delete locally from Dexie
       try {
         const { localDB } = await import('@/lib/dexie');
         await localDB.messages.bulkDelete(idsToDelete);
       } catch (e) {}
 
-      // Update in Supabase
+      // 3. Update in Supabase
       await supabase
         .from('messages')
         .update({ deleted_for: [currentUser.id] })
@@ -2161,6 +2171,9 @@ const Messages: React.FC = () => {
     setDeleteConfirmId(null);
     if (!idsToDelete.length) return;
 
+    // 1. Instant optimistic delete from UI state
+    setMessages((prev: any[]) => prev.filter(msg => !idsToDelete.includes(msg.id)));
+
     if (selectedChat) {
       queryClient.setQueryData(['messages', selectedChat.id], (oldData: any[]) => {
         if (!oldData) return oldData;
@@ -2168,17 +2181,23 @@ const Messages: React.FC = () => {
       });
     }
 
-    try {
-      // Delete or mark deleted in Supabase
-      await supabase
-        .from('messages')
-        .update({ deleted_for_everyone: true })
-        .in('id', idsToDelete);
+    // 2. Broadcast delete event to peer for each message
+    idsToDelete.forEach(id => {
+      sendP2PSignal({ type: 'DELETE_MESSAGE', msgId: id });
+    });
 
+    try {
+      // 3. Delete from Dexie
       try {
         const { localDB } = await import('@/lib/dexie');
         await localDB.messages.bulkDelete(idsToDelete);
       } catch (e) {}
+
+      // 4. Mark or delete in Supabase and Firebase
+      await Promise.allSettled([
+        supabase.from('messages').delete().in('id', idsToDelete),
+        Promise.all(idsToDelete.map(id => deleteDoc(doc(db, 'messages', id)).catch(() => {})))
+      ]);
 
       if (selectedChat && currentUser) {
         const cacheKey = `messages_cache_${[currentUser.id, selectedChat.id].sort().join('_')}`;
