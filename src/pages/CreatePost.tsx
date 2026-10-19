@@ -9,7 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useUpload } from '@/contexts/UploadContext';
 import { invalidatePostsCache } from '@/lib/redis';
 import { useContentFilter } from '@/hooks/useContentFilter';
-import { CameraStudioModal } from '@/components/camera/CameraStudioModal';
+import { CameraCapture } from '@/components/CameraCapture';
 
 const CreatePost = () => {
   const { currentUser } = useAuth();
@@ -530,7 +530,7 @@ const CreatePost = () => {
       </div>
 
       {showCamera && (
-        <CameraStudioModal
+        <CameraCapture
           onCapture={async (mediaDataUrl, type) => {
             setShowCamera(false);
             try {

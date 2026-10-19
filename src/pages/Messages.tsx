@@ -1,5 +1,5 @@
 import { localDB } from "@/lib/dexie";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock } from 'lucide-react';
@@ -599,44 +599,60 @@ const Messages: React.FC = () => {
   const docInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const openChatWithUserId = useCallback(async (targetUserId: string) => {
+    if (!targetUserId) return;
+    try {
+      const { localDB } = await import('@/lib/dexie');
+      const localUser = await localDB.users.get(targetUserId);
+      if (localUser) {
+        setSelectedChat({ id: localUser.id, ...localUser });
+        setIsChatOpen(true);
+        setActiveChatId(localUser.id);
+      }
+
+      const docSnap = await getDoc(doc(db, 'profiles', targetUserId));
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const disp = data.display_name || data.name || (data.username ? `@${data.username}` : 'User');
+        setSelectedChat({ id: docSnap.id, display_name: disp, name: disp, ...data });
+        setIsChatOpen(true);
+        setActiveChatId(docSnap.id);
+        localDB.users.put({ id: docSnap.id, username: data?.username || '', display_name: disp, ...data } as any).catch(() => {});
+      } else {
+        const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
+        if (groupSnap.exists()) {
+          setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
+          setIsChatOpen(true);
+          setActiveChatId(groupSnap.id);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to open chat with user:", e);
+    }
+  }, [setIsChatOpen, setActiveChatId]);
+
+  useEffect(() => {
+    const handleDirectOpen = (e: any) => {
+      const uId = e.detail?.userId;
+      if (uId) {
+        openChatWithUserId(uId);
+      }
+    };
+    window.addEventListener('open_chat_direct', handleDirectOpen);
+    return () => {
+      window.removeEventListener('open_chat_direct', handleDirectOpen);
+    };
+  }, [openChatWithUserId]);
+
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
     const targetUserId = location.state?.userId || searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId');
 
     if (targetUserId) {
-      const fetchTarget = async () => {
-        try {
-          const { localDB } = await import('@/lib/dexie');
-          const localUser = await localDB.users.get(targetUserId);
-          if (localUser) {
-            setSelectedChat({ id: localUser.id, ...localUser });
-            setIsChatOpen(true);
-            setActiveChatId(localUser.id);
-          }
-
-          const docSnap = await getDoc(doc(db, 'profiles', targetUserId));
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setSelectedChat({ id: docSnap.id, ...data });
-            setIsChatOpen(true);
-            setActiveChatId(docSnap.id);
-            localDB.users.put({ id: docSnap.id, username: data?.username || docSnap.id, ...data } as any).catch(() => {});
-          } else {
-            const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
-            if (groupSnap.exists()) {
-              setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
-              setIsChatOpen(true);
-              setActiveChatId(groupSnap.id);
-            }
-          }
-        } catch (e) {
-          console.warn("Failed to open chat from deep link / location state:", e);
-        }
-      };
-      fetchTarget();
+      openChatWithUserId(targetUserId);
       navigate(location.pathname, { replace: true, state: {} });
     }
-  }, [location.state, location.search, location.pathname, navigate, setIsChatOpen, setActiveChatId]);
+  }, [location.state, location.search, location.pathname, navigate, openChatWithUserId]);
 
   useEffect(() => {
     const handleUndelete = () => {
@@ -802,14 +818,15 @@ const Messages: React.FC = () => {
           if (profilesMap.has(cid)) continue;
           try {
             const cachedUser = await localDB.users.get(cid);
-            if (cachedUser && (cachedUser.display_name || cachedUser.name)) {
+            if (cachedUser && (cachedUser.display_name || cachedUser.name || cachedUser.username)) {
+              const disp = cachedUser.display_name || cachedUser.name || (cachedUser.username ? `@${cachedUser.username}` : 'User');
               profilesMap.set(cid, {
                 id: cid,
-                display_name: cachedUser.display_name || cachedUser.name,
-                name: cachedUser.display_name || cachedUser.name,
+                display_name: disp,
+                name: disp,
                 avatar_url: cachedUser.avatar_url || cachedUser.avatar || '',
                 avatar: cachedUser.avatar_url || cachedUser.avatar || '',
-                username: cachedUser.username || cid,
+                username: cachedUser.username || '',
                 is_verified: !!cachedUser.is_verified
               });
             } else {
@@ -820,22 +837,45 @@ const Messages: React.FC = () => {
           }
         }
 
-        // Fetch missing in safe chunks of 10
+        // Fetch missing in safe chunks of 10 from Firestore (primary) and Supabase (fallback)
         if (missingIds.length > 0) {
           for (let i = 0; i < missingIds.length; i += 10) {
             const chunk = missingIds.slice(i, i + 10);
             try {
-              if (isSupabaseActive) {
-                const { data } = await supabase.from('profiles').select('*').in('id', chunk);
+              // 1. Fetch from Firestore profiles (master Firebase database)
+              const q = query(collection(db, 'profiles'), where('__name__', 'in', chunk));
+              const snapshot = await getDocs(q);
+              snapshot.forEach(d => {
+                const data = d.data();
+                const dispName = data.display_name || data.name || (data.username ? `@${data.username}` : 'User');
+                const avUrl = data.avatar_url || data.avatar || '';
+                const profObj = {
+                  id: d.id,
+                  display_name: dispName,
+                  name: dispName,
+                  username: data.username || '',
+                  avatar_url: avUrl,
+                  avatar: avUrl,
+                  is_verified: !!data.is_verified,
+                  email: data.email
+                };
+                profilesMap.set(d.id, profObj);
+                localDB.users.put(profObj as any).catch(() => {});
+              });
+
+              // 2. Any still missing, check Supabase
+              const stillMissing = chunk.filter(id => !profilesMap.has(id));
+              if (stillMissing.length > 0 && isSupabaseActive) {
+                const { data } = await supabase.from('profiles').select('*').in('id', stillMissing);
                 if (data) {
                   data.forEach(d => {
-                    const dispName = d.display_name || d.name || 'User';
+                    const dispName = d.display_name || d.name || (d.username ? `@${d.username}` : 'User');
                     const avUrl = d.avatar_url || d.avatar || '';
                     const profObj = {
                       id: d.id,
                       display_name: dispName,
                       name: dispName,
-                      username: d.username || d.id,
+                      username: d.username || '',
                       avatar_url: avUrl,
                       avatar: avUrl,
                       is_verified: !!d.is_verified,
@@ -845,26 +885,6 @@ const Messages: React.FC = () => {
                     localDB.users.put(profObj as any).catch(() => {});
                   });
                 }
-              } else {
-                const q = query(collection(db, 'profiles'), where('__name__', 'in', chunk));
-                const snapshot = await getDocs(q);
-                snapshot.forEach(d => {
-                  const data = d.data();
-                  const dispName = data.display_name || data.name || 'User';
-                  const avUrl = data.avatar_url || data.avatar || '';
-                  const profObj = {
-                    id: d.id,
-                    display_name: dispName,
-                    name: dispName,
-                    username: data.username || d.id,
-                    avatar_url: avUrl,
-                    avatar: avUrl,
-                    is_verified: !!data.is_verified,
-                    email: data.email
-                  };
-                  profilesMap.set(d.id, profObj);
-                  localDB.users.put(profObj as any).catch(() => {});
-                });
               }
             } catch (pErr) {
               console.warn("Profiles chunk fetch error:", pErr);
@@ -879,7 +899,7 @@ const Messages: React.FC = () => {
             id: cid,
             display_name: 'User',
             name: 'User',
-            username: cid,
+            username: '',
             avatar_url: ''
           };
           const block = blocks.find(b => 

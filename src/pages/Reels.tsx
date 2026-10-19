@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Plus, X, Link as LinkIcon, ThumbsUp, MessageSquare, Share2, Music, UserPlus, Send, Video, Trash2, CheckCircle, Volume2, VolumeX, Eye, Play, Camera } from 'lucide-react';
+import { Plus, X, Link as LinkIcon, ThumbsUp, MessageSquare, Share2, Music, UserPlus, Send, Video, Trash2, CheckCircle, Volume2, VolumeX, Eye, Play } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
-import CameraFilterModal from '@/components/camera/CameraFilterModal';
 import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { db, auth as firebaseAuth } from '../lib/firebase';
 import { collection, query, where, orderBy, limit, getDocs, doc, getDoc, updateDoc, deleteDoc, addDoc, onSnapshot, startAfter, setDoc, increment } from 'firebase/firestore';
@@ -697,7 +696,6 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
   const [isLiked, setIsLiked] = useState(Boolean(reel.is_liked || reel.likes?.some((l: any) => l.user_id === currentUser?.id)));
   const [likesCount, setLikesCount] = useState(Number(reel.likesCount ?? (Array.isArray(reel.likes) ? reel.likes.length : 0)));
   const [showComments, setShowComments] = useState(false);
-  const [showCameraFilter, setShowCameraFilter] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [comments, setComments] = useState((reel.comments || []).slice().reverse());
   const [commentsCount, setCommentsCount] = useState(Number(reel.commentsCount ?? (Array.isArray(reel.comments) ? reel.comments.length : 0)));
@@ -1133,19 +1131,6 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
                   <span className="text-white/80 text-xs">@{creator.username}</span>
                 </div>
               </Link>
-
-              {/* Camera Filter Icon beside Creator */}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowCameraFilter(true);
-                }}
-                className="p-2 bg-gradient-to-r from-pink-500 via-rose-500 to-purple-600 hover:scale-110 active:scale-95 text-white rounded-full transition-all shadow-lg backdrop-blur-md flex items-center justify-center shrink-0 border border-white/30"
-                title="ক্যামেরা ফিল্টার (AR Camera Filters)"
-              >
-                <Camera size={16} />
-              </button>
             </div>
             
             <p className="text-white text-sm drop-shadow-md leading-snug line-clamp-2">{reel.content}</p>
@@ -1251,13 +1236,6 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
               </div>
             </form>
          </div>
-       )}
-
-       {showCameraFilter && (
-         <CameraFilterModal
-           isOpen={showCameraFilter}
-           onClose={() => setShowCameraFilter(false)}
-         />
        )}
     </div>
   );

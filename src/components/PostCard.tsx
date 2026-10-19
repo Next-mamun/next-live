@@ -1,5 +1,4 @@
-import { MoreVertical, Flag, Bookmark, Camera } from 'lucide-react';
-import CameraFilterModal from '@/components/camera/CameraFilterModal';
+import { MoreVertical, Flag, Bookmark } from 'lucide-react';
 
 import React, { useState, useEffect, useRef } from 'react';
 import { ThumbsUp, MessageSquare, Trash2, Eye, Send, MessageCircle, Share2, Clapperboard } from 'lucide-react';
@@ -44,7 +43,6 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
   const [commentsCount, setCommentsCount] = useState(post.comment_count !== undefined ? post.comment_count : (post.comments?.length || 0));
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
   const [hasFetchedComments, setHasFetchedComments] = useState(false);
-  const [showCameraFilter, setShowCameraFilter] = useState(false);
   
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -433,18 +431,6 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
               {post.profiles?.display_name || post.profiles?.name || 'User'}
               {post.profiles?.is_verified && <VerifiedBadge />}
               {post.category && <span className="text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded-full border border-orange-100 dark:border-orange-800">{post.category}</span>}
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setShowCameraFilter(true);
-                }}
-                className="p-1 hover:bg-pink-50 dark:hover:bg-pink-900/30 text-pink-500 rounded-full transition-transform hover:scale-110 active:scale-95 ml-1"
-                title="ক্যামেরা ফিল্টার (AR Camera Filter)"
-              >
-                <Camera size={15} />
-              </button>
             </p>
             <p className="text-[12px] text-gray-500 dark:text-gray-400 font-medium">{formatTime(post.created_at || new Date().toISOString(), { showYear: true })}</p>
           </div>
@@ -631,13 +617,6 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
             </div>
           </div>
         </div>
-      )}
-
-      {showCameraFilter && (
-        <CameraFilterModal
-          isOpen={showCameraFilter}
-          onClose={() => setShowCameraFilter(false)}
-        />
       )}
     </div>
   );

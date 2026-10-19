@@ -4,7 +4,8 @@ import { X, Camera, Video, RotateCcw, Check, Scissors, Type, Smile, Download, Cr
 import Draggable from 'react-draggable';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 import Cropper from 'react-easy-crop';
-import { CameraStudioModal } from './camera/CameraStudioModal';
+import { CameraCapture } from './CameraCapture';
+export { CameraCapture };
 
 interface MediaEditorProps {
   mediaUrl: string;
@@ -479,13 +480,4 @@ export const MediaEditor: React.FC<MediaEditorProps> = ({ mediaUrl, mediaType, o
       <canvas ref={canvasRef} className="hidden" />
     </div>
   );
-};
-
-interface CameraCaptureProps {
-  onCapture: (mediaUrl: string, type: 'image' | 'video') => void;
-  onCancel: () => void;
-}
-
-export const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onCancel }) => {
-  return <CameraStudioModal onCapture={onCapture} onCancel={onCancel} />;
 };

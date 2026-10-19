@@ -93,6 +93,12 @@ const AppLayout: React.FC = () => {
       const title = payload.notification?.title || payload.data?.title || 'New Notification';
       const body = payload.notification?.body || payload.data?.body || 'You have a new message';
 
+      const { isChatOpen, activeChatId } = useGlobalStore.getState();
+      if (payload.data?.type === 'message' && isChatOpen && activeChatId === senderId) {
+        playNotificationSound();
+        return;
+      }
+
       playNotificationSound();
       showInAppNotificationToast({
         title,
@@ -112,6 +118,43 @@ const AppLayout: React.FC = () => {
       }
     };
   }, []);
+
+  // Instant In-App Realtime Notification Listener (Sub-100ms delivery)
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let channel: any;
+    import('@/lib/supabase').then(({ supabase }) => {
+      channel = supabase.channel(`user_notifications_${currentUser.id}`)
+        .on('broadcast', { event: 'IN_APP_NOTIFICATION' }, (event) => {
+          const payload = event.payload;
+          if (!payload) return;
+          const { isChatOpen, activeChatId } = useGlobalStore.getState();
+          const senderId = payload.data?.sender_id;
+          if (payload.data?.type === 'message' && isChatOpen && activeChatId === senderId) {
+            playNotificationSound();
+            return;
+          }
+          const targetUrl = payload.data?.url || (senderId ? `/messages?user=${senderId}` : '/');
+          showInAppNotificationToast({
+            title: payload.title || 'New Notification',
+            body: payload.body || 'You received a notification',
+            avatar: payload.data?.sender_avatar,
+            url: targetUrl,
+            type: payload.data?.type,
+            senderId
+          });
+        })
+        .subscribe();
+    });
+
+    return () => {
+      if (channel) {
+        import('@/lib/supabase').then(({ supabase }) => {
+          supabase.removeChannel(channel);
+        });
+      }
+    };
+  }, [currentUser?.id]);
 
   // Automatically reset isChatOpen if user navigates away from messages
   useEffect(() => {

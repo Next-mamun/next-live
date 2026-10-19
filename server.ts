@@ -157,17 +157,37 @@ async function startServer() {
     }
 
     try {
+      const stringData: Record<string, string> = {};
+      if (data && typeof data === 'object') {
+        for (const [key, val] of Object.entries(data)) {
+          if (val !== undefined && val !== null) {
+            stringData[key] = typeof val === 'string' ? val : String(val);
+          }
+        }
+      }
+
+      const notifTitle = String(title || 'New Notification');
+      const notifBody = String(body || '');
+      const targetUrl = stringData.url || (stringData.sender_id ? `/messages?user=${stringData.sender_id}` : '/messages');
+
       const response = await admin.messaging().send({
         token,
         notification: {
-          title,
-          body,
+          title: notifTitle,
+          body: notifBody,
         },
-        data: data || {},
+        data: stringData,
         android: {
           priority: 'high',
           notification: {
-            sound: 'default'
+            title: notifTitle,
+            body: notifBody,
+            sound: 'default',
+            priority: 'max',
+            channelId: 'high_importance_channel',
+            defaultSound: true,
+            defaultVibrateTimings: true,
+            clickAction: 'FLUTTER_NOTIFICATION_CLICK'
           }
         },
         webpush: {
@@ -175,8 +195,17 @@ async function startServer() {
             Urgency: 'high'
           },
           notification: {
+            title: notifTitle,
+            body: notifBody,
             requireInteraction: true,
-            icon: '/favicon.ico'
+            icon: stringData.sender_avatar || '/favicon.ico',
+            badge: '/favicon.ico',
+            tag: stringData.chat_id || stringData.sender_id || 'next_notification',
+            renotify: true,
+            data: stringData
+          },
+          fcmOptions: {
+            link: targetUrl
           }
         }
       });

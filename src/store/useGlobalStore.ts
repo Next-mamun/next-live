@@ -69,7 +69,7 @@ const handleIncomingMessageNotification = async (
   if (msg.is_read) return;
 
   const msgTime = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
-  if (Date.now() - msgTime > 90000) return;
+  if (Math.abs(Date.now() - msgTime) > 15 * 60 * 1000) return;
 
   notifiedMessageIds.add(msg.id);
   if (notifiedMessageIds.size > 200) {
@@ -92,24 +92,24 @@ const handleIncomingMessageNotification = async (
       const { localDB } = await import('@/lib/dexie');
       const cached = await localDB.users.get(msg.sender_id);
       if (cached) {
-        senderName = cached.display_name || cached.name || cached.username;
+        senderName = cached.display_name || cached.name || (cached.username ? `@${cached.username}` : 'User');
         senderUsername = cached.username;
         senderAvatar = cached.avatar_url || cached.avatar;
       } else {
         const snap = await getDoc(doc(db, 'profiles', msg.sender_id));
         if (snap.exists()) {
           const p = snap.data();
-          senderName = p.display_name || p.username;
+          senderName = p.display_name || p.name || (p.username ? `@${p.username}` : 'User');
           senderUsername = p.username;
           senderAvatar = p.avatar_url;
-          localDB.users.put({ id: snap.id, username: p.username || '', display_name: p.display_name, avatar_url: p.avatar_url }).catch(() => {});
+          localDB.users.put({ id: snap.id, username: p.username || '', display_name: senderName, avatar_url: p.avatar_url }).catch(() => {});
         }
       }
     } catch (e) {}
   }
 
-  senderName = senderName || 'Someone';
-  const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+  senderName = senderName || 'User';
+  const usernameTag = (senderUsername && senderUsername !== msg.sender_id) ? ` (@${senderUsername})` : '';
   const title = `${senderName}${usernameTag}`;
   const body = msg.content || (msg.media_type ? `Sent a ${msg.media_type}` : 'Sent a message');
   const targetUrl = `/messages?user=${msg.sender_id}`;
@@ -621,7 +621,7 @@ export const useGlobalStore = create<GlobalState>()(
               if (n.is_read) return;
 
               const notifTime = n.created_at ? new Date(n.created_at).getTime() : Date.now();
-              if (Date.now() - notifTime > 90000) return;
+              if (Math.abs(Date.now() - notifTime) > 15 * 60 * 1000) return;
 
               let senderName = n.sender_name;
               let senderUsername = n.sender_username;
@@ -632,15 +632,15 @@ export const useGlobalStore = create<GlobalState>()(
                   const pDoc = await getDoc(doc(db, 'profiles', n.sender_id));
                   if (pDoc.exists()) {
                     const pData = pDoc.data();
-                    senderName = pData.display_name || pData.username;
+                    senderName = pData.display_name || pData.name || (pData.username ? `@${pData.username}` : 'User');
                     senderUsername = pData.username;
                     senderAvatar = pData.avatar_url;
                   }
                 } catch (e) {}
               }
 
-              senderName = senderName || 'Someone';
-              const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
+              senderName = senderName || 'User';
+              const usernameTag = (senderUsername && senderUsername !== n.sender_id) ? ` (@${senderUsername})` : '';
               let title = `${senderName}${usernameTag}`;
               let body = 'interacted with you';
               let targetUrl = '/';

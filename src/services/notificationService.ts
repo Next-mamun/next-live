@@ -2,19 +2,24 @@ import React from 'react';
 import { toast } from 'sonner';
 import { messaging, db, auth } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
-import { doc, updateDoc, getDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
 
 export const updateFCMTokenInDb = async (token: string) => {
   if (token && auth.currentUser) {
     try {
-      await updateDoc(doc(db, 'profiles', auth.currentUser.uid), {
+      await setDoc(doc(db, 'profiles', auth.currentUser.uid), {
         fcm_token: token,
         updated_at: new Date().toISOString()
-      });
+      }, { merge: true });
       console.log('FCM Token saved to profile:', token.substring(0, 10) + '...');
     } catch (err) {
       console.error('Failed to update FCM token in DB:', err);
     }
+
+    try {
+      const { supabase } = await import('@/lib/supabase');
+      await supabase.from('profiles').update({ fcm_token: token }).eq('id', auth.currentUser.uid);
+    } catch (e) {}
   }
 };
 
@@ -89,26 +94,28 @@ export const sendPushNotification = async (token: string, title: string, body: s
 };
 
 const tokenCache = new Map<string, { token: string, expiry: number }>();
-let notificationQueue: Array<() => Promise<void>> = [];
-let isProcessingQueue = false;
-
-const processQueue = async () => {
-  if (isProcessingQueue || notificationQueue.length === 0) return;
-  isProcessingQueue = true;
-  
-  while (notificationQueue.length > 0) {
-    const task = notificationQueue.shift();
-    if (task) {
-      await task();
-      await new Promise(resolve => setTimeout(resolve, 300)); // Rate limit buffer
-    }
-  }
-  
-  isProcessingQueue = false;
-};
 
 export const triggerNotification = async (receiverId: string, title: string, body: string, data?: any) => {
-  const task = async () => {
+  if (!receiverId) return null;
+
+  // 1. Instant Real-Time In-App Delivery via Supabase Broadcast
+  try {
+    const { supabase } = await import('@/lib/supabase');
+    const channel = supabase.channel(`user_notifications_${receiverId}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'IN_APP_NOTIFICATION',
+      payload: {
+        title,
+        body,
+        data,
+        timestamp: Date.now()
+      }
+    }).catch(() => {});
+  } catch (e) {}
+
+  // 2. High-Priority FCM Push Notification directly without sequential queue bottleneck
+  (async () => {
     try {
       let token = '';
       const cached = tokenCache.get(receiverId);
@@ -120,7 +127,6 @@ export const triggerNotification = async (receiverId: string, title: string, bod
           const userData = userDoc.data();
           if (userData.fcm_token) {
             token = userData.fcm_token;
-            // Cache token for 1 hour to reduce DB reads when chatting
             tokenCache.set(receiverId, { token, expiry: Date.now() + 60 * 60 * 1000 });
           }
         }
@@ -130,13 +136,10 @@ export const triggerNotification = async (receiverId: string, title: string, bod
         await sendPushNotification(token, title, body, data, receiverId);
       }
     } catch (err) {
-      console.warn('Failed to trigger notification:', err);
+      console.warn('Failed to trigger FCM notification:', err);
     }
-  };
+  })();
 
-  notificationQueue.push(task);
-  processQueue();
-  
   return null;
 };
 
@@ -197,10 +200,14 @@ export const showInAppNotificationToast = ({
         {
           onClick: () => {
             toast.dismiss(t);
+            const targetUrl = url || (senderId ? `/messages?user=${senderId}` : '/messages');
+            if (senderId) {
+              window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: senderId } }));
+            }
             if ((window as any).__appNavigate) {
-              (window as any).__appNavigate(url);
+              (window as any).__appNavigate(targetUrl);
             } else {
-              window.location.href = url;
+              window.location.href = targetUrl;
             }
           },
           className:
@@ -209,7 +216,7 @@ export const showInAppNotificationToast = ({
         React.createElement(
           'div',
           { className: 'relative shrink-0' },
-          avatar
+          avatar && !avatar.includes('dicebear')
             ? React.createElement('img', {
                 src: avatar,
                 alt: '',
@@ -219,9 +226,9 @@ export const showInAppNotificationToast = ({
                 'div',
                 {
                   className:
-                    'w-10 h-10 rounded-full bg-[#1877F2] text-white font-bold flex items-center justify-center text-sm shadow-sm'
+                    'w-10 h-10 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-bold flex items-center justify-center text-sm shadow-sm'
                 },
-                title.charAt(0).toUpperCase()
+                title.charAt(0).toUpperCase() || 'U'
               ),
           React.createElement('div', {
             className:

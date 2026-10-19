@@ -96,7 +96,19 @@ const Friends: React.FC = () => {
            const batch = missingProfIds.slice(i, i + 30);
            const batchQ = query(collection(db, 'profiles'), where('__name__', 'in', batch));
            const batchSnap = await getDocs(batchQ);
-           batchSnap.docs.forEach(d => missingProfs.push({ id: d.id, ...d.data() }));
+           batchSnap.docs.forEach(d => {
+             const pData = { id: d.id, ...d.data() } as any;
+             missingProfs.push(pData);
+             localDB.users.put({
+               id: d.id,
+               name: pData.display_name || pData.name,
+               display_name: pData.display_name || pData.name,
+               username: pData.username || '',
+               avatar: pData.avatar_url || pData.avatar || '',
+               avatar_url: pData.avatar_url || pData.avatar || '',
+               is_verified: !!pData.is_verified
+             }).catch(() => {});
+           });
         }
         
         missingProfs.forEach((p: any) => profMap.set(p.id, p));
