@@ -868,13 +868,15 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
     }
   };
 
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
+
   const handleLike = async (e?: React.MouseEvent) => {
     if (e) {
       e.stopPropagation();
       e.preventDefault();
     }
     if (!currentUser) {
-      window.location.href = `/login?returnUrl=${encodeURIComponent(`/reels/${reel.id}`)}`;
+      openAuthModal(() => handleLike(), 'Sign in to like this reel');
       return;
     }
 
@@ -933,7 +935,10 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
   const handleComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!commentText.trim()) return;
-    if (!currentUser) return;
+    if (!currentUser) {
+      openAuthModal(() => handleComment(e), 'Sign in to comment on this reel');
+      return;
+    }
 
     const submittedText = commentText.trim();
     const newComment = {

@@ -1,157 +1,126 @@
-# High-Speed Real-Time Notifications, WhatsApp-Style Dexie Sync, and Broadcast Messaging Architecture
+# TikTok-স্টাইল গেস্ট ব্রাউজিং মোড ও বটম-শীট অথেনটিকেশন আর্কিটেকচার
 
-Restore instantaneous notification delivery for messages, likes, and comments with rich sender username metadata and one-click chat navigation, while upgrading the Supabase messaging engine to use WhatsApp-style Dexie delta caching, instant optimistic deletion, and dedicated real-time broadcast channels for high-frequency chat and red double-check read receipts.
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The architectural approach has been synthesized with your preferences confirmed during Phase 1:
-> - **FCM Push & In-App Notification Delivery**: Hardened FCM token handling with instant dual-layer notification dispatch (Firebase Cloud Messaging + in-app toast banner + system notification) including the sender's display name and username tag (`@username`), with immediate deep-link navigation directly into that sender's chat dialog.
-> - **Read Receipts (Seen Status)**: Powered by low-latency Supabase Realtime Broadcast channels (`chat_signal` with event `SEEN`), instantaneously rendering the crisp red double-check mark (`CheckCheck` in red) on the sender's screen without waiting for database polling or slow query round-trips.
+একটি সম্পূর্ণ প্রোডাকশন-গ্রেড প্ল্যান যার মাধ্যমে ব্যবহারকারীরা টিকটকের মতো কোনো লগইন বা সাইন-আপ ছাড়াই তাৎক্ষণিকভাবে অ্যাপ ওপেন করে ফিড, রিলস এবং ল্যাব এক্সপ্লোর করতে পারবে; তবে লাইক, কমেন্ট, পোস্ট বা মেসেজের মতো ইন্টারেকশনে একটি প্রিমিয়াম বটম-শীট অথ মডাল প্রদর্শিত হবে।
 
 ---
 
-## 1. Overview & Core Concept
+## ব্যবহারকারী রিভিউ ও চূড়ান্ত সিদ্ধান্তসমূহ (User Review & Confirmed Decisions)
 
-- **What It Does**:
-  1. **Instant Multi-Tier Notifications**: Guarantees that whenever a user receives a message, post like, or comment, a notification fires instantly. Notification payloads carry the sender's full profile details (`sender_name`, `sender_username`, `sender_avatar`). Clicking the notification instantly routes the user into the active conversation with that contact, opening the chat window immediately.
-  2. **WhatsApp-Style Dexie Incremental Caching**: Instead of querying and reloading full message history across the wire on every chat click, all existing conversation messages load in 0ms from local IndexedDB (`localDB.messages`). Only messages newer than the newest local timestamp (`created_at > lastTimestamp`) are pulled from Supabase/Firebase. Newly arrived messages are saved into Dexie and presented seamlessly.
-  3. **Zero-Latency Message Deletion**: When any message is deleted (for me or for everyone, old or new), it is instantly stripped from the active UI state, purged from Dexie, removed from the database, and broadcast via the active channel so it vanishes in real-time on the counterparty's screen.
-  4. **Continuous High-Frequency Messaging & Seen Ticks**: Eliminates message dropping and connection timeouts during rapid typing by utilizing Supabase WebSocket Broadcast channels for direct peer signaling, instant delivery acknowledgments, and real-time red double-check marks.
+> [!IMPORTANT] 
+> ফেইজ ১-এর প্রশ্নোত্তর পর্ব অনুযায়ী নিচের সিদ্ধান্তগুলো নিশ্চিত করা হয়েছে এবং এই আর্কিটেকচারে প্রতিফলিত করা হয়েছে:
 
-- **Target Audience / Persona**: Active users chatting rapidly across mobile web and desktop, expecting WhatsApp/Telegram-grade snappy responsiveness, zero re-fetching delay, and reliable push notifications.
-
-- **Key Value**: Rock-solid message delivery, instant offline/cached message availability, seamless notifications that link directly to the right chat, and responsive read receipts.
+* **গেস্ট ব্রাউজিং পরিধি (Confirmed)**: ব্যবহারকারীরা কোনো অ্যাকাউন্ট ছাড়াই সরাসরি হোম ফিড (Feed), সম্পূর্ণ রিলস (Reels), পাবলিক পোস্ট এবং সম্পূর্ণ কোডিং ল্যাব (Lab) ব্রাউজ করতে পারবেন।
+* **অথেনটিকেশন পপআপ স্টাইল (Confirmed)**: কোনো পেজ রিলোড বা হার্ড রিডাইরেক্ট হবে না। ব্যবহারকারীর স্ক্রল পজিশন বা ভিডিও চালু থাকা অবস্থায় একটি প্রিমিয়াম মোবাইল-ফ্রেন্ডলি বটম-শীট / সেন্টারড মডাল (Bottom Sheet Modal) স্লাইড-ইন হয়ে আসবে। এতে ১-ট্যাপ গুগল লগইন ও ইমেইল সাইন-আপ অপশন থাকবে।
+* **প্রাইভেট ট্যাব অ্যাক্সেস (Confirmed)**: চ্যাট ইনবক্স (Messages) এবং ফ্রেন্ডস (Friends) ট্যাবে গেস্ট হিসেবে ক্লিক করলে লগইন প্রম্পট স্ক্রিন প্রদর্শিত হবে এবং ব্যাক বাটনে ফিরে আসা যাবে।
+* **জিরো সিকিউরিটি রিস্ক (Zero Vulnerability Guarantee)**: ফ্রন্টএন্ড স্টেট ফিল্টারিং ছাড়াও ফায়ারবেসের ফায়ারস্টোর রুলস (`firestore.rules`) দিয়ে ডাটাবেজ স্তরে কঠোরভাবে রাইট অ্যাক্সেস ব্লক থাকবে। ফলে কোনো হ্যাকার বা তৃতীয় পক্ষ লগইন ছাড়া লাইক, কমেন্ট বা পোস্ট ডাটাবেজে ইনসার্ট করতে পারবে না।
 
 ---
 
-## 2. User Experience & Visual Design
+## ১. ওভারভিউ ও মূল ধারণা (Overview & Core Concept)
 
-- **Key User Flows**:
-  1. **Receiving a Message Notification**:
-     - Contact `@john_doe` sends a message while the recipient is browsing their feed or outside that specific chat.
-     - An in-app toast drops down from top-center displaying John Doe's avatar, name, `@john_doe`, message preview, and an "Open" pill button, accompanied by notification audio and vibration.
-     - If the app is in the background or device lock screen, an FCM desktop/device push notification triggers with the exact same details.
-     - Tapping either notification immediately navigates to `/messages?user=<sender_id>`, instantly opening John Doe's chat thread.
-  2. **Opening a Conversation (WhatsApp Caching Flow)**:
-     - The user taps a contact in the Messages list.
-     - The chat window opens instantly (0ms blank/loading screen) showing all previously cached messages from Dexie.
-     - A background delta-sync checks `supabase.from('messages').select('*').gt('created_at', lastTimestamp)`. If new messages arrived while away, they append smoothly and save into Dexie.
-  3. **Rapid Continuous Messaging & Red Double-Tick Seen Receipts**:
-     - Sending rapid back-to-back messages renders optimistic message bubbles with a light clock icon (`Clock`), transitioning to a single check (`Check`) upon Supabase broadcast/insert, and instantaneously switching to the vibrant red double-check (`CheckCheck className="text-red-500"`) the millisecond the recipient's viewport registers the message.
-  4. **Instant Message Deletion**:
-     - User long-presses or clicks the context menu on any message (sent or received) and selects "Delete".
-     - The bubble evaporates immediately from the screen (smooth framer-motion exit). Both local Dexie and remote Supabase/Firebase records are purged, and a broadcast signal tells the recipient to remove the bubble without needing a manual refresh.
-
-- **Visual Identity & Theme**:
-  - Consistent with Next's clean dark/light UI:
-    - *Read Receipts*: Bold red checkmarks (`text-red-500`) for read/seen, subtle muted checkmarks (`text-blue-200 opacity-60` or `text-gray-400`) for sent/delivered.
-    - *Notification Banners*: Rounded 2xl cards with soft shadows, sender avatar, bold username accent, and clean action button.
-    - *Chat Layout*: Smooth mobile thumb-zone layout adhering to `references/10_mobile_touch_apps.md`, with 44px touch targets and full keyboard resilience.
+* **মূল লক্ষ্য**: নতুন ব্যবহারকারীদের জন্য সাইন-আপ বাধা (Friction) শূন্যে নামিয়ে আনা, যাতে যে কেউ অ্যাপের লিংক পেয়েই দ্রুত রিলস ও পোস্ট উপভোগ করতে পারে।
+* **লক্ষ্যমাত্রা ব্যবহারকারী (Audience)**: সোশ্যাল মিডিয়া ব্রাউজার, স্টুডেন্ট ও ডেভেলপার যারা প্রথমে কনটেন্ট দেখতে চান এবং ভালো লাগলে একাউন্ট তৈরি করে যুক্ত হবেন।
+* **ইউজার ভ্যালু**: টিকটক বা ইনস্টাগ্রামের মতো স্মুথ এক্সপেরিয়েন্স—কোনো বাধ্যতামূলক রেজিস্ট্রেশন ওয়াল ছাড়াই নিমেষেই ভিডিও ও পোস্ট স্ট্রিমিং।
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## ২. ইউজার এক্সপেরিয়েন্স ও ভিজ্যুয়াল ডিজাইন (UX & Visual Design)
 
-- **Decision 1: Dual-Channel Real-Time Engine (Broadcast + Postgres Changes)**
-  - *Chosen Approach*: Use Supabase Broadcast channels (`realtimeChannel.send({ type: 'broadcast', event: 'chat_signal', ... })`) for ephemeral, time-critical signals (typing, seen receipts, deletions) combined with `postgres_changes` / dual-write for persistent messages.
-  - *Why*: Postgres change events can throttle or delay under rapid back-to-back writes; Supabase Broadcast sends WebSocket frames directly to peers in <30ms, ensuring read ticks and deletion signals fire instantaneously.
-  - *Alternatives Considered*: Polling database every few seconds (discarded: slow and high read cost).
+### মূল ইউজার ফ্লো (Key User Flows)
 
-- **Decision 2: Dexie Delta / Incremental Sync Strategy**
-  - *Chosen Approach*: On chat initialization, retrieve all messages from Dexie indexed by `chatId`. Calculate `max(created_at)`. Execute a remote query only for `created_at > max(created_at)`.
-  - *Why*: Eliminates 100-document database reloads on every conversation switch; allows 100% offline access to conversation history like WhatsApp.
-  - *Alternatives Considered*: Reloading last 100 messages every time (discarded: causes UI flicker and bandwidth waste).
+1. **জিরো-স্টেট ও কোল্ড স্টার্ট (Cold Start)**:
+   * ব্যবহারকারী সাইটে প্রবেশ করলে কোনো লগইন স্ক্রিন আসবে না; সরাসরি হোম ফিড বা রিলস স্ক্রিন প্লে হবে।
+   * নেভিগেশন বারে প্রোফাইলের জায়গায় সুন্দর "Log In" বাটন থাকবে।
+2. **গেস্ট মোডে ইন্টারঅ্যাকশন (Triggering Auth Modal)**:
+   * যখন একজন গেস্ট ইউজার কোনো পোস্ট বা রিলে **Like**, **Comment**, **Share/Save**, কিংবা **Create Post** বাটনে ক্লিক করবেন:
+   * পেজ রিলোড হবে না, কারেন্ট ভিডিও পজ হবে না। নিচ থেকে একটি স্মুথ বটম-শীট (অথবা ডেস্কটপে সেন্টারড পপআপ) স্লাইড-আপ হবে।
+   * টাইটেল: *"Join Next to interact"*
+   * সাব-টাইটেল: *"Like, comment, and connect with creators on Next."*
+   * অ্যাকশন বাটন:
+     1. **Continue with Google** (Google 1-Tap Auth)
+     2. **Log In with Email**
+     3. **Create New Account**
+   * ব্যবহারকারী চাইলে `✕` ক্লিক করে বা ব্যাকড্রপে ট্যাপ করে মডাল কেটে দিয়ে কনটেন্ট দেখা চালিয়ে যেতে পারবেন।
+3. **লগইন সম্পন্ন হওয়ার পর (Post-Auth Seamless Transition)**:
+   * লগইন বা সাইন-আপ সফল হওয়ার পর মডালটি অটো-ক্লোজ হবে এবং ব্যবহারকারী পূর্বের স্ক্রিনে যে কাজটি করতে চেয়েছিলেন (যেমন লাইক বা কমেন্ট) তা সক্রিয় হয়ে যাবে।
 
-- **Decision 3: Global Notification Listener Resiliency**
-  - *Chosen Approach*: Repair the unsubscription state leak in `useGlobalStore.ts` where unmount handlers left stale, non-null `notifUnsub` and `messageUnsub` variables, preventing listeners from ever re-subscribing on remounts. Additionally sanitize Supabase URL configuration to prevent client crash.
-  - *Why*: Guarantees listeners stay active throughout the entire application lifecycle.
+### ভিজ্যুয়াল থিম ও নান্দনিকতা (Aesthetic & Styling)
+
+* **কালার প্যালেট**:
+  * প্রাইমারি অ্যাকসেন্ট: `#1877F2` (Next ব্র্যান্ড ব্লু)
+  * ব্যাকড্রপ গ্লাস-মরফিজম: `bg-black/60 backdrop-blur-md`
+  * ডার্ক মোড সাপোর্ট: `dark:bg-[#121212]`, কার্ড বর্ডার `border-gray-200 dark:border-gray-800`
+* **টাইপোগ্রাফি**: ইন্টার (Inter) ফন্ট, পরিষ্কার হায়ারার্কি, বোল্ড টাইটেল এবং হালকা সাব-হেডিং।
+* **অ্যানিমেশন**: প্রিমিয়াম `framer-motion` বা Tailwind এর `animate-in slide-in-from-bottom duration-300` ট্রানজিশন।
 
 ---
 
-## 4. Technical Architecture & Data Strategy
+## ৩. গুরুত্বপূর্ণ প্রোডাক্ট ও সিকিউরিটি সিদ্ধান্ত (Product & Security Decisions)
 
-### System Architecture & Communication Flow
+### সিদ্ধান্ত ১: গ্লোবাল সেন্ট্রালাইজড অথ মডাল স্টেট (Centralized Auth Trigger)
+* **গৃহীত পদ্ধতি**: `useGlobalStore` অথবা `AuthModalContext` ব্যবহার করে একটি গ্লোবাল হুক `requireAuth(actionCallback)` তৈরি করা হবে।
+* **কেন**: আলাদা আলাদা পেজে লগইন কোড না লিখে, যেকোনো বাটন হ্যান্ডলারে শুধু `if (!requireAuth()) return;` কল করলেই কেন্দ্রীয়ভাবে মডাল ওপেন হবে এবং ব্যবহারকারীর কাঙ্ক্ষিত অ্যাকশনটি মেমরিতে সংরক্ষিত থাকবে।
+
+### সিদ্ধান্ত ২: ডাটাবেজ নিরাপত্তা ও রুলস প্রোটেকশন (Firestore Security Hardening)
+* **গৃহীত পদ্ধতি**: ফ্রন্টএন্ড কোনো অবস্থাতেই ফায়ারস্টোরে গেস্ট অবস্থায় রাইট করতে পারবে না।
+* **প্রোডাকশন সিকিউরিটি গ্যারান্টি**:
+  * `posts`, `reels`: রিড পাবলিক (`allow read: if true;`), কিন্তু ক্রিয়েট/আপডেট শুধুমাত্র অথেনটিকেটেড ইউজার (`allow create: if isSignedIn();`).
+  * `likes`, `comments`: রিড পাবলিক, কিন্তু তৈরি করার ক্ষেত্রে `request.auth.uid == request.resource.data.user_id` যাচাই বাধ্যতামূলক।
+  * `messages`: শুধুমাত্র চ্যাটের সদস্যরা পড়তে ও লিখতে পারবে।
+
+---
+
+## ৪. টেকনিক্যাল আর্কিটেকচার ও ডাটা স্ট্র্যাটেজি (Technical Architecture)
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                          Next Application Client                       │
-│                                                                        │
-│   ┌────────────────────────┐            ┌───────────────────────────┐  │
-│   │    useGlobalStore      │            │        Messages.tsx       │  │
-│   │  Global Notif Listener │            │  WhatsApp-style Chat UI   │  │
-│   └───────────┬────────────┘            └─────────────┬─────────────┘  │
-│               │                                       │                │
-│       ┌───────┴──────┐                     ┌──────────┴──────────┐     │
-│       │              │                     │                     │     │
-│       ▼              ▼                     ▼                     ▼     │
-│  ┌──────────┐  ┌──────────┐         ┌──────────────┐      ┌──────────┐ │
-│  │ Firebase │  │ Supabase │         │ Dexie DB     │      │ Supabase │ │
-│  │ Notifs & │  │ Realtime │         │ localDB      │      │ Realtime │ │
-│  │ Push FCM │  │ Global   │         │ (0ms Cache)  │      │ Broadcast│ │
-│  └──────────┘  └──────────┘         └──────────────┘      └──────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-       ┌───────────────────────────────────────────────────────────┐
-       │   Remote Database Layer & Supabase Realtime Server        │
-       │                                                           │
-       │   • Supabase Postgres 'messages' Table                    │
-       │   • Supabase Broadcast Channel (`chat:${chatId}`)         │
-       │   • Firebase Cloud Firestore ('notifications', 'messages')│
-       │   • Firebase Cloud Messaging (FCM Push Service)           │
-       └───────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                       Next Web App                          │
+│                                                             │
+│  ┌───────────────────────┐       ┌───────────────────────┐  │
+│  │      Public Route     │       │    Protected Route    │  │
+│  │   (/, /reels, /lab)   │       │ (/messages, /friends) │  │
+│  └──────────┬────────────┘       └──────────┬────────────┘  │
+│             │                               │               │
+│             ▼                               ▼               │
+│     [ Guest Can View ]            [ Requires User Auth ]    │
+│             │                               │               │
+│     ┌───────┴────────┐                      │               │
+│     │ Clicks Like,   │                      ▼               │
+│     │ Comment, Post  │────────────► ┌────────────────────┐  │
+│     └────────────────┘              │ AuthBottomSheet    │  │
+│                                     │ - Google Sign In   │  │
+│                                     │ - Email Log In     │  │
+│                                     │ - Register Form    │  │
+│                                     └─────────┬──────────┘  │
+│                                               │             │
+│                                    On Success │             │
+│                                               ▼             │
+│                                     [ Auto-Execute Action ] │
+│                                                             │
+└──────────────────────────────────────┬──────────────────────┘
+                                       │
+                                       ▼
+                 ┌───────────────────────────────────────────┐
+                 │          Firebase Security Layer          │
+                 │                                           │
+                 │   - Read: Public (Posts, Reels, Likes)    │
+                 │   - Write: Blocked unless Auth Token Valid│
+                 └───────────────────────────────────────────┘
 ```
 
-### Component & File Work Plan
+### উপাদান ও ফাইল পরিবর্তন তালিকা (Implementation Targets)
 
-1. **`src/lib/supabase.ts`**:
-   - Sanitize URL constructor to handle raw project keys (`zdrubxtuxotqyasmsuqz` -> `https://zdrubxtuxotqyasmsuqz.supabase.co`).
-   - Enable high-frequency broadcast events in Realtime client configuration.
-
-2. **`src/store/useGlobalStore.ts`**:
-   - Fix the unsubscription cleanup leak where `notifUnsub` and `messageUnsub` were not reset to `null` on teardown, preventing re-registration on navigation.
-   - Refactor notifications listener query to avoid missing composite index crashes, sorting in-memory by timestamp.
-   - Attach sender metadata (`sender_username`, `sender_name`, `sender_avatar`) directly into incoming message notification handling.
-   - Guard against duplicate toasts while ensuring rapid delivery for messages, likes, and comments.
-
-3. **`src/pages/Messages.tsx`**:
-   - **Dexie Incremental Sync**:
-     - Load conversation messages from `localDB.messages` first.
-     - Find the most recent timestamp in the local cache.
-     - If local messages exist, perform a delta query: `supabase.from('messages').select('*').gt('created_at', lastTimestamp)`. If empty, fetch the initial batch (50 messages) and save to Dexie.
-     - Persist every new incoming and outgoing message into `localDB.messages` immediately.
-   - **Instant Delete**:
-     - Remove immediately from UI state (`setMessages`).
-     - Remove immediately from Dexie (`localDB.messages.delete`).
-     - Delete from Supabase and Firebase in parallel.
-     - Broadcast a `DELETE_MESSAGE` event over `realtimeChannel` so the counterparty's chat removes it without refreshing.
-   - **Continuous Messaging & Red Tick Seen Broadcast**:
-     - When messages enter the viewport or are loaded, emit a Supabase Broadcast `chat_signal` with `{ type: 'SEEN', msgIds: [...] }`.
-     - Update local state to show the red double-check (`CheckCheck className="text-red-500"`).
-     - Maintain channel subscription stability with automatic keep-alive to prevent drops during rapid back-to-back messaging.
-
-4. **`src/services/notificationService.ts`**:
-   - Ensure `showInAppNotificationToast` and `showNotification` include `@${sender_username}` and correctly route to `/messages?user=${sender_id}` on click.
-   - Optimize FCM token retrieval and transmission to backend notification endpoint.
-
-5. **`src/pages/Notifications.tsx` & `src/components/Navbar.tsx`**:
-   - Align notification click handlers so clicking a message notification opens the specific chat inbox view.
-
----
-
-## Verification & Testing Plan
-
-1. **Build and Type Checking**: Run `compile_applet` to verify zero TypeScript errors and proper bundle compilation.
-2. **Notification Dispatch Test**:
-   - Verify notifications contain `@username` in the title/body.
-   - Click notification toast to verify immediate navigation to `/messages?user=<id>`.
-3. **Dexie Incremental Sync Verification**:
-   - Open a chat, inspect local Dexie storage to confirm all messages are cached.
-   - Close and reopen the chat; verify messages appear in 0ms without full database refetch.
-   - Send new messages and verify only delta queries are executed.
-4. **Instant Deletion Verification**:
-   - Delete an old message and a newly sent message; verify instant removal from UI, Dexie, and remote storage.
-5. **Real-Time Seen & Rapid Messaging Verification**:
-   - Send rapid back-to-back messages; verify all arrive without dropping.
-   - Check that the red double-tick marks appear when messages are seen.
+1. **`src/components/AuthBottomSheet.tsx`**:
+   * টিকটক-স্টাইলের মসৃণ বটম-শীট কম্পোনেন্ট।
+   * গুগল ওয়ান-ট্যাপ লগইন, ইমেইল লগইন ও রেজিস্টার সুইচার।
+2. **`src/contexts/AuthContext.tsx` & `src/store/useGlobalStore.ts`**:
+   * গ্লোবাল `authModalOpen` স্টেট এবং `requireAuth()` হেল্পার ফাংশন সংযোজন।
+3. **`src/App.tsx`**:
+   * রাউটিং গার্ড আপডেট: `/`, `/reels`, `/lab`, `/post/:id` সরাসরি ওপেন হবে।
+   * `/messages` ও `/friends` এর জন্য সুন্দর গেস্ট লক প্রম্পট ভিউ।
+4. **`src/components/Navbar.tsx` & `src/components/BottomNav.tsx`**:
+   * গেস্ট ইউজারের জন্য "Log In" বাটন ও পরিষ্কার অ্যাকশন প্রদর্শন।
+5. **`src/components/PostCard.tsx` & `src/pages/Reels.tsx`**:
+   * হার্ড রিডাইরেক্ট `window.location.href = ...` সরিয়ে `requireAuth()` ইন্টিগ্রেশন।
+6. **`firestore.rules` অডিট**:
+   * গেস্ট রিড নিরাপদ রেখে সকল রাইট পারমিশন ১০০% সুরক্ষিত রাখা।

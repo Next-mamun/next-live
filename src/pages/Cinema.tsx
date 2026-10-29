@@ -1216,7 +1216,7 @@ const Cinema: React.FC = () => {
           </div>
 
           <div className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <button 
                 onClick={handleCreateTheatre}
                 className="bg-[#1877F2] text-white rounded-2xl py-3.5 px-3 font-bold text-sm hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-500/30 flex flex-col items-center gap-1.5"
@@ -1234,14 +1234,6 @@ const Cinema: React.FC = () => {
               >
                 <Users size={24} />
                 <span>Create Meet</span>
-              </button>
-              <button 
-                onClick={() => navigate('/camera')}
-                className="bg-gradient-to-tr from-pink-500 to-rose-500 text-white rounded-2xl py-3.5 px-3 font-bold text-sm hover:opacity-95 transition-all active:scale-95 shadow-lg shadow-pink-500/30 flex flex-col items-center gap-1.5"
-                title="Open AR Camera Filters"
-              >
-                <Camera size={24} />
-                <span>AR Filters</span>
               </button>
             </div>
 
@@ -1421,15 +1413,7 @@ const Cinema: React.FC = () => {
             <span>{participants.length > 0 ? participants.length : (Object.keys(peers).length + 1)}</span>
           </button>
           
-          <button 
-            onClick={() => navigate('/camera')}
-            className="flex items-center gap-1.5 text-xs font-bold bg-pink-600/80 backdrop-blur px-3 py-1.5 rounded-full border border-pink-400/30 cursor-pointer hover:bg-pink-600 transition-colors text-white"
-            title="AR Camera Filters"
-          >
-            <Camera size={15} />
-            <span className="hidden sm:inline">AR Filters</span>
-          </button>
-          
+
           <button onClick={handleLeaveRoom} className="p-2 bg-black/70 backdrop-blur hover:bg-red-500/20 text-white hover:text-red-500 rounded-full transition-colors border border-white/10" title="Leave Room">
             <LogOut size={16} />
           </button>

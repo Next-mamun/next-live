@@ -139,9 +139,11 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
     }
   }, [post.likes, post.like_count, post.comment_count, post.comments, currentUser?.id, hasFetchedComments]);
 
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
+
   const handleLike = async () => {
     if (!currentUser) {
-      window.location.href = `/login?returnUrl=${encodeURIComponent(`/post/${post.id}`)}`;
+      openAuthModal(() => handleLike(), 'Sign in to like this post and join the conversation');
       return;
     }
     // Optimistic update
@@ -253,16 +255,16 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       e.preventDefault();
       e.stopPropagation();
     }
-    if (!currentUser) {
-      window.location.href = `/login?returnUrl=${encodeURIComponent(`/post/${post.id}`)}`;
-      return;
-    }
     toggleComments();
   };
 
   const handleComment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!comment.trim() || !currentUser) return;
+    if (!comment.trim()) return;
+    if (!currentUser) {
+      openAuthModal(() => handleComment(e), 'Sign in to write a comment on this post');
+      return;
+    }
     
     const commentText = comment.trim();
     setComment('');

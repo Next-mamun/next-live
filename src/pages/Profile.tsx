@@ -30,6 +30,7 @@ const Profile: React.FC = () => {
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const deletedPostIds = useGlobalStore(state => state.deletedPostIds || []);
+  const openAuthModal = useGlobalStore(state => state.openAuthModal);
   const viewedPostsRef = useRef<Set<string>>(new Set());
   const observer = useRef<IntersectionObserver | null>(null);
 
@@ -262,6 +263,10 @@ const Profile: React.FC = () => {
   };
 
   const handleSendRequest = async () => {
+    if (!currentUser) {
+      openAuthModal(() => handleSendRequest(), 'Sign in to send friend requests');
+      return;
+    }
     if (!friendship) {
         try {
             await addDoc(collection(db, 'friendships'), { sender_id: currentUser?.id, receiver_id: profile.id, status: 'pending', created_at: new Date().toISOString() });
@@ -401,7 +406,7 @@ const Profile: React.FC = () => {
                   <button onClick={handleSendRequest} className={`${friendStatus === 'accepted' ? 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-white' : 'bg-[#1877F2] text-white'} px-6 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md hover:brightness-110 transition-all`}>
                     {friendStatus === 'none' ? <><UserPlus size={18}/> Add Friend</> : <><Check size={18}/> {friendStatus.toUpperCase()}</>}
                   </button>
-                  <button onClick={() => navigate('/messages', { state: { userId: profile.id } })} className="bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-all"><MessageCircle size={18}/> Message</button>
+                  <button onClick={() => currentUser ? navigate('/messages', { state: { userId: profile.id } }) : openAuthModal(undefined, 'Sign in to send a private message')} className="bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-white px-6 py-2 rounded-lg font-bold flex items-center gap-2 shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-all"><MessageCircle size={18}/> Message</button>
                 </>
               )}
             </div>

@@ -39,6 +39,11 @@ interface GlobalState {
   isSupabaseActive: boolean;
   isChatOpen: boolean;
   activeChatId: string | null;
+  isAuthModalOpen: boolean;
+  authModalMessage: string;
+  authModalAction: (() => void) | null;
+  openAuthModal: (callback?: () => void, message?: string) => void;
+  closeAuthModal: () => void;
   triggerFirebaseFallback: () => void;
   setIsChatOpen: (isOpen: boolean) => void;
   setActiveChatId: (id: string | null) => void;
@@ -149,6 +154,18 @@ export const useGlobalStore = create<GlobalState>()(
       isSupabaseActive: true,
       isChatOpen: false,
       activeChatId: null,
+      isAuthModalOpen: false,
+      authModalMessage: 'Join Next to like, comment and interact',
+      authModalAction: null,
+      openAuthModal: (callback?: () => void, message?: string) => set({
+        isAuthModalOpen: true,
+        authModalAction: callback || null,
+        authModalMessage: message || 'Join Next to like, comment and interact'
+      }),
+      closeAuthModal: () => set({
+        isAuthModalOpen: false,
+        authModalAction: null
+      }),
       setIsChatOpen: (isOpen: boolean) => set({ isChatOpen: isOpen }),
       setActiveChatId: (id: string | null) => set({ activeChatId: id }),
 

@@ -271,6 +271,15 @@ const Register: React.FC = () => {
           <Link to="/login" className="text-gray-400 text-center mt-4 text-sm hover:text-white font-bold transition-colors">
             Already have an account? Log in
           </Link>
+
+          <button
+            type="button"
+            onClick={() => navigate('/')}
+            className="w-full text-center text-sm font-bold text-gray-400 hover:text-white mt-2 py-1 transition-colors flex items-center justify-center gap-1.5"
+          >
+            <span>Explore Next as Guest</span>
+            <span className="text-[#1877F2]">→</span>
+          </button>
         </form>
       </div>
     </div>

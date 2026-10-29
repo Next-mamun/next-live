@@ -40,6 +40,8 @@ import Lab from '@/pages/Lab';
 import Cinema from '@/pages/Cinema';
 import Meet from '@/pages/Meet';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
+import { AuthBottomSheet } from '@/components/AuthBottomSheet';
+import { GuestLockedView } from '@/components/GuestLockedView';
 
 // Less common pages can remain lazy
 const Login = lazy(() => import('@/pages/Login'));
@@ -55,6 +57,7 @@ const AppLayout: React.FC = () => {
   const { currentUser } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const isAuthPage = location.pathname === '/login' || location.pathname === '/register';
   const isMessages = location.pathname.startsWith('/messages');
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
@@ -330,11 +333,11 @@ const AppLayout: React.FC = () => {
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
-        {currentUser && <Navbar />}
+        {!isAuthPage && <Navbar />}
         {currentUser && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
         <main 
           ref={mainRef}
-          className={`w-full flex-1 flex flex-col min-w-0 pt-14 md:pb-0 ${isMessages ? 'overflow-hidden bg-white dark:bg-black' : 'overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
+          className={`w-full flex-1 flex flex-col min-w-0 ${!isAuthPage ? 'pt-14' : ''} md:pb-0 ${isMessages ? 'overflow-hidden bg-white dark:bg-black' : 'overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
         >
           {/* Pull to Refresh Indicator */}
           {(pullProgress > 0 || isRefreshing) && (
@@ -362,36 +365,69 @@ const AppLayout: React.FC = () => {
             </div>
           }>
             <Routes>
-              <Route path="/" element={currentUser ? <Feed /> : <Navigate to="/login" />} />
+              {/* Public & Guest-accessible Routes */}
+              <Route path="/" element={<Feed />} />
               <Route path="/post/:id" element={<Feed />} />
+              <Route path="/reels" element={<Reels />} />
+              <Route path="/reels/:id" element={<Reels />} />
+              <Route path="/lab" element={<Lab />} />
+              <Route path="/child-safety" element={<ChildSafety />} />
+              <Route path="/profile/:username" element={<Profile />} />
+
+              {/* Auth Pages */}
               <Route path="/login" element={!currentUser ? <Login /> : <Navigate to="/" />} />
               <Route path="/register" element={!currentUser ? <Register /> : <Navigate to="/" />} />
-              <Route path="/child-safety" element={<ChildSafety />} />
-              <Route path="/messages" element={currentUser ? <Messages /> : <Navigate to="/login" />} />
-              <Route path="/messages/:id" element={currentUser ? <Messages /> : <Navigate to="/login" />} />
-              <Route path="/friends" element={currentUser ? <Friends /> : <Navigate to="/login" />} />
-              <Route path="/notifications" element={currentUser ? <Notifications /> : <Navigate to="/login" />} />
-              <Route path="/profile/:username" element={currentUser ? <Profile /> : <Navigate to="/login" />} />
+
+              {/* Protected Features with Guest Locked View */}
+              <Route 
+                path="/messages" 
+                element={currentUser ? <Messages /> : <GuestLockedView title="Next Messenger" description="Sign in to chat in real-time, connect with friends, and receive push notifications." />} 
+              />
+              <Route 
+                path="/messages/:id" 
+                element={currentUser ? <Messages /> : <GuestLockedView title="Next Messenger" description="Sign in to chat in real-time, connect with friends, and receive push notifications." />} 
+              />
+              <Route 
+                path="/friends" 
+                element={currentUser ? <Friends /> : <GuestLockedView title="Friends Network" description="Sign in to connect with friends, follow creators, and discover people." />} 
+              />
+              <Route 
+                path="/notifications" 
+                element={currentUser ? <Notifications /> : <GuestLockedView title="Notifications" description="Sign in to view likes, comments, and interactions on your posts." />} 
+              />
+              <Route 
+                path="/create-post" 
+                element={currentUser ? <CreatePost /> : <GuestLockedView title="Create Post" description="Sign in to publish posts, upload reels, and share your ideas." />} 
+              />
+              <Route 
+                path="/cinema" 
+                element={currentUser ? <Cinema /> : <GuestLockedView title="Next Cinema" description="Sign in to watch movies and YouTube videos together with friends." />} 
+              />
+              <Route 
+                path="/cinema/:id" 
+                element={currentUser ? <Cinema /> : <GuestLockedView title="Next Cinema" description="Sign in to watch movies and YouTube videos together with friends." />} 
+              />
+              <Route 
+                path="/meet" 
+                element={currentUser ? <Meet /> : <GuestLockedView title="Next Meet" description="Sign in to start or join voice and video meeting rooms." />} 
+              />
+              <Route 
+                path="/meet/:id" 
+                element={currentUser ? <Meet /> : <GuestLockedView title="Next Meet" description="Sign in to start or join voice and video meeting rooms." />} 
+              />
               <Route path="/settings" element={currentUser ? <Settings /> : <Navigate to="/login" />} />
-              <Route path="/create-post" element={currentUser ? <CreatePost /> : <Navigate to="/login" />} />
-              <Route path="/reels" element={currentUser ? <Reels /> : <Navigate to="/login" />} />
-              <Route path="/reels/:id" element={<Reels />} />
-              <Route path="/lab" element={currentUser ? <Lab /> : <Navigate to="/login" />} />
-              <Route path="/cinema" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
-              <Route path="/cinema/:id" element={currentUser ? <Cinema /> : <Navigate to="/login" />} />
-              <Route path="/meet" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
-              <Route path="/meet/:id" element={currentUser ? <Meet /> : <Navigate to="/login" />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
           </div>
         </main>
       </div>
-      {currentUser && !shouldHideBottomNav && (
+      {!isAuthPage && !shouldHideBottomNav && (
         <div className="z-[100] relative w-full shrink-0 md:hidden">
           <BottomNav />
         </div>
       )}
+      <AuthBottomSheet />
     </div>
   );
 };

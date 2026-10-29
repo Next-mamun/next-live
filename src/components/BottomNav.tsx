@@ -1,16 +1,18 @@
 import React, { useMemo } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Home, PlusSquare, MessageCircle, User, Users, BookOpen } from 'lucide-react';
 import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
 
 const BottomNav: React.FC = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const { currentUser } = useAuth();
   const { bottomBarSize, iconColor, darkMode } = useTheme();
   const isActive = (path: string) => location.pathname === path;
   
   const messages = useGlobalStore((state) => state.messages);
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
   
   const totalUnread = useMemo(() => {
     if (!currentUser) return 0;
@@ -60,11 +62,24 @@ const BottomNav: React.FC = () => {
         <span className="text-[10px] font-medium mt-1">Friends</span>
       </Link>
 
-      <Link to="/create-post" className="flex flex-col items-center justify-center w-full h-full" style={{ color: darkMode ? '#ffffff' : '#1A2933' }}>
-        <div className="p-2 rounded-xl shadow-lg hover:scale-105 transition-transform" style={{ backgroundColor: activeColor, color: 'white' }}>
-          <PlusSquare size={iconSize} />
-        </div>
-      </Link>
+      {!currentUser ? (
+        <button
+          type="button"
+          onClick={() => navigate('/login')}
+          className="flex flex-col items-center justify-center w-full h-full"
+          style={{ color: darkMode ? '#ffffff' : '#1A2933' }}
+        >
+          <div className="p-2 rounded-xl shadow-lg hover:scale-105 transition-transform" style={{ backgroundColor: activeColor, color: 'white' }}>
+            <PlusSquare size={iconSize} />
+          </div>
+        </button>
+      ) : (
+        <Link to="/create-post" className="flex flex-col items-center justify-center w-full h-full" style={{ color: darkMode ? '#ffffff' : '#1A2933' }}>
+          <div className="p-2 rounded-xl shadow-lg hover:scale-105 transition-transform" style={{ backgroundColor: activeColor, color: 'white' }}>
+            <PlusSquare size={iconSize} />
+          </div>
+        </Link>
+      )}
 
       <Link 
         to="/messages" 
@@ -85,10 +100,22 @@ const BottomNav: React.FC = () => {
         <span className="text-[10px] font-medium mt-1">Inbox</span>
       </Link>
 
-      <Link to={`/profile/${currentUser?.username}`} className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive(`/profile/${currentUser?.username}`) ? activeColor : inactiveColor }}>
-        <User size={iconSize} strokeWidth={isActive(`/profile/${currentUser?.username}`) ? 2.5 : 2} />
-        <span className="text-[10px] font-medium mt-1">Profile</span>
-      </Link>
+      {!currentUser ? (
+        <button
+          type="button"
+          onClick={() => navigate('/login')}
+          className="flex flex-col items-center justify-center w-full h-full"
+          style={{ color: inactiveColor }}
+        >
+          <User size={iconSize} strokeWidth={2} />
+          <span className="text-[10px] font-bold mt-1 text-[#1877F2]">Log In</span>
+        </button>
+      ) : (
+        <Link to={`/profile/${currentUser?.username}`} className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive(`/profile/${currentUser?.username}`) ? activeColor : inactiveColor }}>
+          <User size={iconSize} strokeWidth={isActive(`/profile/${currentUser?.username}`) ? 2.5 : 2} />
+          <span className="text-[10px] font-medium mt-1">Profile</span>
+        </Link>
+      )}
     </div>
   );
 };

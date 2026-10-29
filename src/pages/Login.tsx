@@ -276,6 +276,17 @@ const Login: React.FC = () => {
             )}
             {isGoogleLoading ? 'Connecting...' : 'Continue with Google'}
           </button>
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              className="w-full text-center text-sm font-bold text-gray-400 hover:text-white py-2 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <span>Explore Next as Guest</span>
+              <span className="text-[#1877F2]">→</span>
+            </button>
+          </div>
         </form>
       </div>
     </div>

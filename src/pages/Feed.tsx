@@ -33,6 +33,7 @@ const Feed: React.FC = () => {
   const navigate = useNavigate();
   const { addUpload, uploads } = useUpload();
   const { isScanning: isModerating, scanFile } = useContentFilter();
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
   const [newPostContent, setNewPostContent] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | string | null>(null);
   const [selectedThumbnail, setSelectedThumbnail] = useState<File | null>(null);
@@ -567,6 +568,22 @@ const Feed: React.FC = () => {
           </button>
         ))}
       </div>
+
+      {!currentUser && (
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 text-white shadow-lg mb-4 flex items-center justify-between gap-4 animate-in fade-in duration-300">
+          <div>
+            <p className="font-extrabold text-base sm:text-lg">Welcome to Next!</p>
+            <p className="text-xs sm:text-sm text-blue-100 mt-0.5">Explore posts, watch reels, or join to connect and share.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate('/login')}
+            className="shrink-0 bg-white text-[#1877F2] font-black text-xs sm:text-sm px-4 py-2 rounded-xl shadow-md hover:bg-blue-50 transition-all active:scale-95"
+          >
+            Log In / Sign Up
+          </button>
+        </div>
+      )}
 
       {currentUser && (
         <div className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden mb-4">

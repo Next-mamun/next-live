@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Home, Users, MessageCircle, Bell, User, LogOut, Menu, BookOpen, Tv } from 'lucide-react';
+import { Home, Users, MessageCircle, Bell, User, LogOut, Menu, BookOpen, Tv, LogIn } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { doc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -11,6 +11,7 @@ import { useGlobalStore } from '@/store/useGlobalStore';
 
 const Navbar: React.FC = () => {
   const { currentUser, logout } = useAuth();
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const navigate = useNavigate();
@@ -208,24 +209,37 @@ const Navbar: React.FC = () => {
         >
           <BookOpen size={24} />
         </Link>
-        <button 
-          onClick={handleNotificationsClick}
-          className={`p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors relative ${showNotifications ? 'text-[#1877F2] bg-blue-50 dark:bg-blue-900/30' : 'text-black dark:text-white'}`}
-        >
-          <Bell size={24} fill={showNotifications ? "currentColor" : "none"} />
-          {notifications.filter(n => !n.is_seen).length > 0 && (
-            <span className="absolute top-1.5 right-1.5 bg-red-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold border-2 border-white dark:border-black">
-              {notifications.filter(n => !n.is_seen).length}
-            </span>
-          )}
-        </button>
+        {!currentUser ? (
+          <button
+            type="button"
+            onClick={() => navigate('/login')}
+            className="flex items-center gap-2 bg-[#1877F2] hover:bg-[#166fe5] text-white text-xs sm:text-sm font-bold px-4 py-1.5 rounded-full shadow-md shadow-blue-500/20 transition-all active:scale-[0.98]"
+          >
+            <LogIn size={16} />
+            <span>Log In</span>
+          </button>
+        ) : (
+          <>
+            <button 
+              onClick={handleNotificationsClick}
+              className={`p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors relative ${showNotifications ? 'text-[#1877F2] bg-blue-50 dark:bg-blue-900/30' : 'text-black dark:text-white'}`}
+            >
+              <Bell size={24} fill={showNotifications ? "currentColor" : "none"} />
+              {notifications.filter(n => !n.is_seen).length > 0 && (
+                <span className="absolute top-1.5 right-1.5 bg-red-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold border-2 border-white dark:border-black">
+                  {notifications.filter(n => !n.is_seen).length}
+                </span>
+              )}
+            </button>
 
-        <button 
-          onClick={() => { setShowDropdown(!showDropdown); setShowNotifications(false); }}
-          className={`p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors ${showDropdown ? 'text-[#1877F2] bg-blue-50 dark:bg-blue-900/30' : 'text-black dark:text-white'}`}
-        >
-          <Menu size={24} />
-        </button>
+            <button 
+              onClick={() => { setShowDropdown(!showDropdown); setShowNotifications(false); }}
+              className={`p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors ${showDropdown ? 'text-[#1877F2] bg-blue-50 dark:bg-blue-900/30' : 'text-black dark:text-white'}`}
+            >
+              <Menu size={24} />
+            </button>
+          </>
+        )}
 
         {/* Notifications Dropdown */}
         {showNotifications && (
