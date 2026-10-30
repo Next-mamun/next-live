@@ -90,6 +90,28 @@ const Lab: React.FC = () => {
     }
   };
 
+  // Open Results Checker: Full-page in Android WebView, new tab in regular browser
+  const handleOpenResultsChecker = useCallback(() => {
+    const isAndroidApp = typeof navigator !== 'undefined' && (
+      navigator.userAgent.includes('Next') ||
+      navigator.userAgent.includes('wv') ||
+      /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
+    );
+
+    const targetUrl = 'https://educationboardresults.gov.bd';
+
+    if (isAndroidApp) {
+      // 1. Android App WebView: Top-level full page navigation so Cloudflare/anti-bot verification works without iframe blocking
+      window.location.href = targetUrl;
+    } else {
+      // 2. Regular browser: open official site in a new tab
+      const win = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      if (!win) {
+        window.location.href = targetUrl;
+      }
+    }
+  }, []);
+
   // Code Runner state
   const [htmlCode, setHtmlCode] = useState(`<!DOCTYPE html>
 <html>
@@ -334,15 +356,24 @@ const Lab: React.FC = () => {
 
             {/* 2. Results Checker (Top Option) */}
             <button 
-              onClick={() => handleSelectTab('results')}
-              className="flex flex-col items-center justify-center gap-4 p-8 bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-900/30 rounded-2xl hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all group active:scale-95 text-center shadow-sm"
+              onClick={() => {
+                handleSelectTab('results');
+                handleOpenResultsChecker();
+              }}
+              className="flex flex-col items-center justify-center gap-4 p-8 bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-900/30 rounded-2xl hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:border-emerald-300 dark:hover:border-emerald-700 transition-all group active:scale-95 text-center shadow-sm cursor-pointer"
             >
               <div className="w-16 h-16 rounded-full bg-emerald-100 dark:bg-emerald-800 text-emerald-600 dark:text-emerald-300 flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
                 <Award size={32} />
               </div>
               <div className="text-center">
-                <h2 className="font-bold text-lg text-gray-900 dark:text-white">Results Checker</h2>
+                <div className="flex items-center justify-center gap-1.5">
+                  <h2 className="font-bold text-lg text-gray-900 dark:text-white">Results Checker</h2>
+                  <ExternalLink size={16} className="text-emerald-600 dark:text-emerald-400 opacity-70 group-hover:opacity-100" />
+                </div>
                 <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Check Your Board Results Instant</p>
+                <span className="inline-block mt-2 px-2.5 py-0.5 text-[11px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
+                  Official Server • 100% Verified
+                </span>
               </div>
             </button>
 
@@ -416,33 +447,87 @@ const Lab: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 2: Results Checker Viewer */}
+        {/* Tab 2: Results Checker Dedicated Portal View (Zero anti-bot verification failure) */}
         {activeTab === 'results' && (
-          <div className="flex flex-col h-full w-full absolute inset-0">
-            <div className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-900/20 px-4 py-2.5 border-b border-emerald-100 dark:border-emerald-800/30 shrink-0">
-              <div className="flex items-center gap-2">
-                <Award size={18} className="text-emerald-600 dark:text-emerald-400" />
-                <p className="text-xs sm:text-sm text-emerald-800 dark:text-emerald-300 font-bold">
-                  Check Your Board Results Instant
-                </p>
+          <div className="flex flex-col h-full w-full absolute inset-0 bg-gradient-to-b from-emerald-50/50 via-white to-gray-50 dark:from-emerald-950/20 dark:via-black dark:to-gray-950 p-4 md:p-8 overflow-y-auto">
+            <div className="max-w-lg mx-auto w-full flex flex-col items-center text-center my-auto py-6">
+              {/* Official Portal Emblem */}
+              <div className="relative mb-5">
+                <div className="w-20 h-20 md:w-24 md:h-24 rounded-3xl bg-emerald-600 text-white flex items-center justify-center shadow-2xl shadow-emerald-600/30">
+                  <Award size={44} />
+                </div>
+                <div className="absolute -bottom-1 -right-1 bg-white dark:bg-black rounded-full p-1 shadow-md">
+                  <Check size={18} className="text-emerald-600 dark:text-emerald-400" />
+                </div>
               </div>
-              <a 
-                href="https://educationboardresults.gov.bd/v2/home" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors whitespace-nowrap shadow-sm"
-              >
-                <ExternalLink size={14} /> Open in new tab
-              </a>
+
+              {/* Title & Organization */}
+              <h2 className="text-2xl md:text-3xl font-black text-gray-900 dark:text-white tracking-tight">
+                Education Board Results
+              </h2>
+              <p className="text-xs md:text-sm font-semibold text-emerald-700 dark:text-emerald-400 mt-1">
+                Ministry of Education, Bangladesh
+              </p>
+              <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 max-w-sm mt-3 leading-relaxed">
+                Official examination results server for SSC, Dakhil, HSC, Alim, JSC, Vocational & DIBS.
+              </p>
+
+              {/* Supported Examinations Pills */}
+              <div className="flex flex-wrap items-center justify-center gap-1.5 my-5 max-w-md">
+                {['SSC / DAKHIL', 'HSC / ALIM', 'JSC / JDC', 'VOCATIONAL', 'DIBS'].map((exam) => (
+                  <span 
+                    key={exam} 
+                    className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 shadow-2xs"
+                  >
+                    {exam}
+                  </span>
+                ))}
+              </div>
+
+              {/* Verification & Security Notice */}
+              <div className="w-full bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/40 rounded-2xl p-4 text-left mb-6 shadow-xs">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold">
+                    ✓
+                  </div>
+                  <div className="text-xs space-y-1">
+                    <p className="font-bold text-emerald-900 dark:text-emerald-200">
+                      ১০০% ভেরিফিকেশন ফেইল ছাড়া রেজাল্ট
+                    </p>
+                    <p className="text-emerald-700 dark:text-emerald-300 text-[11px] leading-relaxed">
+                      সরকারি ওয়েবসাইটের সিকিউরিটি কারণে আইফ্রেমের ভেতরে ভেরিফিকেশন ফেইল হতো। এখন নিচের বাটনে ক্লিক করলেই সরাসরি অফিশিয়াল সার্ভার ওপেন হবে—অ্যাপের ভেতর থেকে ফুল-পেজে এবং ব্রাউজার থেকে নতুন ট্যাবে।
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="w-full flex flex-col gap-3">
+                <button
+                  type="button"
+                  onClick={handleOpenResultsChecker}
+                  className="w-full py-4 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-black text-base shadow-xl shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Award size={20} />
+                  <span>Open Official Results Portal</span>
+                  <ExternalLink size={18} />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSelectTab('menu')}
+                  className="w-full py-3 px-4 rounded-xl text-xs font-bold text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer"
+                >
+                  ← Back to Lab Menu
+                </button>
+              </div>
+
+              {/* Official Server URL */}
+              <div className="mt-6 text-[11px] text-gray-400 dark:text-gray-500">
+                <span>Official URL: </span>
+                <span className="font-mono text-emerald-600 dark:text-emerald-400">https://educationboardresults.gov.bd</span>
+              </div>
             </div>
-            <iframe 
-              src="https://educationboardresults.gov.bd/v2/home" 
-              width="100%" 
-              height="100%" 
-              className="flex-1 border-none w-full h-full bg-white dark:bg-gray-900"
-              sandbox="allow-scripts allow-same-origin allow-forms"
-              title="Results Checker"
-            />
           </div>
         )}
 
