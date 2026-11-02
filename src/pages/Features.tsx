@@ -333,6 +333,10 @@ const ALL_FEATURES: FeatureItem[] = [
 
 const FAQ_LIST = [
   {
+    q: 'How can I find Next, Next Nexto, next-nexto.app, Mamuns App, ceoofnext app, or Abdullahs app?',
+    a: 'Next (also known and searched as Next Nexto, next-nexto.app, next-nexto, Mamuns App, ceoofnext app, and Abdullahs app) is officially hosted at https://next-nexto.vercel.app. It is an independent 100% free high-tech social media platform created by Abdullah Al Mamun (ceoofnext) with synchronized Cinema, encrypted P2P Meet, real-time keystroke typing, and Nexto AI.'
+  },
+  {
     q: 'What is Next (Nexto) and what makes it unique?',
     a: 'Next is a high-tech next-generation social media platform engineered by Abdullah Al Mamun (ceoofnext). Beyond standard reels and posts, Next introduces groundbreaking innovations including synchronized Cinema watch parties, serverless P2P Meet video conferencing, real-time keystroke typing in Messenger, floating Nexto AI & regional Sylheti AI, developer Code Runner lab, and the world’s first 100% free Next IELTS practice platform.'
   },
@@ -627,6 +631,16 @@ export const Features: React.FC = () => {
             >
               View 12 Core Features
             </a>
+          </div>
+
+          {/* Search Keywords & Brand Aliases */}
+          <div className="flex flex-wrap items-center justify-center gap-1.5 mt-5 text-[11px] font-bold text-gray-400">
+            <span>Also searched as:</span>
+            <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">Next Nexto</span>
+            <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">next-nexto.app</span>
+            <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">Mamuns App</span>
+            <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">ceoofnext app</span>
+            <span className="px-2.5 py-0.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300">Abdullahs app</span>
           </div>
 
           {/* Quick Metrics */}
