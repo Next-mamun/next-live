@@ -1,14 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml"
         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
         http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
-  <!-- Homepage / Feed -->
+  <!-- Homepage / Feed with Global Multilingual Alternates -->
   <url>
     <loc>https://next-nexto.vercel.app/</loc>
     <lastmod>2026-11-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="bn" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="hi" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="ar" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="pt" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="id" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="ur" href="https://next-nexto.vercel.app/" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://next-nexto.vercel.app/" />
   </url>
 
   <!-- 12 Core Features Showcase -->
@@ -17,9 +32,23 @@
     <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.95</priority>
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="bn" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="hi" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="ar" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="pt" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="id" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="ru" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="ur" href="https://next-nexto.vercel.app/features" />
+    <xhtml:link rel="alternate" hreflang="zh" href="https://next-nexto.vercel.app/features" />
   </url>
 
-  <!-- About Next & Creator -->
+  <!-- About Next & Creator (Abdullah Al Mamun - ceoofnext) -->
   <url>
     <loc>https://next-nexto.vercel.app/about</loc>
     <lastmod>2026-11-02</lastmod>

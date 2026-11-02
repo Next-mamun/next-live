@@ -5,7 +5,7 @@ import {
   Youtube, ShieldCheck, Sliders, Mic, ShoppingBag, 
   GraduationCap, ArrowRight, ExternalLink, CheckCircle2, 
   ChevronDown, Search, Heart, Share2, Eye, Shield, Laptop, 
-  Zap, Globe, Award, Lock, Smartphone
+  Zap, Globe, Award, Lock, Smartphone, Copy, Check, Mail, MessageSquare
 } from 'lucide-react';
 
 interface FeatureItem {
@@ -353,12 +353,214 @@ const FAQ_LIST = [
     a: 'Yes! Next enforces a strict Safe AI Guardian policy with real-time proactive scanning. Obscene, vulgar, or adult content is detected and blocked before upload both in public feed and private chats, making Next clean and safe for all ages.'
   },
   {
-    q: 'Is Next IELTS completely free?',
-    a: 'Yes, Next IELTS is 100% free with no hidden fees or subscriptions. It provides full Cambridge computer-delivered mock tests, reading highlighters, speaking audio testers, band score calculators, and the exclusive Listening x Typing dictation trainer.'
+    q: 'Is Next 100% free, secure, and private for all users?',
+    a: 'Yes! Next is 100% free forever with no hidden subscriptions, paywalls, or premium tiers. It is built with zero-server storage for private calls, strict encryption, and respects user privacy without invasive ad tracking.'
+  },
+  {
+    q: 'How does Next Meet ensure 100% private and serverless video calls?',
+    a: 'Next Meet uses direct Peer-to-Peer (P2P) WebRTC connections with zero central server media storage. Audio, video, and in-room chat pass directly between user devices, making it immune to server leaks, surveillance, or recording.'
+  },
+  {
+    q: 'How does YouTube video integration boost creators\' view counts and watch time?',
+    a: 'Creators can paste any YouTube link into a post, and Next automatically embeds the responsive player. Followers watch directly on their feed, sending genuine views and watch time directly to the creator\'s YouTube channel.'
   },
   {
     q: 'Who is the creator and developer of Next?',
-    a: 'Next (Nexto) was envisioned, designed, and engineered by Abdullah Al Mamun (ceoofnext), a visionary young Bangladeshi software engineer who created this complete high-tech social ecosystem independently.'
+    a: 'Next (Nexto / Mamuns App) was envisioned, designed, and independently engineered by Abdullah Al Mamun (ceoofnext), a visionary young Bangladeshi software engineer.'
+  }
+];
+
+interface LanguageOverview {
+  code: string;
+  name: string;
+  nativeName: string;
+  flag: string;
+  title: string;
+  tagline: string;
+  summary: string;
+  bullets: string[];
+}
+
+const GLOBAL_LANGUAGES: LanguageOverview[] = [
+  {
+    code: 'en',
+    name: 'English',
+    nativeName: 'English',
+    flag: '🌐',
+    title: 'Next (Nexto) – High-Tech Social Media Platform',
+    tagline: '100% Free, Private & Secure Social Network by Abdullah Al Mamun',
+    summary: 'Next combines synchronized Cinema watch parties, encrypted P2P Meet video calls, real-time keystroke live typing, 3D Nexto AI & Sylheti AI, offline code sandbox, and 100% free Cambridge IELTS preparation into one seamless ecosystem.',
+    bullets: [
+      'Synchronized Cinema Watch Parties with live video calls',
+      'Encrypted P2P Meet with zero central server media logs',
+      'Real-time keystroke live typing & view-once confidential notes',
+      '100% free forever with no hidden subscriptions or paywalls'
+    ]
+  },
+  {
+    code: 'bn',
+    name: 'Bengali',
+    nativeName: 'বাংলা',
+    flag: '🇧🇩',
+    title: 'নেক্সট (Nexto / মামুনের অ্যাপ) – হাই-টেক সোশ্যাল প্ল্যাটফর্ম',
+    tagline: '১০০% ফ্রি, নিরাপদ ও ব্যক্তিগত সোশ্যাল নেটওয়ার্ক | আব্দুল্লাহ আল মামুন',
+    summary: 'নেক্সট একটি সম্পূর্ণ নতুন সোশ্যাল প্ল্যাটফর্ম যেখানে সাধারণ সোশ্যাল মিডিয়ার চেয়ে অনেক বেশি উচ্চ প্রযুক্তি রয়েছে। একসাথে সিনেমা দেখার থিয়েটার, গোপন পি২পি এনক্রিপ্টেড মিট কল, লাইভ টাইপিং চ্যাট, নেক্সটো এআই এবং প্রথম সিলেটি এআই সহ সম্পূর্ণ ফ্রি আইইএলটিএস প্র্যাকটিস সিস্টেম।',
+    bullets: [
+      'বন্ধুদের সাথে সিঙ্ক করা সিনেমা ও ইউটিউব ওয়াচ পার্টি',
+      'সার্ভারলেস পি২পি সিক্রেট মিট কল (সার্ভারে কোনো ডেটা থাকে না)',
+      'রিয়েল-টাইম কি-স্ট্রোক লাইভ টাইপিং ও ভিউ-ওয়ান্স গোপন বার্তা',
+      '১০০% আজীবন ফ্রি, কোনো সাবস্ক্রিপশন বা প্রিমিয়াম ফি নেই'
+    ]
+  },
+  {
+    code: 'es',
+    name: 'Spanish',
+    nativeName: 'Español',
+    flag: '🇪🇸',
+    title: 'Next (Nexto) – Red Social de Alta Tecnología',
+    tagline: '100% Gratuita, Privada y Segura por Abdullah Al Mamun',
+    summary: 'Next es la plataforma social de próxima generación que combina cine sincronizado con videollamadas en vivo, reuniones P2P cifradas sin registro en servidores, mensajería con escritura en tiempo real tecla por tecla, Nexto AI y práctica de IELTS Cambridge completamente gratis.',
+    bullets: [
+      'Salas de cine sincronizadas para ver YouTube y películas juntos',
+      'Llamadas P2P cifradas directas sin almacenamiento en servidor',
+      'Chat con escritura en vivo carácter por carácter y notas efímeras',
+      'Totalmente gratis sin suscripciones ni costos ocultos'
+    ]
+  },
+  {
+    code: 'ar',
+    name: 'Arabic',
+    nativeName: 'العربية',
+    flag: '🇸🇦',
+    title: 'نكست (Next) – منصة التواصل الاجتماعي فائقة التطور',
+    tagline: '100% مجانية، خاصة وآمنة بالكامل بواسطة عبد الله المأمون',
+    summary: 'نكست هي منصة تواصل اجتماعي تجمع بين صالات السينما المتزامنة، مكالمات فيديو مشفرة مباشرة P2P، محادثة فورية بحروف حية أثناء الكتابة، روبوت الذكاء الاصطناعي Nexto AI، والتحضير الكامل لاختبارات آيلتس مجاناً.',
+    bullets: [
+      'مشاهدة متزامنة للأفلام واليوتيوب مع مكالمات الفيديو الجماعية',
+      'اتصالات فيديو P2P مشفرة بالكامل بدون حفظ أي بيانات بالخادم',
+      'رؤية الحروف أثناء كتابتها مباشرة ورسائل ذاتية التدمير',
+      'مجانية 100% مدى الحياة بدون أي رسوم اشتراك'
+    ]
+  },
+  {
+    code: 'hi',
+    name: 'Hindi',
+    nativeName: 'हिन्दी',
+    flag: '🇮🇳',
+    title: 'नेक्स्ट (Next) – हाई-टेक सोशल मीडिया प्लेटफॉर्म',
+    tagline: '100% मुफ्त, सुरक्षित और निजी सोशल नेटवर्क | अब्दुल्ला अल मामून',
+    summary: 'नेक्स्ट एक क्रांतिकारी सोशल मीडिया नेटवर्क है जो सिंक्रोनाइज़्ड सिनेमा वॉच पार्टी, पी2पी एन्क्रिप्टेड वीडियो मीट, रियल-टाइम कीस्ट्रोक टाइपिंग चैट, नेक्स्टो एआई और पूरी तरह से मुफ्त कैम्ब्रिज आईईएलटीएस तैयारी को एक साथ लाता है।',
+    bullets: [
+      'दोस्तों के साथ एक साथ यूट्यूब और मूवी देखने का सिनेमा रूम',
+      'जीरो-सर्वर स्टोरेज के साथ सुरक्षित पी2पी वीडियो कॉल',
+      'रियल-टाइम अक्षर-दर-अक्षर लाइव टाइपिंग और व्यू-वन्स गुप्त नोट्स',
+      'हमेशा के लिए 100% फ्री, कोई हिडन चार्ज या सब्सक्रिप्शन नहीं'
+    ]
+  },
+  {
+    code: 'fr',
+    name: 'French',
+    nativeName: 'Français',
+    flag: '🇫🇷',
+    title: 'Next (Nexto) – Réseau Social Haute Technologie',
+    tagline: '100% Gratuit, Privé et Sécurisé par Abdullah Al Mamun',
+    summary: 'Next allie des soirées cinéma synchronisées avec appels vidéo, des réunions vidéo P2P cryptées sans stockage de serveur, une messagerie affichant la frappe en temps réel caractère par caractère et une préparation Cambridge IELTS gratuite.',
+    bullets: [
+      'Cinéma synchronisé pour regarder des vidéos et films ensemble',
+      'Appels vidéo P2P sécurisés sans données sur les serveurs',
+      'Frappe au clavier visible en direct et messages éphémères',
+      '100% gratuit sans abonnement ni frais cachés'
+    ]
+  },
+  {
+    code: 'pt',
+    name: 'Portuguese',
+    nativeName: 'Português',
+    flag: '🇧🇷',
+    title: 'Next (Nexto) – Rede Social de Alta Tecnologia',
+    tagline: '100% Gratuita, Privada e Segura por Abdullah Al Mamun',
+    summary: 'Next é a inovadora rede social que reúne cinema sincronizado com chamadas ao vivo, reuniões P2P criptografadas sem gravação em servidores centrais, chat com digitação tecla a tecla em tempo real e testes Cambridge IELTS 100% gratuitos.',
+    bullets: [
+      'Cinema sincronizado para assistir filmes juntos com áudio e vídeo',
+      'Vídeo chamadas P2P diretas de máxima segurança sem logs',
+      'Digitação em tempo real e mensagens autodestrutivas',
+      'Plataforma 100% gratuita para sempre'
+    ]
+  },
+  {
+    code: 'de',
+    name: 'German',
+    nativeName: 'Deutsch',
+    flag: '🇩🇪',
+    title: 'Next (Nexto) – High-Tech Social-Media-Plattform',
+    tagline: '100% Kostenlos, Privat & Sicher von Abdullah Al Mamun',
+    summary: 'Next revolutioniert moderne soziale Netzwerke durch synchronisiertes Online-Kino, P2P-verschlüsselte Konferenzen ohne zentrale Datenspeicherung, Echtzeit-Tastaturanzeige und kostenlose Cambridge IELTS-Simulationen.',
+    bullets: [
+      'Synchronisierte Watch-Partys für YouTube und Spielfilme',
+      'P2P-verschlüsselte Videoanrufe ohne Server-Logs',
+      'Live-Tastatureingabe in Echtzeit und Einmal-Textnotizen',
+      'Dauerhaft 100% kostenlos ohne Paywalls'
+    ]
+  },
+  {
+    code: 'ja',
+    name: 'Japanese',
+    nativeName: '日本語',
+    flag: '🇯🇵',
+    title: 'Next（ネクスト）– 次世代ハイテクソーシャルメディア',
+    tagline: '完全無料・高セキュリティ・プライバシー保護 | Abdullah Al Mamun',
+    summary: 'Nextは、映画やYouTubeのリアルタイム同時鑑賞シネマ、完全P2P暗号化ビデオ会議、打鍵がリアルタイムで見えるライブタイピングメッセンジャー、Nexto AI、完全無料のIELTS試験対策を融合した革新的なプラットフォームです。',
+    bullets: [
+      '動画と映画のリアルタイム同期シネマルーム',
+      'サーバーに一切記録を残さないP2P暗号化ビデオ通話',
+      '文字ごとのリアルタイムタイピング表示と自動消去メッセージ',
+      '完全無料でサブスクリプションや課金は一切なし'
+    ]
+  },
+  {
+    code: 'ru',
+    name: 'Russian',
+    nativeName: 'Русский',
+    flag: '🇷🇺',
+    title: 'Next (Nexto) – Высокотехнологичная социальная сеть',
+    tagline: '100% Бесплатно, Конфиденциально и Безопасно | Abdullah Al Mamun',
+    summary: 'Next объединяет синхронизированный онлайн-кинотеатр для совместного просмотра фильмов, зашифрованные P2P видеозвонки без логов на сервере, отображение ввода текста в реальном времени, Nexto AI и 100% бесплатные тесты Cambridge IELTS.',
+    bullets: [
+      'Синхронный просмотр фильмов и YouTube с видеосвязью',
+      'P2P шифрование видеозвонков без сохранения на сервере',
+      'Отображение нажатия клавиш в реальном времени и самоуничтожающиеся сообщения',
+      '100% бесплатно навсегда без подписок и скрытых платежей'
+    ]
+  },
+  {
+    code: 'zh',
+    name: 'Chinese',
+    nativeName: '中文',
+    flag: '🇨🇳',
+    title: 'Next (Nexto) – 前沿高科技社交媒体平台',
+    tagline: '100% 免费、安全与注重隐私的社交网络 | Abdullah Al Mamun',
+    summary: 'Next 深度整合了多人同步影院边看边聊、零服务器媒体留存的 P2P 加密视频会议、实时按键打字聊天信使、3D 桌面 Nexto AI 以及完全免费的剑桥雅思全套模考系统。',
+    bullets: [
+      '多人实时同步观影与高清语音视频通话',
+      '直接设备端对端 P2P 加密，不留任何服务器日志',
+      '实时按键流式打字与阅后即焚私密文本',
+      '终生 100% 免费，无任何隐藏收费与付费墙'
+    ]
+  },
+  {
+    code: 'ur',
+    name: 'Urdu',
+    nativeName: 'اردو',
+    flag: '🇵🇰',
+    title: 'نیکسٹ (Next) – جدید ترین ہائی ٹیک سوشل میڈیا',
+    tagline: '100% مفت، محفوظ اور پرائیویٹ | عبداللہ المامون',
+    summary: 'نیکسٹ جدید ترین سوشل پلیٹ فارم ہے جس میں سنکرونائزڈ سنیما، خفیہ P2P ویڈیو میٹنگز، ریئل ٹائم ٹائپنگ چیٹ، نیکسٹو اے آئی اور 100% مفت کیمبرج آئی ایل ٹی ایس پریکٹس شامل ہے۔',
+    bullets: [
+      'ایک ساتھ فلمیں اور یوٹیوب دیکھنے کا سنکرونائزڈ سنیما',
+      'سرور لیس P2P ویڈیو کالز بغیر کسی ڈیٹا اسٹوریج کے',
+      'ریئل ٹائم کی اسٹروک لائیو ٹائپنگ اور خود بخود مٹنے والے پیغامات',
+      'ہمیشہ کے لیے 100% مفت، بغیر کسی فیس یا سبسکرپشن کے'
+    ]
   }
 ];
 
@@ -367,6 +569,14 @@ export const Features: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
+  const [selectedLang, setSelectedLang] = useState<string>('en');
+  const [copiedEmail, setCopiedEmail] = useState<boolean>(false);
+
+  const handleCopyEmail = () => {
+    navigator.clipboard.writeText('abdullahalmamun.next@gmail.com');
+    setCopiedEmail(true);
+    setTimeout(() => setCopiedEmail(false), 2500);
+  };
 
   const categories = ['All', 'Communication', 'AI & Intelligence', 'Media & Entertainment', 'Learning & Tools', 'Safety & Settings'];
 
@@ -590,38 +800,400 @@ export const Features: React.FC = () => {
         </div>
       </main>
 
-      {/* Creator Spotlight */}
-      <section className="bg-white dark:bg-gray-900 border-y border-gray-200 dark:border-gray-800 py-12 px-4 sm:px-6">
-        <div className="max-w-4xl mx-auto flex flex-col md:flex-row items-center gap-6 text-center md:text-left">
-          <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl bg-gradient-to-tr from-[#1877F2] to-indigo-600 p-1 shadow-xl shrink-0">
-            <img
-              src="https://i.postimg.cc/wxwt5tsk/retouch-2026030721254774.png"
-              alt="Next by Abdullah Al Mamun"
-              className="w-full h-full object-cover rounded-2xl bg-white"
-            />
+      {/* Creator Spotlight & Official Sponsorship */}
+      <section className="bg-white dark:bg-gray-900 border-y border-gray-200 dark:border-gray-800 py-14 px-4 sm:px-6">
+        <div className="max-w-5xl mx-auto space-y-8">
+          <div className="flex flex-col md:flex-row items-center md:items-start gap-6 text-center md:text-left">
+            <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-3xl bg-gradient-to-tr from-[#1877F2] via-indigo-600 to-purple-600 p-1.5 shadow-2xl shrink-0">
+              <img
+                src="https://i.postimg.cc/wxwt5tsk/retouch-2026030721254774.png"
+                alt="Abdullah Al Mamun (ceoofnext) - Creator of Next"
+                className="w-full h-full object-cover rounded-2xl bg-white"
+              />
+            </div>
+            <div className="flex-1 space-y-3">
+              <div className="flex flex-wrap items-center justify-center md:justify-start gap-2">
+                <span className="text-xs font-black text-[#1877F2] uppercase tracking-wider bg-blue-50 dark:bg-blue-950/60 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-900/40">
+                  Founder & Lead Software Architect
+                </span>
+                <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-3 py-1 rounded-full border border-emerald-200 dark:border-emerald-900/40">
+                  🇧🇩 From Bangladesh
+                </span>
+              </div>
+              <h3 className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white">
+                Abdullah Al Mamun (ceoofnext)
+              </h3>
+              <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 leading-relaxed max-w-3xl">
+                While conventional mega-platforms rely on thousands of legacy engineers to maintain basic feed algorithms, <strong>Next (Nexto / Mamuns App)</strong> was independently architected and coded from scratch by a single developer from Bangladesh. Combining frontier WebRTC, Gemini AI, PWA offline resilience, and high-performance React, Next proves that visionary solo engineering can outpace industry giants.
+              </p>
+            </div>
           </div>
-          <div className="flex-1">
-            <span className="text-xs font-bold text-[#1877F2] uppercase tracking-wider">Independent Engineering</span>
-            <h3 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white mt-1">
-              Built with Passion by Abdullah Al Mamun (ceoofnext)
-            </h3>
-            <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 mt-2 leading-relaxed">
-              While conventional mega-platforms rely on thousands of legacy engineers to maintain basic feed algorithms, <strong>Next</strong> was independently architected and coded from scratch by a single developer from Bangladesh. Combining modern WebRTC, Gemini AI, PWA offline resilience, and high-performance React, Next proves that visionary solo engineering can outpace industry giants.
-            </p>
-            <div className="flex flex-wrap items-center justify-center md:justify-start gap-4 mt-4 text-xs font-bold text-gray-500">
-              <span>Creator: Abdullah Al Mamun</span>
-              <span>•</span>
-              <span>Handle: @ceoofnext</span>
-              <span>•</span>
-              <span>Platform: Next (Nexto)</span>
-              <span>•</span>
-              <a href="https://next-nexto.vercel.app" className="text-[#1877F2] hover:underline">next-nexto.vercel.app</a>
+
+          {/* Verified Creator Social Channels */}
+          <div className="bg-gray-50 dark:bg-gray-800/60 rounded-3xl p-6 border border-gray-200/80 dark:border-gray-700/60">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-5 border-b border-gray-200 dark:border-gray-700/60 pb-4">
+              <div>
+                <h4 className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-[#1877F2]" />
+                  <span>Verified Creator Social Channels</span>
+                </h4>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Follow, connect, and verify authentic updates from Abdullah Al Mamun:
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold text-gray-400 bg-white dark:bg-gray-900 px-3 py-1 rounded-full border border-gray-200 dark:border-gray-800">
+                Handle: @ceoofnext
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {/* WhatsApp */}
+              <a
+                href="https://wa.me/?text=Hello%20Abdullah%20Al%20Mamun%20(ceoofnext),%20I%20am%20interested%20in%20Next%20sponsorship%20and%20partnership"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 border border-gray-200 dark:border-gray-800 hover:border-emerald-500/50 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center shrink-0">
+                  <MessageSquare size={16} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">WhatsApp</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate group-hover:text-emerald-600">ceoofnext</p>
+                </div>
+              </a>
+
+              {/* TikTok */}
+              <a
+                href="https://www.tiktok.com/@ceoofnext"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 border border-gray-200 dark:border-gray-800 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-black/10 dark:bg-white/10 text-gray-900 dark:text-white flex items-center justify-center shrink-0 font-black text-xs">
+                  TT
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">TikTok</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate">@ceoofnext</p>
+                </div>
+              </a>
+
+              {/* Facebook */}
+              <a
+                href="https://www.facebook.com/ceoofnext"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-gray-200 dark:border-gray-800 hover:border-[#1877F2]/50 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-[#1877F2] flex items-center justify-center shrink-0 font-black text-xs">
+                  fb
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">Facebook</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate group-hover:text-[#1877F2]">ceoofnext</p>
+                </div>
+              </a>
+
+              {/* YouTube */}
+              <a
+                href="https://www.youtube.com/@ceoofnext"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-red-50 dark:hover:bg-red-950/40 border border-gray-200 dark:border-gray-800 hover:border-red-500/50 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-red-500/10 text-red-600 flex items-center justify-center shrink-0">
+                  <Youtube size={16} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">YouTube</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate group-hover:text-red-600">@ceoofnext</p>
+                </div>
+              </a>
+
+              {/* Snapchat */}
+              <a
+                href="https://www.snapchat.com/add/ceoofnext"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-amber-50 dark:hover:bg-amber-950/40 border border-gray-200 dark:border-gray-800 hover:border-yellow-400 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-yellow-400/20 text-yellow-600 flex items-center justify-center shrink-0 font-black text-xs">
+                  👻
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">Snapchat</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate group-hover:text-yellow-600">ceoofnext</p>
+                </div>
+              </a>
+
+              {/* Instagram */}
+              <a
+                href="https://www.instagram.com/abdullahalmamun_ceoofnext"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2.5 p-3 rounded-2xl bg-white dark:bg-gray-900 hover:bg-pink-50 dark:hover:bg-pink-950/40 border border-gray-200 dark:border-gray-800 hover:border-pink-500/50 transition-all group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-pink-500/10 text-pink-600 flex items-center justify-center shrink-0 font-black text-xs">
+                  IG
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[11px] text-gray-400 font-bold">Instagram</p>
+                  <p className="text-xs font-black text-gray-900 dark:text-white truncate group-hover:text-pink-600">@abdullah...</p>
+                </div>
+              </a>
+            </div>
+
+            {/* Official Sponsorship & Media Contact Box */}
+            <div className="mt-5 p-4 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 border border-blue-200/80 dark:border-blue-900/50 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="text-center sm:text-left">
+                <span className="text-[11px] font-black uppercase tracking-wider text-[#1877F2]">
+                  Brand Sponsorships, Server Funding & Media Inquiries
+                </span>
+                <p className="text-xs sm:text-sm font-bold text-gray-800 dark:text-gray-200 mt-0.5">
+                  Interested in sponsoring Next or partnering with the creator? Reach out directly:
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-1">
+                  abdullahalmamun.next@gmail.com
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleCopyEmail}
+                  className="px-4 py-2 rounded-xl bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-800 dark:text-gray-200 font-bold text-xs border border-gray-200 dark:border-gray-700 flex items-center gap-1.5 transition-all shadow-xs"
+                >
+                  {copiedEmail ? (
+                    <>
+                      <Check size={14} className="text-emerald-500" />
+                      <span className="text-emerald-600 dark:text-emerald-400">Email Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={14} />
+                      <span>Copy Email</span>
+                    </>
+                  )}
+                </button>
+                <a
+                  href="mailto:abdullahalmamun.next@gmail.com?subject=Sponsorship%20Inquiry%20for%20Next%20App"
+                  className="px-4 py-2 rounded-xl bg-[#1877F2] hover:bg-blue-600 text-white font-bold text-xs flex items-center gap-1.5 transition-all shadow-md shadow-blue-500/20"
+                >
+                  <Mail size={14} />
+                  <span>Send Mail</span>
+                </a>
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* FAQ Section (Rich Search Snippet SEO) */}
+      {/* Global Multilingual Showcase for International SEO */}
+      <section className="bg-gray-50 dark:bg-gray-900/40 border-b border-gray-200 dark:border-gray-800 py-14 px-4 sm:px-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center max-w-2xl mx-auto mb-8">
+            <span className="text-xs font-bold text-[#1877F2] uppercase tracking-wider flex items-center justify-center gap-1.5">
+              <Globe size={16} />
+              <span>Global International Network</span>
+            </span>
+            <h2 className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white mt-1">
+              Explore Next in 12 Global Languages
+            </h2>
+            <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-2">
+              Next is built for the entire world. Select any language below to read how Next delivers free, high-tech communication across borders:
+            </p>
+          </div>
+
+          {/* Language Selector Pills */}
+          <div className="flex items-center justify-center gap-2 flex-wrap mb-8">
+            {GLOBAL_LANGUAGES.map((lang) => (
+              <button
+                key={lang.code}
+                onClick={() => setSelectedLang(lang.code)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  selectedLang === lang.code
+                    ? 'bg-[#1877F2] text-white shadow-md shadow-blue-500/25 scale-105'
+                    : 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-750 border border-gray-200 dark:border-gray-700'
+                }`}
+              >
+                <span>{lang.flag}</span>
+                <span>{lang.nativeName}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Active Language Preview Card */}
+          {(() => {
+            const active = GLOBAL_LANGUAGES.find(l => l.code === selectedLang) || GLOBAL_LANGUAGES[0];
+            return (
+              <div className="bg-white dark:bg-gray-900 rounded-3xl p-6 sm:p-8 border border-gray-200 dark:border-gray-800 shadow-sm space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 dark:border-gray-800 pb-4">
+                  <div>
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">
+                      {active.name} Overview · {active.flag}
+                    </span>
+                    <h3 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white mt-0.5">
+                      {active.title}
+                    </h3>
+                  </div>
+                  <span className="px-3 py-1 rounded-full text-xs font-black bg-blue-50 dark:bg-blue-950/60 text-[#1877F2] border border-blue-100 dark:border-blue-900/50">
+                    100% Free Everywhere
+                  </span>
+                </div>
+
+                <p className="text-xs sm:text-sm font-bold text-[#1877F2] dark:text-blue-400">
+                  {active.tagline}
+                </p>
+
+                <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                  {active.summary}
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                  {active.bullets.map((bullet, bIdx) => (
+                    <div
+                      key={bIdx}
+                      className="flex items-start gap-2.5 p-3 rounded-2xl bg-gray-50 dark:bg-gray-800/60 border border-gray-100 dark:border-gray-800"
+                    >
+                      <CheckCircle2 size={16} className="text-emerald-500 shrink-0 mt-0.5" />
+                      <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{bullet}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      </section>
+
+      {/* 100% Free, Secure & Privacy-First Trust Guarantee */}
+      <section className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 py-12 px-4 sm:px-6 text-white shadow-inner">
+        <div className="max-w-5xl mx-auto">
+          <div className="text-center max-w-2xl mx-auto mb-10">
+            <span className="px-3.5 py-1 rounded-full bg-white/20 backdrop-blur-md text-xs font-black uppercase tracking-wider">
+              100% Free & Open Ecosystem
+            </span>
+            <h2 className="text-2xl sm:text-4xl font-black mt-3">
+              Uncompromising Privacy. Zero Subscription Paywalls.
+            </h2>
+            <p className="text-xs sm:text-sm text-blue-100 mt-2 leading-relaxed">
+              Why settle for corporate social networks that lock features behind monthly fees and exploit personal data? Next is engineered from the ground up to be 100% free, private, and mathematically secure.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-5 text-center">
+              <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center mx-auto mb-3 text-white">
+                <Award size={24} />
+              </div>
+              <h4 className="font-extrabold text-base mb-1">100% Free Forever</h4>
+              <p className="text-xs text-blue-100">Zero subscriptions, paywalls, or hidden coaching fees. All 12 features are free for everyone.</p>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-5 text-center">
+              <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center mx-auto mb-3 text-white">
+                <Lock size={24} />
+              </div>
+              <h4 className="font-extrabold text-base mb-1">Zero Server Media Logs</h4>
+              <p className="text-xs text-blue-100">Next Meet and private calls communicate via direct Peer-to-Peer mesh. Your streams never touch a company server.</p>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-5 text-center">
+              <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center mx-auto mb-3 text-white">
+                <Shield size={24} />
+              </div>
+              <h4 className="font-extrabold text-base mb-1">Proactive Child Safety</h4>
+              <p className="text-xs text-blue-100">Real-time client and server scanning rejects explicit or obscene content before upload in feed and chats.</p>
+            </div>
+
+            <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl p-5 text-center">
+              <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center mx-auto mb-3 text-white">
+                <Zap size={24} />
+              </div>
+              <h4 className="font-extrabold text-base mb-1">Ultra-Fast Performance</h4>
+              <p className="text-xs text-blue-100">Sub-100ms hybrid cloud state delivery and offline PWA architecture engineered for low-data mobile usage.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Comparison Matrix: Next vs Traditional Social Media */}
+      <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16 w-full">
+        <div className="text-center max-w-2xl mx-auto mb-10">
+          <span className="text-xs font-bold text-[#1877F2] uppercase tracking-wider">High-Tech Benchmark</span>
+          <h2 className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white mt-1">
+            Next vs. Traditional Social Media
+          </h2>
+          <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mt-2">
+            See how Next redefines what a social network can be compared to legacy platforms.
+          </p>
+        </div>
+
+        <div className="overflow-x-auto rounded-3xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-sm">
+          <table className="w-full text-left text-xs sm:text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60">
+                <th className="py-4 px-4 sm:px-6 font-black text-gray-900 dark:text-white">Feature / Technology</th>
+                <th className="py-4 px-4 sm:px-6 font-black text-[#1877F2] bg-blue-50/50 dark:bg-blue-950/30">Next (Nexto)</th>
+                <th className="py-4 px-4 sm:px-6 font-semibold text-gray-500 dark:text-gray-400">Traditional Social Apps</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-gray-800/60">
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">100% Free (No Hidden Paywalls)</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-emerald-600 dark:text-emerald-400 bg-blue-50/30 dark:bg-blue-950/20">✓ 100% Free Forever</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Paid tiers, blue check subscriptions</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Synchronized Cinema Watch Parties</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-[#1877F2] bg-blue-50/30 dark:bg-blue-950/20">✓ Native YouTube/Movie Sync + Video Call</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">None (Requires 3rd-party extensions)</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Serverless P2P Encrypted Video Meet</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-emerald-600 dark:text-emerald-400 bg-blue-50/30 dark:bg-blue-950/20">✓ Zero Server Media Storage</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Recorded and routed through company servers</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Real-Time Keystroke Live Typing</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-[#1877F2] bg-blue-50/30 dark:bg-blue-950/20">✓ Live Character Streaming (Sub-100ms)</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Only opaque static "typing..." bubbles</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">View-Once Confidential Text Notes</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-emerald-600 dark:text-emerald-400 bg-blue-50/30 dark:bg-blue-950/20">✓ Self-Destructing Text & Media</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Photos/videos only; no text view-once</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">World's First Regional Dialect AI</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-purple-600 dark:text-purple-400 bg-blue-50/30 dark:bg-blue-950/20">✓ Dedicated Sylheti AI & Nexto Voice Tutor</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Generic English or standard languages only</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Complete Cambridge IELTS Platform</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-emerald-600 dark:text-emerald-400 bg-blue-50/30 dark:bg-blue-950/20">✓ 100% Free Mock Tests + Listening x Typing</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Non-existent (expensive external coaching)</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Developer Offline Code Runner & E-Books</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-[#1877F2] bg-blue-50/30 dark:bg-blue-950/20">✓ Built-in HTML/CSS/JS Sandbox & Library</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">None</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Safe AI Anti-NSFW Content Filter</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-emerald-600 dark:text-emerald-400 bg-blue-50/30 dark:bg-blue-950/20">✓ Instant Pre-Upload & In-Chat Blocking</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Slow reactive user reporting after exposure</td>
+              </tr>
+              <tr>
+                <td className="py-3.5 px-4 sm:px-6 font-bold text-gray-800 dark:text-gray-200">Interface Personalization & Data Saver</td>
+                <td className="py-3.5 px-4 sm:px-6 font-extrabold text-[#1877F2] bg-blue-50/30 dark:bg-blue-950/20">✓ UI Colors, Robot Scaling & Custom Sizes</td>
+                <td className="py-3.5 px-4 sm:px-6 text-gray-500">Rigid, unchangeable corporate interfaces</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
       <section className="max-w-4xl mx-auto px-4 sm:px-6 py-14 w-full">
         <div className="text-center mb-8">
           <span className="text-xs font-bold text-[#1877F2] uppercase tracking-wider">Search Engine FAQ</span>
