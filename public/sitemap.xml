@@ -6,55 +6,71 @@
   <!-- Homepage / Feed -->
   <url>
     <loc>https://next-nexto.vercel.app/</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
 
-  <!-- Login Page -->
+  <!-- 12 Core Features Showcase -->
   <url>
-    <loc>https://next-nexto.vercel.app/login</loc>
-    <lastmod>2026-10-28</lastmod>
+    <loc>https://next-nexto.vercel.app/features</loc>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.95</priority>
   </url>
 
-  <!-- Register Page -->
+  <!-- About Next & Creator -->
   <url>
-    <loc>https://next-nexto.vercel.app/register</loc>
-    <lastmod>2026-10-28</lastmod>
+    <loc>https://next-nexto.vercel.app/about</loc>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-
-  <!-- Reels Section -->
-  <url>
-    <loc>https://next-nexto.vercel.app/reels</loc>
-    <lastmod>2026-10-28</lastmod>
-    <changefreq>daily</changefreq>
     <priority>0.9</priority>
   </url>
 
   <!-- Cinema Section -->
   <url>
     <loc>https://next-nexto.vercel.app/cinema</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.85</priority>
   </url>
 
   <!-- Meet Section -->
   <url>
     <loc>https://next-nexto.vercel.app/meet</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
+    <priority>0.85</priority>
   </url>
 
-  <!-- Lab Section -->
+  <!-- Lab Section (Code Runner, E-books, Results, Camera) -->
   <url>
     <loc>https://next-nexto.vercel.app/lab</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Reels Section -->
+  <url>
+    <loc>https://next-nexto.vercel.app/reels</loc>
+    <lastmod>2026-11-02</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.85</priority>
+  </url>
+
+  <!-- Login Page -->
+  <url>
+    <loc>https://next-nexto.vercel.app/login</loc>
+    <lastmod>2026-11-02</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+  <!-- Register Page -->
+  <url>
+    <loc>https://next-nexto.vercel.app/register</loc>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.7</priority>
   </url>
@@ -62,7 +78,7 @@
   <!-- Friends Section -->
   <url>
     <loc>https://next-nexto.vercel.app/friends</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.7</priority>
   </url>
@@ -70,7 +86,7 @@
   <!-- Messages Section -->
   <url>
     <loc>https://next-nexto.vercel.app/messages</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.7</priority>
   </url>
@@ -78,8 +94,8 @@
   <!-- Child Safety Policy -->
   <url>
     <loc>https://next-nexto.vercel.app/child-safety</loc>
-    <lastmod>2026-10-28</lastmod>
+    <lastmod>2026-11-02</lastmod>
     <changefreq>monthly</changefreq>
-    <priority>0.5</priority>
+    <priority>0.6</priority>
   </url>
 </urlset>

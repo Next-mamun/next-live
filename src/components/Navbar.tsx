@@ -292,6 +292,15 @@ const Navbar: React.FC = () => {
               <div className="bg-gray-100 dark:bg-gray-800 p-2 rounded-full"><User size={20} className="text-gray-600 dark:text-gray-300" /></div>
               <span className="font-bold text-sm text-gray-700 dark:text-gray-200">Settings</span>
             </Link>
+            <Link to="/features" className="flex items-center gap-3 p-3 hover:bg-blue-50/50 dark:hover:bg-blue-950/30 rounded-xl transition-colors" onClick={() => setShowDropdown(false)}>
+              <div className="bg-blue-50 dark:bg-blue-900/30 p-2 rounded-full text-[#1877F2]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/></svg>
+              </div>
+              <div className="flex flex-col">
+                <span className="font-bold text-sm text-[#1877F2]">12 Core Features</span>
+                <span className="text-[10px] text-gray-500">Explore High-Tech Ecosystem</span>
+              </div>
+            </Link>
             <button 
               onClick={() => { logout(); setShowDropdown(false); navigate('/login'); }}
               className="flex items-center gap-3 w-full p-3 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl text-left text-red-600 transition-colors mt-1"

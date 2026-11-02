@@ -73,10 +73,21 @@ const Sidebar: React.FC = () => {
       <SidebarItem icon={<div className="relative p-1.5 rounded-xl bg-gradient-to-tr from-pink-500 via-red-500 to-yellow-500 text-white shadow-md shadow-pink-500/20"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg></div>} label={<span className="font-bold bg-clip-text text-transparent bg-gradient-to-r from-pink-500 to-orange-500">Reels</span>} to="/reels" />
       <SidebarItem icon={<BookOpen size={24} className="text-blue-500" />} label="Lab" to="/lab" />
       <SidebarItem icon={<Tv size={24} className="text-purple-500" />} label="Theatre" to="/cinema" />
+      <SidebarItem icon={<div className="p-1 rounded-lg bg-gradient-to-tr from-[#1877F2] to-indigo-600 text-white"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275Z"/></svg></div>} label={<span className="font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-300">Features</span>} to="/features" />
       <SidebarItem icon={<Settings size={24} />} label="Settings" to="/settings" />
 
-      <div className="mt-auto p-4 text-[13px] text-gray-500 dark:text-gray-400">
-        <p>Privacy · Terms · Advertising · Cookies · Meta © 2024</p>
+      <div className="mt-auto p-4 text-[12px] text-gray-500 dark:text-gray-400 space-y-1">
+        <p className="font-bold text-gray-700 dark:text-gray-300">Next · Nexto</p>
+        <p>by Abdullah Al Mamun (ceoofnext)</p>
+        <div className="flex flex-wrap gap-x-2 gap-y-0.5 pt-1 text-[11px]">
+          <Link to="/features" className="hover:underline">Features</Link>
+          <span>·</span>
+          <Link to="/child-safety" className="hover:underline">Child Safety</Link>
+          <span>·</span>
+          <Link to="/about" className="hover:underline">About</Link>
+          <span>·</span>
+          <span>© 2026</span>
+        </div>
       </div>
     </aside>
   );

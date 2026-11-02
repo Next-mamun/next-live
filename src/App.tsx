@@ -48,6 +48,7 @@ const Login = lazy(() => import('@/pages/Login'));
 const Register = lazy(() => import('@/pages/Register'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const ChildSafety = lazy(() => import('@/pages/ChildSafety'));
+const Features = lazy(() => import('@/pages/Features'));
 
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { AuthContext, AuthContextType, ThemeContext, ThemeContextType, useAuth, useTheme } from '@/contexts/AuthContext';
@@ -371,6 +372,8 @@ const AppLayout: React.FC = () => {
               <Route path="/reels" element={<Reels />} />
               <Route path="/reels/:id" element={<Reels />} />
               <Route path="/lab" element={<Lab />} />
+              <Route path="/features" element={<Features />} />
+              <Route path="/about" element={<Features />} />
               <Route path="/child-safety" element={<ChildSafety />} />
               <Route path="/profile/:username" element={<Profile />} />
 
