@@ -72,10 +72,29 @@ export interface LocalSavedContent {
   saved_at: number;
 }
 
+export interface LocalConversation {
+  id: string; // partner ID or group ID
+  partner_id: string;
+  display_name: string;
+  name?: string;
+  username?: string;
+  avatar?: string;
+  avatar_url?: string;
+  is_verified?: boolean;
+  is_group?: boolean;
+  last_message?: any;
+  last_message_text?: string;
+  last_message_time?: string | number;
+  last_sender_id?: string;
+  unread_count?: number;
+  updated_at: string | number;
+}
+
 export class AppDatabase extends Dexie {
   users!: Table<LocalUser, string>;
   friends!: Table<LocalFriend, string>;
   messages!: Table<LocalMessage, string>;
+  conversations!: Table<LocalConversation, string>;
   posts!: Table<LocalPost, string>;
   feed_videos!: Table<FeedVideo, string>;
   saved_content!: Table<LocalSavedContent, string>;
@@ -83,7 +102,17 @@ export class AppDatabase extends Dexie {
 
   constructor() {
     super('NextAppDB');
-    // Dexie.js Schema Persistence
+    // Dexie.js Schema Persistence - Version 5 with WhatsApp-style permanent conversations table
+    this.version(5).stores({
+      conversations: 'id, partner_id, updated_at, last_message_time',
+      saved_content: 'id, saved_at',
+      users: 'id, username',
+      friends: 'id, username, friendship_id, status',
+      messages: 'id, sender_id, receiver_id, created_at, chat_id',
+      posts: 'id, user_id, created_at',
+      feed_videos: 'id, videoType, mediaUrl, youtubeId, thumbnailUrl, caption, author, timestamp',
+      app_meta: 'key'
+    });
     this.version(4).stores({
       saved_content: 'id, saved_at',
       users: 'id, username',
@@ -173,5 +202,47 @@ export const getBase64Image = async (url: string): Promise<string> => {
   } catch (error) {
     console.warn("Failed to convert image to base64, returning original URL", error);
     return url;
+  }
+};
+
+/**
+ * WhatsApp-Style Permanent Conversation Persistence in IndexedDB
+ * Ensures users who chatted NEVER disappear from the Inbox even across reloads or network drops.
+ */
+export const saveLocalConversation = async (conv: Partial<LocalConversation> & { id: string }): Promise<LocalConversation | null> => {
+  if (!conv.id) return null;
+  try {
+    const existing = await localDB.conversations.get(conv.id);
+    const updated: LocalConversation = {
+      id: conv.id,
+      partner_id: conv.partner_id || conv.id,
+      display_name: conv.display_name || conv.name || existing?.display_name || 'User',
+      name: conv.name || conv.display_name || existing?.name || 'User',
+      username: conv.username || existing?.username || '',
+      avatar: conv.avatar || conv.avatar_url || existing?.avatar || '',
+      avatar_url: conv.avatar_url || conv.avatar || existing?.avatar_url || '',
+      is_verified: conv.is_verified ?? existing?.is_verified ?? false,
+      is_group: conv.is_group ?? existing?.is_group ?? false,
+      last_message: conv.last_message || existing?.last_message,
+      last_message_text: conv.last_message_text || (typeof conv.last_message === 'string' ? conv.last_message : (conv.last_message?.text || conv.last_message?.content || existing?.last_message_text || '')),
+      last_message_time: conv.last_message_time || conv.last_message?.created_at || existing?.last_message_time || new Date().toISOString(),
+      last_sender_id: conv.last_sender_id || conv.last_message?.sender_id || existing?.last_sender_id || '',
+      unread_count: conv.unread_count ?? existing?.unread_count ?? 0,
+      updated_at: Date.now()
+    };
+    await localDB.conversations.put(updated);
+    return updated;
+  } catch (err) {
+    console.warn("Error saving conversation to Dexie:", err);
+    return null;
+  }
+};
+
+export const removeLocalConversation = async (id: string): Promise<void> => {
+  if (!id) return;
+  try {
+    await localDB.conversations.delete(id);
+  } catch (err) {
+    console.warn("Error deleting conversation from Dexie:", err);
   }
 };

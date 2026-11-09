@@ -1,4 +1,4 @@
-import { localDB } from "@/lib/dexie";
+import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/dexie";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
@@ -257,11 +257,11 @@ const Messages: React.FC = () => {
     try {
       // Optimistic Local Delete for instant UI update
       try {
-        const { localDB } = await import('@/lib/dexie');
         await localDB.messages
           .where('sender_id').equals(contactId)
           .or('receiver_id').equals(contactId)
           .delete();
+        await removeLocalConversation(contactId);
       } catch (e) {
         console.warn("Failed to delete messages from localDB", e);
       }
@@ -602,9 +602,38 @@ const Messages: React.FC = () => {
   const openChatWithUserId = useCallback(async (targetUserId: string) => {
     if (!targetUserId) return;
     try {
-      const { localDB } = await import('@/lib/dexie');
-      const localUser = await localDB.users.get(targetUserId);
-      if (localUser) {
+      // If user previously deleted this chat, opening it restores it (WhatsApp style)
+      if (currentUser?.id) {
+        const deletedKey = 'deleted_chats_' + currentUser.id;
+        try {
+          const deletedIds: string[] = JSON.parse(localStorage.getItem(deletedKey) || '[]');
+          if (deletedIds.includes(targetUserId)) {
+            const updated = deletedIds.filter(id => id !== targetUserId);
+            localStorage.setItem(deletedKey, JSON.stringify(updated));
+          }
+        } catch (_) {}
+      }
+
+      // Check existing local conversation or user
+      const [localConv, localUser] = await Promise.all([
+        localDB.conversations.get(targetUserId).catch(() => null),
+        localDB.users.get(targetUserId).catch(() => null)
+      ]);
+
+      if (localConv) {
+        setSelectedChat({
+          id: localConv.id,
+          display_name: localConv.display_name || localConv.name || 'User',
+          name: localConv.name || localConv.display_name || 'User',
+          username: localConv.username || '',
+          avatar_url: localConv.avatar_url || localConv.avatar || '',
+          avatar: localConv.avatar || localConv.avatar_url || '',
+          is_verified: localConv.is_verified,
+          is_group: localConv.is_group
+        });
+        setIsChatOpen(true);
+        setActiveChatId(localConv.id);
+      } else if (localUser) {
         setSelectedChat({ id: localUser.id, ...localUser });
         setIsChatOpen(true);
         setActiveChatId(localUser.id);
@@ -614,22 +643,58 @@ const Messages: React.FC = () => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         const disp = data.display_name || data.name || (data.username ? `@${data.username}` : 'User');
-        setSelectedChat({ id: docSnap.id, display_name: disp, name: disp, ...data });
+        const resolvedChat = { id: docSnap.id, display_name: disp, name: disp, ...data };
+        setSelectedChat(resolvedChat);
         setIsChatOpen(true);
         setActiveChatId(docSnap.id);
         localDB.users.put({ id: docSnap.id, username: data?.username || '', display_name: disp, ...data } as any).catch(() => {});
+        saveLocalConversation({
+          id: docSnap.id,
+          partner_id: docSnap.id,
+          display_name: disp,
+          name: disp,
+          username: data?.username || '',
+          avatar: data?.avatar_url || data?.avatar || '',
+          avatar_url: data?.avatar_url || data?.avatar || '',
+          is_verified: !!data?.is_verified,
+          is_group: false
+        }).catch(() => {});
       } else {
         const groupSnap = await getDoc(doc(db, 'groups', targetUserId));
         if (groupSnap.exists()) {
-          setSelectedChat({ id: groupSnap.id, ...groupSnap.data(), is_group: true });
+          const groupData = groupSnap.data();
+          const grpObj = { id: groupSnap.id, ...groupData, is_group: true };
+          setSelectedChat(grpObj);
           setIsChatOpen(true);
           setActiveChatId(groupSnap.id);
+          saveLocalConversation({
+            id: groupSnap.id,
+            partner_id: groupSnap.id,
+            display_name: groupData?.name || 'Group',
+            name: groupData?.name || 'Group',
+            avatar: groupData?.avatar_url || groupData?.avatar || '',
+            avatar_url: groupData?.avatar_url || groupData?.avatar || '',
+            is_group: true
+          }).catch(() => {});
+        } else if (localUser) {
+          saveLocalConversation({
+            id: localUser.id,
+            partner_id: localUser.id,
+            display_name: localUser.display_name || localUser.name || 'User',
+            name: localUser.name || localUser.display_name || 'User',
+            username: localUser.username || '',
+            avatar: localUser.avatar_url || localUser.avatar || '',
+            avatar_url: localUser.avatar_url || localUser.avatar || '',
+            is_verified: !!localUser.is_verified,
+            is_group: false
+          }).catch(() => {});
         }
       }
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
     } catch (e) {
       console.warn("Failed to open chat with user:", e);
     }
-  }, [setIsChatOpen, setActiveChatId]);
+  }, [setIsChatOpen, setActiveChatId, currentUser, queryClient]);
 
   useEffect(() => {
     const handleDirectOpen = (e: any) => {
@@ -669,10 +734,27 @@ const Messages: React.FC = () => {
       if (!currentUser) return [];
 
       try {
-        let messages: any[] = [];
+        // 1. WhatsApp-style Local-First: Load permanent local conversations from Dexie
+        const localConvs = await localDB.conversations.toArray().catch(() => []);
+        const localConvsMap = new Map<string, any>();
+        localConvs.forEach(c => {
+          if (c && c.id) localConvsMap.set(c.id, c);
+        });
+
+        // 2. Fetch local Dexie messages so offline/previously sent messages are always present
+        let localMsgs: any[] = [];
+        try {
+          localMsgs = await localDB.messages
+            .filter((m: any) => m.sender_id === currentUser.id || m.receiver_id === currentUser.id)
+            .toArray();
+        } catch (dexErr) {
+          console.warn("Error reading localDB.messages:", dexErr);
+        }
+
+        let messages: any[] = [...localMsgs];
         const { isSupabaseActive, triggerFirebaseFallback } = useGlobalStore.getState();
 
-        // 1. Fetch recent messages
+        // 3. Fetch recent messages from server (Supabase & Firebase)
         if (isSupabaseActive) {
           try {
             const { data: supaMsgs, error: supaErr } = await supabase
@@ -683,51 +765,61 @@ const Messages: React.FC = () => {
               .limit(100);
 
             if (supaErr) throw supaErr;
-            if (supaMsgs) messages = supaMsgs;
+            if (supaMsgs && supaMsgs.length > 0) {
+              const localIds = new Set(messages.map(m => m.id));
+              supaMsgs.forEach(sm => {
+                if (!localIds.has(sm.id)) {
+                  messages.push(sm);
+                  localIds.add(sm.id);
+                }
+              });
+            }
           } catch (supaErr) {
             console.warn("Supabase contacts query error. Triggering failover...", supaErr);
             triggerFirebaseFallback();
           }
         }
 
-        if (!useGlobalStore.getState().isSupabaseActive && messages.length === 0) {
-          try {
-            const qMsgs = query(
-              collection(db, 'messages'),
-              or(where('sender_id', '==', currentUser.id), where('receiver_id', '==', currentUser.id)),
-              orderBy('created_at', 'desc'),
-              limit(100)
-            );
-            const snap = await getDocs(qMsgs);
-            messages = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-          } catch (e) {
-            console.warn("Firebase contacts query fallback failed", e);
-          }
+        // 4. Safe Firebase Query: Query incoming and outgoing separately to avoid composite index requirement
+        try {
+          const [recvSnap, sendSnap] = await Promise.all([
+            getDocs(query(collection(db, 'messages'), where('receiver_id', '==', currentUser.id), limit(60))).catch(() => null),
+            getDocs(query(collection(db, 'messages'), where('sender_id', '==', currentUser.id), limit(60))).catch(() => null)
+          ]);
+
+          const localIds = new Set(messages.map(m => m.id));
+          const addDocMsg = (d: any) => {
+            if (!localIds.has(d.id)) {
+              const msgData = { id: d.id, ...d.data() };
+              messages.push(msgData);
+              localIds.add(d.id);
+              // Save to localDB in background
+              localDB.messages.put(msgData as any).catch(() => {});
+            }
+          };
+
+          if (recvSnap) recvSnap.docs.forEach(addDocMsg);
+          if (sendSnap) sendSnap.docs.forEach(addDocMsg);
+        } catch (e) {
+          console.warn("Firebase contacts query fallback failed (handled gracefully)", e);
         }
 
-        // Fallback to local Dexie messages if offline or empty
-        if (messages.length === 0) {
-          try {
-            const localMsgs = await localDB.messages
-              .filter((m: any) => m.sender_id === currentUser.id || m.receiver_id === currentUser.id)
-              .toArray();
-            messages = localMsgs;
-          } catch (e) {}
-        }
-        
         // Filter out deleted messages
         messages = messages.filter(m => !m.deleted_for_everyone && !(m.deleted_for || []).includes(currentUser.id));
-        
-        // Sort in memory
+
+        // Sort in memory newest first
         messages.sort((a, b) => {
-          const timeA = typeof a.created_at === 'string' ? new Date(a.created_at).getTime() : a.created_at?.toMillis ? a.created_at.toMillis() : Date.now();
-          const timeB = typeof b.created_at === 'string' ? new Date(b.created_at).getTime() : b.created_at?.toMillis ? b.created_at.toMillis() : Date.now();
+          const timeA = typeof a.created_at === 'string' ? new Date(a.created_at).getTime() : a.created_at?.toMillis ? a.created_at.toMillis() : (typeof a.created_at === 'number' ? a.created_at : Date.now());
+          const timeB = typeof b.created_at === 'string' ? new Date(b.created_at).getTime() : b.created_at?.toMillis ? b.created_at.toMillis() : (typeof b.created_at === 'number' ? b.created_at : Date.now());
           return timeB - timeA;
         });
-        
+
+        // 5. Build partnerMap from messages
         const partnerMap = new Map<string, any>();
         messages.forEach(m => {
           const partnerId = m.sender_id === currentUser.id ? m.receiver_id : m.sender_id;
+          if (!partnerId) return;
+
           let parsedM: any = { ...m };
           if (m.text && !parsedM.content) {
             parsedM.content = m.text;
@@ -755,8 +847,23 @@ const Messages: React.FC = () => {
             partnerMap.set(partnerId, parsedM);
           }
         });
-        
-        // 2. Fetch all accepted or pending friends
+
+        // If any local conversation had a last_message and partnerMap doesn't have it, fill it in
+        localConvsMap.forEach((conv, cid) => {
+          if (!partnerMap.has(cid)) {
+            if (conv.last_message) {
+              partnerMap.set(cid, conv.last_message);
+            } else if (conv.last_message_text) {
+              partnerMap.set(cid, {
+                content: conv.last_message_text,
+                sender_id: conv.last_sender_id || cid,
+                created_at: conv.last_message_time || conv.updated_at || Date.now()
+              });
+            }
+          }
+        });
+
+        // 6. Fetch all friendships (friends list)
         let friendships: any[] = [];
         try {
           if (isSupabaseActive) {
@@ -772,10 +879,10 @@ const Messages: React.FC = () => {
         } catch (fErr) {
           console.warn("Friendships fetch error (handled):", fErr);
         }
-        
+
         const friendIds = friendships.map(f => f.sender_id === currentUser.id ? f.receiver_id : f.sender_id) || [];
-        
-        // 3. Fetch groups user is a member of
+
+        // 7. Fetch groups user is a member of
         let groupIds: string[] = [];
         let fetchedGroups: any[] = [];
         try {
@@ -795,27 +902,54 @@ const Messages: React.FC = () => {
           console.warn("Groups fetch error:", gErr);
         }
 
-        // 4. Combine partner IDs, friend IDs, and group IDs
-        const allContactIds = Array.from(new Set([...Array.from(partnerMap.keys()), ...friendIds, ...groupIds])).filter(Boolean);
-        
+        // 8. Combine ALL contact IDs: Local conversations + Partner IDs + Friends + Groups
+        const convIds = Array.from(localConvsMap.keys());
+        const partnerIds = Array.from(partnerMap.keys());
+        const allContactIds = Array.from(new Set([
+          ...convIds,
+          ...partnerIds,
+          ...friendIds,
+          ...groupIds
+        ])).filter(Boolean);
+
         if (allContactIds.length === 0) return [];
 
-        // 4. Resolve profiles using Dexie first, only query Firestore for missing profiles
+        // 9. Resolve profiles: Use localDB.conversations and localDB.users first, then server
         const profilesMap = new Map<string, any>();
         const missingIds: string[] = [];
 
-        // Pre-fill groups
+        // Pre-fill from fetched groups
         fetchedGroups.forEach(g => {
           profilesMap.set(g.id, {
             ...g,
-            display_name: g.display_name || g.name,
-            name: g.display_name || g.name,
+            display_name: g.display_name || g.name || 'Group',
+            name: g.display_name || g.name || 'Group',
             avatar: g.avatar_url || g.avatar || '',
+            avatar_url: g.avatar_url || g.avatar || '',
+            is_group: true
           });
         });
 
+        // Check local conversations cache
         for (const cid of allContactIds) {
           if (profilesMap.has(cid)) continue;
+          const conv = localConvsMap.get(cid);
+          if (conv && (conv.display_name || conv.name || conv.username)) {
+            const disp = conv.display_name || conv.name || (conv.username ? `@${conv.username}` : 'User');
+            profilesMap.set(cid, {
+              id: cid,
+              display_name: disp,
+              name: disp,
+              avatar_url: conv.avatar_url || conv.avatar || '',
+              avatar: conv.avatar || conv.avatar_url || '',
+              username: conv.username || '',
+              is_verified: !!conv.is_verified,
+              is_group: !!conv.is_group
+            });
+            continue;
+          }
+
+          // Check local users table
           try {
             const cachedUser = await localDB.users.get(cid);
             if (cachedUser && (cachedUser.display_name || cachedUser.name || cachedUser.username)) {
@@ -832,7 +966,7 @@ const Messages: React.FC = () => {
             } else {
               missingIds.push(cid);
             }
-          } catch (dexErr) {
+          } catch (_) {
             missingIds.push(cid);
           }
         }
@@ -842,7 +976,6 @@ const Messages: React.FC = () => {
           for (let i = 0; i < missingIds.length; i += 10) {
             const chunk = missingIds.slice(i, i + 10);
             try {
-              // 1. Fetch from Firestore profiles (master Firebase database)
               const q = query(collection(db, 'profiles'), where('__name__', 'in', chunk));
               const snapshot = await getDocs(q);
               snapshot.forEach(d => {
@@ -863,7 +996,7 @@ const Messages: React.FC = () => {
                 localDB.users.put(profObj as any).catch(() => {});
               });
 
-              // 2. Any still missing, check Supabase
+              // Check Supabase for remaining missing
               const stillMissing = chunk.filter(id => !profilesMap.has(id));
               if (stillMissing.length > 0 && isSupabaseActive) {
                 const { data } = await supabase.from('profiles').select('*').in('id', stillMissing);
@@ -894,6 +1027,7 @@ const Messages: React.FC = () => {
 
         const blocks = friendships.filter(f => f.status === 'blocked');
 
+        // 10. Construct full contact objects and update local conversation storage
         const contactsWithMessages = allContactIds.map((cid: string) => {
           const profile = profilesMap.get(cid) || {
             id: cid,
@@ -911,6 +1045,22 @@ const Messages: React.FC = () => {
             (f.sender_id === currentUser.id && f.receiver_id === cid) ||
             (f.sender_id === cid && f.receiver_id === currentUser.id)
           );
+
+          // WhatsApp permanent save: Guarantee that every contacted user stays in IndexedDB
+          saveLocalConversation({
+            id: cid,
+            partner_id: cid,
+            display_name: profile.display_name || profile.name || 'User',
+            name: profile.name || profile.display_name || 'User',
+            username: profile.username || '',
+            avatar: profile.avatar || profile.avatar_url || '',
+            avatar_url: profile.avatar_url || profile.avatar || '',
+            is_verified: !!profile.is_verified,
+            is_group: !!profile.is_group,
+            last_message: lastMsg,
+            last_message_text: lastMsg?.content || lastMsg?.text || '',
+            last_message_time: lastMsg?.created_at
+          }).catch(() => {});
           
           return {
             ...profile,
@@ -924,6 +1074,7 @@ const Messages: React.FC = () => {
           };
         });
 
+        // 11. Filter for deleted or archived chats
         const deletedIds = JSON.parse(localStorage.getItem('deleted_chats_' + currentUser?.id) || '[]');
         const archivedIds = JSON.parse(localStorage.getItem('archived_chats') || '[]');
         const filteredForDeletion = contactsWithMessages.filter(c => {
@@ -932,13 +1083,15 @@ const Messages: React.FC = () => {
           if (chatViewMode === 'groups') return c.is_group && !archivedIds.includes(c.id);
           return !archivedIds.includes(c.id);
         });
+
+        // 12. Sort: Most recent message on top (WhatsApp order)
         const sortedContacts = filteredForDeletion.sort((a, b) => {
           if (a.is_group && !a.lastMessage && (!b.is_group || b.lastMessage)) return -1;
           if (b.is_group && !b.lastMessage && (!a.is_group || a.lastMessage)) return 1;
 
           if (a.lastMessage && b.lastMessage) {
-            const timeA = typeof a.lastMessage.created_at === 'string' ? new Date(a.lastMessage.created_at).getTime() : a.lastMessage.created_at?.toMillis ? a.lastMessage.created_at.toMillis() : Date.now();
-            const timeB = typeof b.lastMessage.created_at === 'string' ? new Date(b.lastMessage.created_at).getTime() : b.lastMessage.created_at?.toMillis ? b.lastMessage.created_at.toMillis() : Date.now();
+            const timeA = typeof a.lastMessage.created_at === 'string' ? new Date(a.lastMessage.created_at).getTime() : a.lastMessage.created_at?.toMillis ? a.lastMessage.created_at.toMillis() : (typeof a.lastMessage.created_at === 'number' ? a.lastMessage.created_at : Date.now());
+            const timeB = typeof b.lastMessage.created_at === 'string' ? new Date(b.lastMessage.created_at).getTime() : b.lastMessage.created_at?.toMillis ? b.lastMessage.created_at.toMillis() : (typeof b.lastMessage.created_at === 'number' ? b.lastMessage.created_at : Date.now());
             return timeB - timeA;
           }
           if (a.lastMessage) return -1;
@@ -1303,9 +1456,20 @@ const Messages: React.FC = () => {
                   chatId: chatId
                 };
                 mergeIncomingMessages([incoming]);
-                import('@/lib/dexie').then(({ localDB }) => {
-                  localDB.messages.put(incoming).catch(console.warn);
-                });
+                localDB.messages.put(incoming).catch(console.warn);
+                saveLocalConversation({
+                  id: selectedChat.id,
+                  partner_id: selectedChat.id,
+                  display_name: selectedChat.display_name || selectedChat.name || 'User',
+                  name: selectedChat.name || selectedChat.display_name || 'User',
+                  avatar: selectedChat.avatar || selectedChat.avatar_url || '',
+                  avatar_url: selectedChat.avatar_url || selectedChat.avatar || '',
+                  is_verified: selectedChat.is_verified,
+                  is_group: selectedChat.is_group,
+                  last_message: incoming,
+                  last_message_text: incoming.content || incoming.text || '',
+                  last_message_time: incoming.created_at || Date.now()
+                }).catch(console.warn);
                 sendP2PSignal({ type: 'SEEN', msgIds: [incoming.id] });
               }
             } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {

@@ -1,7 +1,7 @@
 import { addDoc, collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from './firebase';
 import { supabase } from './supabase';
-import { localDB } from './dexie';
+import { localDB, saveLocalConversation } from './dexie';
 import { useGlobalStore } from '@/store/useGlobalStore';
 
 const DB_SWITCH_KEY = 'next_media_db_fallback';
@@ -133,6 +133,17 @@ export const dualWriteMessage = async (messageData: any) => {
   // 1. Dexie Local DB Write for immediate local persistence
   try {
     await localDB.messages.put(payload as any);
+    const partnerId = payload.receiver_id;
+    if (partnerId) {
+      saveLocalConversation({
+        id: partnerId,
+        partner_id: partnerId,
+        last_message: payload,
+        last_message_text: textContent || payload.content || '',
+        last_message_time: createdAtStr,
+        last_sender_id: payload.sender_id
+      }).catch(console.warn);
+    }
   } catch (err) {
     console.warn("Dexie local write error:", err);
   }

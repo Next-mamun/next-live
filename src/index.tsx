@@ -1,4 +1,3 @@
-
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
@@ -6,11 +5,41 @@ import { QueryClient } from '@tanstack/react-query';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import * as idb from 'idb-keyval';
+import { registerSW } from 'virtual:pwa-register';
+
+// 1. Immediate Top-Level Chunk Loading Failure Handler (Prevents White Screen on deployment updates)
+const handleTopLevelChunkFailure = async (err: any) => {
+  const msg = String(err?.message || err?.reason?.message || err || '');
+  const isChunkErr =
+    msg.includes('Failed to fetch dynamically imported module') ||
+    msg.includes('error loading dynamically imported module') ||
+    msg.includes('Loading chunk') ||
+    msg.includes('Importing a module script failed');
+
+  if (isChunkErr) {
+    console.warn("⚠️ [Deploy Recovery] Chunk load failure intercepted. Cleaning transient script cache...", msg);
+    const reloadKey = 'chunk_reload_lock_root';
+    const lastReload = Number(sessionStorage.getItem(reloadKey) || '0');
+    if (Date.now() - lastReload > 8000) {
+      sessionStorage.setItem(reloadKey, String(Date.now()));
+      if ('caches' in window) {
+        try {
+          const names = await caches.keys();
+          await Promise.all(names.map(n => caches.delete(n)));
+        } catch (_) {}
+      }
+      window.location.reload();
+    }
+  }
+};
+
+window.addEventListener('error', (e) => handleTopLevelChunkFailure(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => handleTopLevelChunkFailure(e.reason));
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 1000 * 60 * 60, // 1 hour
+      staleTime: 1000 * 60 * 30, // 30 mins
       gcTime: 1000 * 60 * 60 * 24 * 7, // 7 days
       refetchOnWindowFocus: false,
       retry: (failureCount, error: any) => {
@@ -23,14 +52,36 @@ const queryClient = new QueryClient({
   },
 });
 
+// 2. Safe IndexedDB Persister (Never throws or corrupts React mount)
 const idbStorage = {
-  getItem: async (key: string) => await idb.get(key),
-  setItem: async (key: string, value: any) => await idb.set(key, value),
-  removeItem: async (key: string) => await idb.del(key),
+  getItem: async (key: string) => {
+    try {
+      const val = await idb.get(key);
+      return val ?? null;
+    } catch (e) {
+      console.warn("idbStorage read error handled safely:", e);
+      return null;
+    }
+  },
+  setItem: async (key: string, value: any) => {
+    try {
+      await idb.set(key, value);
+    } catch (e) {
+      console.warn("idbStorage write warning:", e);
+    }
+  },
+  removeItem: async (key: string) => {
+    try {
+      await idb.del(key);
+    } catch (e) {
+      console.warn("idbStorage delete warning:", e);
+    }
+  },
 };
 
 const persister = createAsyncStoragePersister({
   storage: idbStorage,
+  throttleTime: 2000,
 });
 
 // Global listener for PWA install prompt
@@ -40,16 +91,14 @@ window.addEventListener('beforeinstallprompt', (e) => {
   (window as any).deferredInstallPrompt = e;
 });
 
-// Expose queryClient globally for real-time invalidation from App.tsx listeners
+// Expose queryClient globally
 (window as any).queryClient = queryClient;
 
-import { registerSW } from 'virtual:pwa-register';
-
-// Register PWA service worker
+// 3. Register PWA service worker with auto-update
 const updateSW = registerSW({
   onNeedRefresh() {
-    // We could prompt user, but auto update is fine for now
-    updateSW();
+    console.log("New version available, auto updating Service Worker...");
+    updateSW(true);
   },
   onOfflineReady() {
     console.log('App is ready to work offline');
@@ -61,7 +110,13 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+// 4. Modern Branded ErrorBoundary (No White Screen of Death)
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, ErrorBoundaryState> {
   constructor(props: { children: React.ReactNode }) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -72,18 +127,54 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("Uncaught error in ErrorBoundary:", error, errorInfo);
+    console.error("ErrorBoundary caught error:", error, errorInfo);
   }
+
+  handleCleanAndReload = async () => {
+    try {
+      if ('caches' in window) {
+        const names = await caches.keys();
+        await Promise.all(names.map(n => caches.delete(n)));
+      }
+    } catch (_) {}
+    window.location.reload();
+  };
 
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '20px', color: 'red', fontFamily: 'sans-serif' }}>
-          <h1>Something went wrong.</h1>
-          <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.error?.toString()}</pre>
-          <button onClick={() => window.location.reload()} style={{ marginTop: '10px', padding: '8px 16px', cursor: 'pointer' }}>
-            Reload Page
-          </button>
+        <div className="min-h-screen bg-[#F0F2F5] dark:bg-[#18191A] flex items-center justify-center p-4 font-sans text-gray-900 dark:text-gray-100">
+          <div className="max-w-md w-full bg-white dark:bg-[#242526] rounded-2xl shadow-xl border border-gray-200 dark:border-gray-800 p-6 text-center">
+            <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-tr from-[#1877F2] to-indigo-600 rounded-2xl flex items-center justify-center text-white text-2xl font-bold shadow-lg">
+              N
+            </div>
+            <h2 className="text-xl font-bold mb-2">Next অ্যাপে নতুন আপডেট এসেছে</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+              অ্যাপটির নতুন সংস্করণ সক্রিয় করতে নিচের বাটনে চাপ দিন। আপনার কোনো চ্যাট বা ডেটা ডিলিট হবে না।
+            </p>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={this.handleCleanAndReload}
+                className="w-full py-3 px-4 bg-[#1877F2] hover:bg-blue-600 active:scale-98 text-white font-semibold rounded-xl shadow-md transition-all cursor-pointer"
+              >
+                আপডেট ও রিলোড করুন (Update & Reload)
+              </button>
+              <button
+                onClick={() => this.setState({ hasError: false, error: null })}
+                className="w-full py-2.5 px-4 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-medium rounded-xl text-sm transition-all cursor-pointer"
+              >
+                আবার চেষ্টা করুন (Try Again)
+              </button>
+            </div>
+            {this.state.error && (
+              <details className="mt-4 text-left text-xs text-gray-400 cursor-pointer">
+                <summary className="hover:underline">বিস্তারিত ত্রুটি (Technical Details)</summary>
+                <pre className="mt-2 p-2 bg-gray-50 dark:bg-black/30 rounded border border-gray-200 dark:border-gray-800 overflow-x-auto text-[11px]">
+                  {this.state.error.message || String(this.state.error)}
+                </pre>
+              </details>
+            )}
+          </div>
         </div>
       );
     }

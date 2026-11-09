@@ -18,15 +18,34 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 
-// Handle dynamic import errors
-window.addEventListener('error', (e) => {
-  if (e.message && e.message.includes('Failed to fetch dynamically imported module')) {
-    if (!sessionStorage.getItem('reloaded-for-chunk')) {
-      sessionStorage.setItem('reloaded-for-chunk', 'true');
+// Robust dynamic import and chunk loading failure handler (Prevents White Screen of Death on updates)
+const handleDynamicImportError = async (err: any) => {
+  const msg = String(err?.message || err?.reason?.message || err || '');
+  const isChunkErr =
+    msg.includes('Failed to fetch dynamically imported module') ||
+    msg.includes('error loading dynamically imported module') ||
+    msg.includes('Loading chunk') ||
+    msg.includes('Importing a module script failed');
+
+  if (isChunkErr) {
+    console.warn("⚠️ [Next Deploy Recovery] Chunk hash mismatch detected. Refreshing cache...", msg);
+    const key = 'chunk_reload_lock_' + window.location.pathname;
+    const lastReload = Number(sessionStorage.getItem(key) || '0');
+    if (Date.now() - lastReload > 8000) {
+      sessionStorage.setItem(key, String(Date.now()));
+      if ('caches' in window) {
+        try {
+          const names = await caches.keys();
+          await Promise.all(names.map(n => caches.delete(n)));
+        } catch (_) {}
+      }
       window.location.reload();
     }
   }
-});
+};
+
+window.addEventListener('error', (e) => handleDynamicImportError(e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => handleDynamicImportError(e.reason));
 
 // Primary pages imported directly for instant loading
 import Feed from '@/pages/Feed';
@@ -43,12 +62,35 @@ import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 import { AuthBottomSheet } from '@/components/AuthBottomSheet';
 import { GuestLockedView } from '@/components/GuestLockedView';
 
-// Less common pages can remain lazy
-const Login = lazy(() => import('@/pages/Login'));
-const Register = lazy(() => import('@/pages/Register'));
-const Settings = lazy(() => import('@/pages/Settings'));
-const ChildSafety = lazy(() => import('@/pages/ChildSafety'));
-const Features = lazy(() => import('@/pages/Features'));
+// Safe lazy loader that gracefully retries after clearing stale chunk caches
+const safeLazy = (importFn: () => Promise<any>) =>
+  lazy(async () => {
+    try {
+      return await importFn();
+    } catch (err: any) {
+      console.warn('⚠️ [SafeLazy] Chunk loading failed, auto-cleaning cache and reloading...', err);
+      if ('caches' in window) {
+        try {
+          const names = await caches.keys();
+          await Promise.all(names.map(n => caches.delete(n)));
+        } catch (_) {}
+      }
+      const reloadKey = 'safe_lazy_reload_' + window.location.pathname;
+      if (!sessionStorage.getItem(reloadKey)) {
+        sessionStorage.setItem(reloadKey, 'true');
+        window.location.reload();
+        return new Promise(() => {}); // Hold execution until reload
+      }
+      throw err;
+    }
+  });
+
+// Secondary pages with safe lazy loading
+const Login = safeLazy(() => import('@/pages/Login'));
+const Register = safeLazy(() => import('@/pages/Register'));
+const Settings = safeLazy(() => import('@/pages/Settings'));
+const ChildSafety = safeLazy(() => import('@/pages/ChildSafety'));
+const Features = safeLazy(() => import('@/pages/Features'));
 
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { AuthContext, AuthContextType, ThemeContext, ThemeContextType, useAuth, useTheme } from '@/contexts/AuthContext';
