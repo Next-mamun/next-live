@@ -17,8 +17,8 @@ export const updateFCMTokenInDb = async (token: string) => {
     }
 
     try {
-      const { supabase } = await import('@/lib/supabase');
-      await supabase.from('profiles').update({ fcm_token: token }).eq('id', auth.currentUser.uid);
+      const { syncProfileToSupabase } = await import('@/lib/profileSync');
+      await syncProfileToSupabase({ id: auth.currentUser.uid, fcm_token: token });
     } catch (e) {}
   }
 };
@@ -84,6 +84,10 @@ export const sendPushNotification = async (token: string, title: string, body: s
       try {
         await updateDoc(doc(db, 'profiles', receiverId), { fcm_token: null });
       } catch (e) {}
+      try {
+        const { supabase } = await import('@/lib/supabase');
+        await supabase.from('profiles').update({ fcm_token: null }).eq('id', receiverId);
+      } catch (e) {}
     }
     
     return result;
@@ -122,13 +126,34 @@ export const triggerNotification = async (receiverId: string, title: string, bod
       if (cached && Date.now() < cached.expiry) {
         token = cached.token;
       } else {
-        const userDoc = await getDoc(doc(db, 'profiles', receiverId));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          if (userData.fcm_token) {
-            token = userData.fcm_token;
-            tokenCache.set(receiverId, { token, expiry: Date.now() + 60 * 60 * 1000 });
+        try {
+          const { supabase } = await import('@/lib/supabase');
+          const { data: supaProf } = await supabase
+            .from('profiles')
+            .select('fcm_token')
+            .eq('id', receiverId)
+            .maybeSingle();
+          if (supaProf?.fcm_token) {
+            token = supaProf.fcm_token;
           }
+        } catch (e) {}
+
+        if (!token) {
+          const userDoc = await getDoc(doc(db, 'profiles', receiverId));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            if (userData.fcm_token) {
+              token = userData.fcm_token;
+              try {
+                const { syncProfileToSupabase } = await import('@/lib/profileSync');
+                syncProfileToSupabase({ id: receiverId, ...userData, fcm_token: token }).catch(() => {});
+              } catch (e) {}
+            }
+          }
+        }
+
+        if (token) {
+          tokenCache.set(receiverId, { token, expiry: Date.now() + 60 * 60 * 1000 });
         }
       }
 

@@ -159,11 +159,9 @@ export const getUserProfile = async (userId: string) => {
       return normalized;
     }
 
-    // 2. Lazy dynamic import of firebase to prevent circular deps
-    const { db } = await import('./firebase');
-    const { doc, getDoc } = await import('firebase/firestore');
-    const userDoc = await getDoc(doc(db, 'profiles', userId));
-    const data = userDoc.exists() ? userDoc.data() : null;
+    // 2. Check Supabase profiles first (zero Firestore reads)
+    const { fetchProfileSmart } = await import('./profileSync');
+    const data = await fetchProfileSmart(userId);
 
     if (data) {
       const normalized = {

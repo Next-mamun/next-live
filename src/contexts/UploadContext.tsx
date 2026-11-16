@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 import { db, storage, auth } from '../lib/firebase';
 import { collection, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { dualWritePost, dualWriteMessage } from '@/lib/dbHelper';
+import { supabase } from '@/lib/supabase';
+import { syncProfileToSupabase } from '@/lib/profileSync';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import Draggable from 'react-draggable';
 import { Pause, Play, X, RefreshCw } from 'lucide-react';
@@ -395,7 +397,8 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         };
         await dualWritePost(payload);
       } else if (type === 'message') {
-        const payload = { ...metadata.payload, created_at: serverTimestamp() };
+        const createdAtIso = metadata?.payload?.local_created_at || new Date().toISOString();
+        const payload = { ...metadata.payload, created_at: createdAtIso };
         if (mediaUrl) payload.media_url = mediaUrl;
         if (!payload.media_type && mediaType) payload.media_type = mediaType;
         await dualWriteMessage(payload);
@@ -449,12 +452,21 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           created_at: new Date().toISOString()
         }).catch((err) => console.warn('Notification doc write warning:', err));
       } else if (type === 'profile') {
-        const payload = { ...metadata.payload };
+        const payload = { ...(metadata.payload || {}) };
         if (mediaUrl) {
           if ('cover_url' in payload) payload.cover_url = mediaUrl;
           else payload.avatar_url = mediaUrl;
         }
-        await updateDoc(doc(db, 'profiles', metadata.userId), payload);
+        const targetId = String(metadata.userId || '');
+        if (targetId.startsWith('group_')) {
+          await supabase
+            .from('profiles')
+            .update({ ...payload, updated_at: new Date().toISOString() })
+            .eq('id', targetId);
+        } else if (targetId) {
+          await updateDoc(doc(db, 'profiles', targetId), payload).catch(() => {});
+          await syncProfileToSupabase({ id: targetId, ...payload });
+        }
       }
 
       clearInterval(interval);

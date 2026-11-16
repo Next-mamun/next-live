@@ -84,6 +84,11 @@ const persister = createAsyncStoragePersister({
   throttleTime: 2000,
 });
 
+// Request persistent storage so Dexie / IndexedDB data is never purged on restart
+if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(() => {});
+}
+
 // Global listener for PWA install prompt
 (window as any).deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -132,12 +137,17 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
 
   handleCleanAndReload = async () => {
     try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
       if ('caches' in window) {
         const names = await caches.keys();
         await Promise.all(names.map(n => caches.delete(n)));
       }
     } catch (_) {}
-    window.location.reload();
+    const cleanUrl = window.location.origin + window.location.pathname + '?_bust=' + Date.now() + window.location.hash;
+    window.location.replace(cleanUrl);
   };
 
   render() {

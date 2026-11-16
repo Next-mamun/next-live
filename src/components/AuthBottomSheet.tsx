@@ -10,6 +10,7 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { generateBio } from '@/services/geminiService';
+import { ensureUniqueUsername, syncProfileToSupabase, cacheUserInDexie } from '@/lib/profileSync';
 import { X, LogIn, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -61,19 +62,20 @@ export const AuthBottomSheet: React.FC = () => {
       try {
         const userDoc = await getDoc(doc(db, 'profiles', uid));
         if (!userDoc.exists()) {
-          const emailUser = result.user.email?.split('@')[0] || uid.substring(0, 8);
+          const emailBase = result.user.email?.split('@')[0] || uid.substring(0, 8);
+          const uniqueUsername = await ensureUniqueUsername(emailBase, uid);
           let bio = 'Hello! I am using Next.';
           try {
-            bio = await generateBio(emailUser);
+            bio = await generateBio(uniqueUsername);
           } catch (e) {}
 
           const newProfile = {
             id: uid,
-            username: emailUser,
-            display_name: result.user.displayName || emailUser,
+            username: uniqueUsername,
+            display_name: result.user.displayName || uniqueUsername,
             email: result.user.email,
             bio,
-            avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`,
+            avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
             created_at: new Date().toISOString()
           };
           try {
@@ -81,20 +83,30 @@ export const AuthBottomSheet: React.FC = () => {
           } catch (e) {
             console.warn('Could not save profile directly (quota):', e);
           }
+          syncProfileToSupabase(newProfile).catch(() => {});
+          cacheUserInDexie(newProfile).catch(() => {});
           handleSuccess(newProfile);
         } else {
-          handleSuccess({ id: userDoc.id, ...userDoc.data() });
+          const existingProfile = { id: userDoc.id, ...userDoc.data() };
+          syncProfileToSupabase(existingProfile).catch(() => {});
+          cacheUserInDexie(existingProfile).catch(() => {});
+          handleSuccess(existingProfile);
         }
       } catch (dbErr) {
         console.warn('Profile fetch error during Google auth:', dbErr);
-        const emailUser = result.user.email?.split('@')[0] || uid.substring(0, 8);
-        handleSuccess({
+        const emailBase = result.user.email?.split('@')[0] || uid.substring(0, 8);
+        const uniqueUsername = await ensureUniqueUsername(emailBase, uid);
+        const fallbackProfile = {
           id: uid,
-          username: emailUser,
-          display_name: result.user.displayName || emailUser,
+          username: uniqueUsername,
+          display_name: result.user.displayName || uniqueUsername,
           email: result.user.email,
-          avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`
-        });
+          avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
+          created_at: new Date().toISOString()
+        };
+        syncProfileToSupabase(fallbackProfile).catch(() => {});
+        cacheUserInDexie(fallbackProfile).catch(() => {});
+        handleSuccess(fallbackProfile);
       }
     } catch (err: any) {
       if (err.code === 'auth/popup-blocked' || err.code === 'auth/popup-closed-by-user') {

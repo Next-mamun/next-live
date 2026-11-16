@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
 import { localDB } from '@/lib/dexie';
+import { fetchProfileSmart } from '@/lib/profileSync';
 
 interface ProfileAvatarProps {
   userId?: string;
@@ -44,26 +43,11 @@ export const ProfileAvatar: React.FC<ProfileAvatarProps> = ({ userId, defaultAva
         }
       } catch (e) {}
 
-      // 2. Fetch from Firestore if missing from cache
+      // 2. Fetch from Supabase first (with Firestore fallback + auto-sync)
       try {
-        const docRef = doc(db, 'profiles', userId);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          const data = docSnap.data();
+        const data = await fetchProfileSmart(userId);
+        if (data) {
           const avatarUrl = data.avatar_url || data.avatar || '';
-          const dispName = data.display_name || data.name || name || 'User';
-          
-          await localDB.users.put({ 
-            id: userId, 
-            name: dispName,
-            display_name: dispName,
-            username: data.username || '',
-            avatar: avatarUrl,
-            avatar_url: avatarUrl,
-            email: data.email,
-            is_verified: !!data.is_verified
-          }).catch(() => {});
-
           if (avatarUrl && !avatarUrl.includes('dicebear')) {
             return avatarUrl;
           }

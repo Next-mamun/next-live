@@ -97,17 +97,28 @@ const EmbedPlayer: React.FC<EmbedPlayerProps> = ({ src }) => {
     setShouldLoad(true);
   };
 
+  const isFacebook = src.includes('facebook') || src.includes('fb.watch');
+
   return (
     <div ref={containerRef} className="w-full aspect-video bg-black relative group cursor-pointer overflow-hidden">
-      {!isPlaying && ytId && (
-        <div onClick={handlePlayClick} className="absolute inset-0 z-10 flex items-center justify-center bg-black/20 hover:bg-black/10 transition-colors">
-          <img src={`https://img.youtube.com/vi/${ytId}/hqdefault.jpg`} className="w-full h-full object-cover opacity-80" alt="Video Thumbnail" />
-          <div className="absolute w-16 h-12 bg-red-600 rounded-2xl flex items-center justify-center group-hover:bg-red-500 transition-colors shadow-lg">
+      {!isPlaying && (
+        <div onClick={handlePlayClick} className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gradient-to-br from-zinc-900 via-black to-zinc-900 hover:bg-black/80 transition-colors">
+          {ytId ? (
+            <img src={`https://img.youtube.com/vi/${ytId}/hqdefault.jpg`} loading="lazy" className="w-full h-full object-cover opacity-85" alt="Video Thumbnail" />
+          ) : (
+            <div className="flex flex-col items-center gap-2 px-4 text-center">
+              <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+                {isFacebook ? 'Facebook Video' : 'Embedded Video'}
+              </span>
+              <span className="text-xs text-zinc-500">Tap to play</span>
+            </div>
+          )}
+          <div className={`absolute w-16 h-12 rounded-2xl flex items-center justify-center transition-colors shadow-lg ${ytId ? 'bg-red-600 group-hover:bg-red-500' : 'bg-[#1877F2] group-hover:bg-[#166fe5]'}`}>
             <Play fill="white" className="text-white ml-1 w-6 h-6" />
           </div>
         </div>
       )}
-      {(shouldLoad || isPlaying || !ytId) && (
+      {isPlaying && (
         <iframe
           ref={iframeRef}
           src={getEnhancedSrc(src)}

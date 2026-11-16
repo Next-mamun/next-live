@@ -10,8 +10,9 @@ import { UserProfile as User } from '@/types';
 import { auth, db } from '@/lib/firebase';
 import { generateBio } from '@/services/geminiService';
 import { onAuthStateChanged, signOut, getRedirectResult } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, where } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { localDB, getBase64Image } from '@/lib/dexie';
+import { syncProfileToSupabase, ensureUniqueUsername, backfillPublicProfilesOnce, fetchProfileSmart, cacheUserInDexie } from '@/lib/profileSync';
 import { useWakeLock } from '@/hooks/useWakeLock';
 import { requestNotificationPermission } from '@/services/notificationService';
 import { toast } from 'sonner';
@@ -47,17 +48,8 @@ const handleDynamicImportError = async (err: any) => {
 window.addEventListener('error', (e) => handleDynamicImportError(e.error || e.message));
 window.addEventListener('unhandledrejection', (e) => handleDynamicImportError(e.reason));
 
-// Primary pages imported directly for instant loading
+// Primary Feed imported directly for instant home loading
 import Feed from '@/pages/Feed';
-import Messages from '@/pages/Messages';
-import Friends from '@/pages/Friends';
-import Profile from '@/pages/Profile';
-import Notifications from '@/pages/Notifications';
-import Reels from '@/pages/Reels';
-import CreatePost from '@/pages/CreatePost';
-import Lab from '@/pages/Lab';
-import Cinema from '@/pages/Cinema';
-import Meet from '@/pages/Meet';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 import { AuthBottomSheet } from '@/components/AuthBottomSheet';
 import { GuestLockedView } from '@/components/GuestLockedView';
@@ -76,8 +68,9 @@ const safeLazy = (importFn: () => Promise<any>) =>
         } catch (_) {}
       }
       const reloadKey = 'safe_lazy_reload_' + window.location.pathname;
-      if (!sessionStorage.getItem(reloadKey)) {
-        sessionStorage.setItem(reloadKey, 'true');
+      const lastReload = Number(sessionStorage.getItem(reloadKey) || '0');
+      if (Date.now() - lastReload > 10000) {
+        sessionStorage.setItem(reloadKey, String(Date.now()));
         window.location.reload();
         return new Promise(() => {}); // Hold execution until reload
       }
@@ -85,7 +78,16 @@ const safeLazy = (importFn: () => Promise<any>) =>
     }
   });
 
-// Secondary pages with safe lazy loading
+// Routes with safe lazy loading (slashes initial dev-server request burst & preview rate limits)
+const Messages = safeLazy(() => import('@/pages/Messages'));
+const Friends = safeLazy(() => import('@/pages/Friends'));
+const Profile = safeLazy(() => import('@/pages/Profile'));
+const Notifications = safeLazy(() => import('@/pages/Notifications'));
+const Reels = safeLazy(() => import('@/pages/Reels'));
+const CreatePost = safeLazy(() => import('@/pages/CreatePost'));
+const Lab = safeLazy(() => import('@/pages/Lab'));
+const Cinema = safeLazy(() => import('@/pages/Cinema'));
+const Meet = safeLazy(() => import('@/pages/Meet'));
 const Login = safeLazy(() => import('@/pages/Login'));
 const Register = safeLazy(() => import('@/pages/Register'));
 const Settings = safeLazy(() => import('@/pages/Settings'));
@@ -272,6 +274,7 @@ const AppLayout: React.FC = () => {
   }, []);
   const [pullProgress, setPullProgress] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const pullProgressRef = useRef(0);
 
   const onTouchStart = (e: React.TouchEvent) => {
     // DO NOT prevent default here or scrolling will break
@@ -295,21 +298,27 @@ const AppLayout: React.FC = () => {
       target = target.parentElement;
     }
 
-    if (inChatArea) return; // Never pull-to-refresh inside active chat area
-    if (hasScrolledParent) return;
+    if (inChatArea || hasScrolledParent) return;
 
     // For non-messages pages, also check mainEl
     const mainEl = mainRef.current;
     if (!isMessages && (!mainEl || mainEl.scrollTop > 0)) return;
 
+    const currentX = e.touches[0].clientX;
     const currentY = e.touches[0].clientY;
     const distanceY = currentY - touchStart.y;
+    const distanceX = Math.abs(currentX - touchStart.x);
     
-    // If pulling down
-    if (distanceY > 0) {
-      const progress = Math.min(distanceY / 150, 1);
-      setPullProgress(progress);
-    } else {
+    // Engage pull-to-refresh only on deliberate vertical downward drag (prevents jitter & per-frame re-renders during scroll)
+    if (distanceY > 24 && distanceY > distanceX * 1.5) {
+      const raw = Math.min((distanceY - 24) / 130, 1);
+      const quantized = Math.round(raw * 10) / 10;
+      if (quantized !== pullProgressRef.current) {
+        pullProgressRef.current = quantized;
+        setPullProgress(quantized);
+      }
+    } else if (pullProgressRef.current !== 0) {
+      pullProgressRef.current = 0;
       setPullProgress(0);
     }
   };
@@ -322,15 +331,17 @@ const AppLayout: React.FC = () => {
     const distanceY = Math.abs(touchStart.y - touchEnd.y);
 
     // Pull to refresh trigger
-    if (pullProgress > 0.8 && !isRefreshing) {
+    if (pullProgressRef.current > 0.8 && !isRefreshing) {
       setIsRefreshing(true);
       try {
         await queryClient.refetchQueries();
       } finally {
         setIsRefreshing(false);
+        pullProgressRef.current = 0;
         setPullProgress(0);
       }
-    } else {
+    } else if (pullProgressRef.current !== 0) {
+      pullProgressRef.current = 0;
       setPullProgress(0);
     }
 
@@ -367,20 +378,24 @@ const AppLayout: React.FC = () => {
 
   return (
     <div 
-      className="w-full bg-[#f0f2f5] dark:bg-[#000000] flex flex-col transition-colors duration-300 overflow-hidden" 
-      style={{ height: typeof viewportHeight === 'number' ? `${viewportHeight}px` : viewportHeight, paddingBottom: '0px' }}
+      className="app-viewport-shell w-full bg-[#f0f2f5] dark:bg-[#000000] flex flex-col transition-colors duration-300 overflow-hidden" 
+      style={isKeyboardOpen && typeof viewportHeight === 'number' ? { height: `${viewportHeight}px`, maxHeight: `${viewportHeight}px`, bottom: 'auto', paddingBottom: '0px' } : { paddingBottom: '0px' }}
     >
       <div 
-        className="flex w-full flex-1 min-h-0 max-w-[1920px] mx-auto overflow-hidden relative"
+        className="app-inner-shell flex w-full flex-1 min-h-0 max-h-full max-w-[1920px] mx-auto overflow-hidden relative"
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
         {!isAuthPage && <Navbar />}
-        {currentUser && <div className="hidden md:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
+        {currentUser && <div className="hidden lg:block xl:min-w-[300px] shrink-0 sticky top-14 h-[calc(100vh-3.5rem)] overflow-y-auto"><Sidebar /></div>}
         <main 
           ref={mainRef}
-          className={`w-full flex-1 flex flex-col min-w-0 ${!isAuthPage ? 'pt-14' : ''} md:pb-0 ${isMessages ? 'overflow-hidden bg-white dark:bg-black' : 'overflow-x-hidden overflow-y-auto px-0 md:p-4'} relative`}
+          className={`h-full max-h-full min-h-0 w-full flex-1 min-w-0 relative ${!isAuthPage ? 'pt-14' : ''} ${
+            isMessages
+              ? `flex flex-col overflow-hidden bg-white dark:bg-black ${!isKeyboardOpen ? (!shouldHideBottomNav ? 'pb-16 lg:pb-0' : 'md:pb-16 lg:pb-0') : ''}`
+              : 'block overflow-x-hidden overflow-y-auto scroll-container px-0 md:p-4 pb-24 lg:pb-6'
+          }`}
         >
           {/* Pull to Refresh Indicator */}
           {(pullProgress > 0 || isRefreshing) && (
@@ -401,7 +416,7 @@ const AppLayout: React.FC = () => {
             </div>
           )}
 
-          <div className="flex-1 w-full flex flex-col min-h-0">
+          <div className={isMessages ? 'flex-1 w-full flex flex-col min-h-0 max-h-full' : 'w-full'}>
           <Suspense fallback={
             <div className="h-full flex items-center justify-center min-h-[50vh]">
               <div className="fast-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[#1877F2]"></div>
@@ -467,8 +482,8 @@ const AppLayout: React.FC = () => {
           </div>
         </main>
       </div>
-      {!isAuthPage && !shouldHideBottomNav && (
-        <div className="z-[100] relative w-full shrink-0 md:hidden">
+      {!isAuthPage && !isKeyboardOpen && (
+        <div className={`fixed bottom-0 left-0 right-0 z-[100] lg:hidden ${shouldHideBottomNav ? 'hidden md:block' : ''}`}>
           <BottomNav />
         </div>
       )}
@@ -481,9 +496,10 @@ const App: React.FC = () => {
   useWakeLock();
 
   useEffect(() => {
-    // 1. STATIC BUILD VERSION TRACKING & CACHE INVALIDATION
+    // 1. STATIC BUILD VERSION TRACKING & CACHE INVALIDATION (Production only to prevent dev preview reload bursts)
+    const isProd = Boolean((import.meta as any).env?.PROD);
     const currentVersion = (import.meta as any).env?.VITE_BUILD_TIME;
-    if (typeof window !== 'undefined' && currentVersion) {
+    if (isProd && typeof window !== 'undefined' && currentVersion) {
       const storedVersion = localStorage.getItem('app_build_version');
       if (storedVersion && storedVersion !== currentVersion) {
         console.log('New build detected, purging caches and reloading...');
@@ -768,6 +784,14 @@ const App: React.FC = () => {
         }
       }
 
+      // One-time background sync of current user & public legacy profiles to Supabase
+      const syncKey = `supa_self_synced_${currentUser.id}`;
+      if (!sessionStorage.getItem(syncKey)) {
+        sessionStorage.setItem(syncKey, '1');
+        syncProfileToSupabase(currentUser).catch(() => {});
+        backfillPublicProfilesOnce().catch(() => {});
+      }
+
       // Initialize global listeners via Zustand Store after UI mounts and Dexie hydrates
       let cancelled = false;
       let unsubMessages: any;
@@ -796,18 +820,29 @@ const App: React.FC = () => {
         if (result && result.user) {
           const userDoc = await getDoc(doc(db, 'profiles', result.user.uid));
           if (!userDoc.exists()) {
-            const emailUser = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-            const bio = await generateBio(emailUser);
+            const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
+            const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
+            const bio = await generateBio(uniqueUsername);
             const newProfile = {
-               username: emailUser,
-               display_name: result.user.displayName || emailUser,
+               username: uniqueUsername,
+               display_name: result.user.displayName || uniqueUsername,
                email: result.user.email,
                bio: bio,
-               avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`,
+               avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
                created_at: new Date().toISOString()
             };
-            await setDoc(doc(db, 'profiles', result.user.uid), newProfile);
-            if (!unmounted) setCurrentUser({ id: result.user.uid, ...newProfile } as any);
+            try {
+              await setDoc(doc(db, 'profiles', result.user.uid), newProfile);
+            } catch (_) {}
+            const fullProfile = { id: result.user.uid, ...newProfile };
+            await syncProfileToSupabase(fullProfile);
+            await cacheUserInDexie(fullProfile);
+            if (!unmounted) setCurrentUser(fullProfile as any);
+          } else {
+            const existingProfile = { id: userDoc.id, ...userDoc.data() };
+            await syncProfileToSupabase(existingProfile);
+            await cacheUserInDexie(existingProfile);
+            if (!unmounted) setCurrentUser(existingProfile as any);
           }
         }
       } catch (err) {
@@ -845,14 +880,18 @@ const App: React.FC = () => {
         console.log("Local-Lock: Loaded user from Dexie, blocking Firebase request.");
         setCurrentUser(localUser as any);
         setLoadingAuth(false);
+        const syncKey = `supa_self_synced_${userId}`;
+        if (!sessionStorage.getItem(syncKey)) {
+          sessionStorage.setItem(syncKey, '1');
+          syncProfileToSupabase(localUser).catch(() => {});
+        }
         return;
       }
 
-      let data = null;
-      let error = null;
+      let data: any = null;
       let attempts = 0;
       
-      while (attempts < 10) {
+      while (attempts < 4) {
         try {
           const userDoc = await getDoc(doc(db, 'profiles', userId));
           if (userDoc.exists()) {
@@ -861,56 +900,59 @@ const App: React.FC = () => {
           }
         } catch (dbErr) {
           console.warn("Firestore error during profile fetch (quota exceeded?):", dbErr);
-          // If we hit a quota error or network error, break the retry loop and fall back
           break;
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 600));
         attempts++;
+      }
+
+      if (!data) {
+        data = await fetchProfileSmart(userId);
       }
         
       if (data) {
-        // Base64 Image Storage
-        if (data.avatar_url) {
-           data.avatar_url = await getBase64Image(data.avatar_url);
+        // Sync original profile data (including original avatar URL) to Supabase
+        syncProfileToSupabase(data).catch(() => {});
+
+        const cachedCopy = { ...data };
+        if (cachedCopy.avatar_url) {
+           cachedCopy.avatar_url = await getBase64Image(cachedCopy.avatar_url);
         }
         
-        // Save to Dexie
-        await localDB.users.put({
-          id: data.id,
-          name: data.display_name || '',
-          username: data.username || '',
-          avatar: data.avatar_url || '',
-          email: data.email || ''
-        });
+        await cacheUserInDexie(cachedCopy);
 
-        setCurrentUser(data as User);
-        localStorage.setItem('next_media_user', JSON.stringify(data));
+        setCurrentUser(cachedCopy as User);
+        localStorage.setItem('next_media_user', JSON.stringify(cachedCopy));
       } else {
         console.warn("Profile not found or DB unreachable. Falling back to local/auth data.");
         const saved = localStorage.getItem('next_media_user');
         if (saved) {
           const parsedSaved = JSON.parse(saved);
           if (parsedSaved.id === userId) {
+            syncProfileToSupabase(parsedSaved).catch(() => {});
             setCurrentUser(parsedSaved);
             return;
           }
         }
-        // If no local storage matches, create a mock user from Firebase Auth
+        // If no local storage matches, create user from Firebase Auth and sync to Supabase
         if (auth.currentUser) {
-          const emailUser = auth.currentUser.email?.split('@')[0] || userId.substring(0, 8);
-          setCurrentUser({
+          const emailBase = auth.currentUser.email?.split('@')[0] || userId.substring(0, 8);
+          const uniqueUsername = await ensureUniqueUsername(emailBase, userId);
+          const authFallback = {
             id: userId,
-            username: emailUser,
+            username: uniqueUsername,
             email: auth.currentUser.email,
-            display_name: auth.currentUser.displayName || emailUser,
-            avatar_url: auth.currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`,
+            display_name: auth.currentUser.displayName || uniqueUsername,
+            avatar_url: auth.currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
             created_at: new Date().toISOString()
-          } as User);
+          };
+          syncProfileToSupabase(authFallback).catch(() => {});
+          cacheUserInDexie(authFallback).catch(() => {});
+          setCurrentUser(authFallback as User);
         }
       }
     } catch (err) {
       console.error("Failed to fetch user profile:", err);
-      // Ensure we don't block them out
       const saved = localStorage.getItem('next_media_user');
       if (saved) setCurrentUser(JSON.parse(saved));
     } finally {

@@ -2,10 +2,19 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Camera, Edit2, Plus, Save, X, MessageCircle, UserPlus, Check, Users, RefreshCw, Calendar, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { db, OperationType, handleFirestoreError } from '../lib/firebase';
-import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, deleteDoc, orderBy, limit, increment } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, increment } from 'firebase/firestore';
 import { supabase } from '@/lib/supabase';
-import { getActiveDB, switchDB } from '@/lib/dbHelper';
+import { localDB } from '@/lib/dexie';
+import {
+  syncProfileToSupabase,
+  cacheUserInDexie,
+  migrateUserFriendshipsOnce,
+  getFriendshipBetweenSmart,
+  getAcceptedFriendsCountSmart,
+  sendFriendRequestSmart,
+  deleteFriendshipSmart,
+} from '@/lib/profileSync';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { Link } from 'react-router-dom';
@@ -34,41 +43,90 @@ const Profile: React.FC = () => {
   const viewedPostsRef = useRef<Set<string>>(new Set());
   const observer = useRef<IntersectionObserver | null>(null);
 
+  const isOwnProfile = Boolean(currentUser && (currentUser.username === username || currentUser.id === username));
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    migrateUserFriendshipsOnce(currentUser.id)
+      .then((changed) => {
+        if (changed) {
+          queryClient.invalidateQueries({ queryKey: ['friendship'] });
+          queryClient.invalidateQueries({ queryKey: ['friendsCount'] });
+        }
+      })
+      .catch(() => {});
+  }, [currentUser?.id, queryClient]);
+
   const { data: profile, isLoading: profileLoading } = useQuery({
-    queryKey: ['profile', username],
+    queryKey: ['profile', username, currentUser?.id],
     queryFn: async () => {
-      if (!username || !db) return null;
-      let userData = null;
-      
-      const q = query(collection(db, 'profiles'), where('username', '==', username));
-      let snap;
+      if (!username) return null;
+      let userData: any = null;
+
+      // Check Dexie first if own profile or cached
       try {
-        snap = await getDocs(q);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.GET, 'profiles');
+        if (isOwnProfile && currentUser) {
+          userData = currentUser;
+        } else {
+          const allLocal = await localDB.users.toArray();
+          const lower = username.toLowerCase();
+          const localMatch = allLocal.find((u: any) => u.id === username || (u.username || '').toLowerCase() === lower);
+          if (localMatch) userData = localMatch;
+        }
+      } catch {}
+
+      // Try Supabase first for fast profile lookup
+      if (!userData) {
+        try {
+          const { data: supaByUser } = await supabase
+            .from('profiles')
+            .select('*')
+            .ilike('username', username)
+            .maybeSingle();
+          if (supaByUser) {
+            userData = supaByUser;
+          } else {
+            const { data: supaById } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', username)
+              .maybeSingle();
+            if (supaById) userData = supaById;
+          }
+        } catch {}
       }
-      
-      if (snap && !snap.empty) {
-         userData = { id: snap.docs[0].id, ...snap.docs[0].data() };
-      } else if (db) {
-         const docRef = doc(db, 'profiles', username);
-         try {
-           const docSnap = await getDoc(docRef);
-           if (docSnap.exists()) {
-               userData = { id: docSnap.id, ...docSnap.data() };
-           }
-         } catch (error) {
-           handleFirestoreError(error, OperationType.GET, 'profiles/' + username);
-         }
+
+      // Fallback to Firestore if still not found
+      if (!userData && db) {
+        try {
+          const q = query(collection(db, 'profiles'), where('username', '==', username));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            userData = { id: snap.docs[0].id, ...snap.docs[0].data() };
+          } else {
+            const docSnap = await getDoc(doc(db, 'profiles', username));
+            if (docSnap.exists()) {
+              userData = { id: docSnap.id, ...docSnap.data() };
+            }
+          }
+        } catch (error) {
+          console.warn('Firestore profile lookup warning:', error);
+        }
       }
+
+      if (userData) {
+        cacheUserInDexie(userData);
+        syncProfileToSupabase(userData).catch(() => {});
+      }
+
       return userData;
     },
+    initialData: () => (isOwnProfile && currentUser ? currentUser : undefined),
     staleTime: 1000 * 60 * 5,
   });
 
   const avatarInputRef = React.useRef<HTMLInputElement>(null);
   const coverInputRef = React.useRef<HTMLInputElement>(null);
-  const isOwnProfile = currentUser?.username === username || currentUser?.id === username;
 
   useEffect(() => {
     if (profile) {
@@ -91,88 +149,44 @@ const Profile: React.FC = () => {
     queryKey: ['userPosts', profile?.id],
     queryFn: async () => {
       if (!profile?.id) return [];
-      // 3. User Profile Media Batching: fetch using limit(20)
-      const q = query(collection(db, 'posts'), where('user_id', '==', profile.id), orderBy('created_at', 'desc'), limit(20));
-      let docs: any = [];
-      
-      const fetchFromFirebase = async () => {
-         const snapshot = await getDocs(q);
-         docs = snapshot.docs;
-      };
-      
-      const fetchFromSupabase = async () => {
-        const { data: supaData, error: supaErr } = await supabase
-          .from('posts')
-          .select('*')
-          .eq('user_id', profile.id)
-          .order('created_at', { ascending: false })
-          .limit(20);
-        
-        if (supaErr) throw supaErr;
-        if (supaData) {
-          docs = supaData.map((d: any) => ({
-            id: d.id,
-            data: () => d
-          }));
-        }
-      };
+      let rawPosts: any[] = [];
 
       try {
-        if (getActiveDB() === 'firebase') {
+        const q = query(collection(db, 'posts'), where('user_id', '==', profile.id), orderBy('created_at', 'desc'), limit(20));
+        const snapshot = await getDocs(q);
+        rawPosts = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      } catch {
+        try {
+          const fallbackQ = query(collection(db, 'posts'), where('user_id', '==', profile.id), limit(30));
+          const snapshot = await getDocs(fallbackQ);
+          rawPosts = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        } catch {
           try {
-            await fetchFromFirebase();
-          } catch (err) {
-            console.warn("Firebase fetch failed, falling back to Supabase:", err);
-            switchDB('firebase');
-            await fetchFromSupabase();
-          }
-        } else {
-          try {
-            await fetchFromSupabase();
-          } catch (err) {
-            console.warn("Supabase fetch failed, falling back to Firebase:", err);
-            switchDB('supabase');
-            await fetchFromFirebase();
-          }
+            const cachedPosts = await localDB.posts.toArray();
+            rawPosts = cachedPosts.filter((p: any) => p.user_id === profile.id);
+          } catch {}
         }
-      } catch (err) {
-        console.error("Both databases failed.", err);
       }
-      
-      return docs.map((d: any) => {
-        const postData = d.data();
-        const profiles = profile; // We already have the profile
-        
-        return { 
-          id: d.id, 
-          ...postData, 
-          profiles, 
-          comments: [], 
-          likes: [] 
-        };
-      });
+
+      rawPosts.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+      return rawPosts.slice(0, 20).map((postData: any) => ({
+        id: postData.id,
+        ...postData,
+        profiles: profile,
+        comments: Array.isArray(postData.comments) ? postData.comments : [],
+        likes: Array.isArray(postData.likes) ? postData.likes : [],
+      }));
     },
     enabled: !!profile?.id,
-    staleTime: 1000 * 60 * 5, // 5 minutes
+    staleTime: 1000 * 60 * 5,
   });
 
   const { data: friendship } = useQuery({
     queryKey: ['friendship', currentUser?.id, profile?.id],
     queryFn: async () => {
       if (!profile?.id || !currentUser?.id || isOwnProfile) return null;
-      let fData = null;
-      
-      const q1 = query(collection(db, 'friendships'), where('sender_id', '==', currentUser.id), where('receiver_id', '==', profile.id));
-      const s1 = await getDocs(q1);
-      if (!s1.empty) fData = { id: s1.docs[0].id, ...s1.docs[0].data() };
-      
-      if (!fData) {
-         const q2 = query(collection(db, 'friendships'), where('sender_id', '==', profile.id), where('receiver_id', '==', currentUser.id));
-         const s2 = await getDocs(q2);
-         if (!s2.empty) fData = { id: s2.docs[0].id, ...s2.docs[0].data() };
-      }
-      
-      return fData;
+      return getFriendshipBetweenSmart(currentUser.id, profile.id);
     },
     enabled: !!profile?.id && !isOwnProfile && !!currentUser?.id,
   });
@@ -183,15 +197,7 @@ const Profile: React.FC = () => {
     queryKey: ['friendsCount', profile?.id],
     queryFn: async () => {
       if (!profile?.id) return 0;
-      let count = 0;
-      const q1 = query(collection(db, 'friendships'), where('status', '==', 'accepted'), where('sender_id', '==', profile.id));
-      const s1 = await getDocs(q1);
-      count += s1.size;
-      
-      const q2 = query(collection(db, 'friendships'), where('status', '==', 'accepted'), where('receiver_id', '==', profile.id));
-      const s2 = await getDocs(q2);
-      count += s2.size;
-      return count;
+      return getAcceptedFriendsCountSmart(profile.id);
     },
     enabled: !!profile?.id,
   });
@@ -247,6 +253,8 @@ const Profile: React.FC = () => {
           const uDoc = await getDoc(doc(db, 'profiles', currentUser?.id as string));
           if (uDoc.exists()) {
             const freshData = { id: uDoc.id, ...uDoc.data() } as any;
+            await syncProfileToSupabase(freshData);
+            await cacheUserInDexie(freshData);
             setCurrentUser(freshData);
             setEditData({
               display_name: freshData.display_name,
@@ -268,28 +276,34 @@ const Profile: React.FC = () => {
       return;
     }
     if (!friendship) {
-        try {
-            await addDoc(collection(db, 'friendships'), { sender_id: currentUser?.id, receiver_id: profile.id, status: 'pending', created_at: new Date().toISOString() });
-            await addDoc(collection(db, 'notifications'), {
-              user_id: profile.id,
-              sender_id: currentUser?.id,
-              type: 'friend_request',
-              created_at: new Date().toISOString(),
-              is_read: false
-            });
-            queryClient.invalidateQueries({ queryKey: ['friendship', currentUser?.id, profile?.id] });
-            setFeedback({ type: 'success', msg: 'Friend request sent successfully!' });
-        } catch(e) {
-            setFeedback({ type: 'error', msg: 'Failed to send friend request.' });
-        }
+      try {
+        await sendFriendRequestSmart(currentUser.id, profile.id);
+
+        await addDoc(collection(db, 'notifications'), {
+          user_id: profile.id,
+          sender_id: currentUser.id,
+          sender_name: currentUser.display_name || currentUser.username || 'Someone',
+          sender_username: currentUser.username || '',
+          sender_avatar: currentUser.avatar_url || '',
+          type: 'friend_request',
+          created_at: new Date().toISOString(),
+          is_read: false
+        }).catch(() => {});
+        queryClient.invalidateQueries({ queryKey: ['friendship', currentUser.id, profile?.id] });
+        queryClient.invalidateQueries({ queryKey: ['friends'] });
+        setFeedback({ type: 'success', msg: 'Friend request sent successfully!' });
+      } catch (e) {
+        setFeedback({ type: 'error', msg: 'Failed to send friend request.' });
+      }
     } else if (friendship.status === 'pending') {
-        try {
-            await deleteDoc(doc(db, 'friendships', friendship.id));
-            queryClient.invalidateQueries({ queryKey: ['friendship', currentUser?.id, profile?.id] });
-            setFeedback({ type: 'success', msg: 'Friend request cancelled.' });
-        } catch(e) {
-            setFeedback({ type: 'error', msg: 'Failed to cancel friend request.' });
-        }
+      try {
+        await deleteFriendshipSmart(friendship.id, currentUser.id, profile.id);
+        queryClient.invalidateQueries({ queryKey: ['friendship', currentUser.id, profile?.id] });
+        queryClient.invalidateQueries({ queryKey: ['friends'] });
+        setFeedback({ type: 'success', msg: 'Friend request cancelled.' });
+      } catch (e) {
+        setFeedback({ type: 'error', msg: 'Failed to cancel friend request.' });
+      }
     }
     setTimeout(() => setFeedback(null), 3000);
   };
@@ -297,25 +311,22 @@ const Profile: React.FC = () => {
   const handleUpdate = async () => {
     setIsUploading(true);
     try {
-       await updateDoc(doc(db, 'profiles', currentUser?.id as string), editData);
-       const uDoc = await getDoc(doc(db, 'profiles', currentUser?.id as string));
-       if (uDoc.exists()) {
-           const updatedData = { id: uDoc.id, ...uDoc.data() };
-           setCurrentUser(updatedData as any);
-           // Update Dexie to instantly reflect globally
-           import('@/lib/dexie').then(({ localDB }) => {
-              localDB.users.put(updatedData as any);
-           });
-           
-           // Force window reload to apply global cache clear
-           setTimeout(() => {
-               window.location.reload();
-           }, 500);
-           setIsEditing(false); 
-           queryClient.invalidateQueries({ queryKey: ['profile', username] });
-       }
-    } catch(e) {
-       console.error("Failed to update profile", e);
+      await updateDoc(doc(db, 'profiles', currentUser?.id as string), editData);
+      const uDoc = await getDoc(doc(db, 'profiles', currentUser?.id as string));
+      if (uDoc.exists()) {
+        const updatedData = { id: uDoc.id, ...uDoc.data() };
+        await syncProfileToSupabase(updatedData);
+        await cacheUserInDexie(updatedData);
+        setCurrentUser(updatedData as any);
+
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
+        setIsEditing(false);
+        queryClient.invalidateQueries({ queryKey: ['profile', username] });
+      }
+    } catch (e) {
+      console.error('Failed to update profile', e);
     }
     setIsUploading(false);
   };
@@ -345,7 +356,7 @@ const Profile: React.FC = () => {
         </div>
       )}
       <div className="w-full max-w-[1100px] mx-auto">
-        <div className="relative mb-24">
+        <div className="relative mb-6 md:mb-24">
           <div className="h-[200px] md:h-[300px] bg-gradient-to-r from-blue-400 to-blue-600 rounded-b-xl overflow-hidden shadow-sm relative z-0 group">
             {(isEditing ? editData.cover_url : profile.cover_url) && (
               <img src={(isEditing ? editData.cover_url : profile.cover_url) || undefined} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
@@ -355,7 +366,7 @@ const Profile: React.FC = () => {
                 <input type="file" ref={coverInputRef} hidden onChange={(e) => handleFileUpload(e, 'cover')} accept="image/*" />
                 <button 
                   onClick={() => coverInputRef.current?.click()}
-                  className="absolute bottom-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2.5 rounded-full backdrop-blur-md border border-white/20 shadow-xl transition-all opacity-0 group-hover:opacity-100 flex items-center gap-2"
+                  className="absolute bottom-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2.5 rounded-full backdrop-blur-md border border-white/20 shadow-xl transition-all md:opacity-0 md:group-hover:opacity-100 flex items-center gap-2"
                 >
                   <Camera size={20} />
                   <span className="text-sm font-bold pr-1">Update Cover</span>
@@ -364,9 +375,9 @@ const Profile: React.FC = () => {
             )}
           </div>
           
-          <div className="absolute -bottom-20 left-4 md:left-10 flex flex-col md:flex-row items-center md:items-end gap-6 w-[calc(100%-32px)] md:w-full z-20">
+          <div className="relative -mt-16 px-4 flex flex-col items-center gap-4 md:gap-6 md:mt-0 md:px-0 md:flex-row md:items-end md:absolute md:-bottom-20 md:left-10 md:w-[calc(100%-5rem)] z-20">
             <div className="relative group cursor-pointer" onClick={() => !isEditing && setShowPhotoModal(true)}>
-              <ProfileAvatar userId={profile.id} defaultAvatar={isEditing ? editData.avatar_url : profile.avatar_url} name={profile.display_name} className="w-36 h-36 md:w-44 md:h-44 rounded-full border-4 border-white dark:border-black shadow-2xl object-cover bg-white dark:bg-gray-800 hover:brightness-90 transition-all" />
+              <ProfileAvatar userId={profile.id} defaultAvatar={isEditing ? editData.avatar_url : profile.avatar_url} name={profile.display_name} className="w-32 h-32 md:w-44 md:h-44 rounded-full border-4 border-white dark:border-black shadow-2xl object-cover bg-white dark:bg-gray-800 hover:brightness-90 transition-all" />
               {isOwnProfile && (
                 <>
                   <input type="file" ref={avatarInputRef} hidden onChange={(e) => handleFileUpload(e, 'avatar')} accept="image/*" />
@@ -382,14 +393,14 @@ const Profile: React.FC = () => {
                   <input value={editData.display_name} onChange={e => setEditData({...editData, display_name: e.target.value})} className="text-3xl font-black border dark:border-gray-700 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-300 text-gray-900 dark:text-white bg-transparent" />
                 </div>
               ) : (
-                <h1 className="text-4xl font-black text-gray-900 dark:text-white drop-shadow-md flex items-center gap-2">
+                <h1 className="text-2xl md:text-4xl font-black text-gray-900 dark:text-white drop-shadow-md flex items-center justify-center md:justify-start gap-2">
                   {profile.display_name}
-                  {profile.is_verified && <VerifiedBadge size={28} />}
+                  {profile.is_verified && <VerifiedBadge size={24} />}
                 </h1>
               )}
-              <p className="text-gray-700 dark:text-gray-300 font-bold bg-white/30 dark:bg-black/30 backdrop-blur-sm inline-block px-2 rounded-md mt-1">@{profile.username}</p>
+              <p className="text-gray-700 dark:text-gray-300 font-bold bg-white/30 dark:bg-black/30 backdrop-blur-sm inline-block px-2 rounded-md mt-1">@{profile.username || profile.id}</p>
             </div>
-            <div className="flex gap-2 md:pb-2 mr-10">
+            <div className="flex flex-wrap justify-center gap-2 md:pb-2">
               {isOwnProfile ? (
                 isEditing ? (
                   <>
@@ -430,7 +441,9 @@ const Profile: React.FC = () => {
                 <div className="flex items-center gap-3 text-gray-600 dark:text-gray-400 font-medium"><Calendar className="text-gray-400" size={20} /> Member since {profile.created_at ? new Date(profile.created_at).getFullYear() : '2023'}</div>
                 <div className="flex items-center gap-3 text-gray-600 dark:text-gray-400 font-medium"><CheckCircle className="text-gray-400" size={20} /> Active User</div>
               </div>
-              <button onClick={() => setIsEditing(true)} className="w-full bg-[#f0f2f5] dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 py-2.5 rounded-xl font-bold mt-6 text-gray-800 dark:text-white transition-colors">Edit Bio</button>
+              {isOwnProfile && (
+                <button onClick={() => setIsEditing(true)} className="w-full bg-[#f0f2f5] dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 py-2.5 rounded-xl font-bold mt-6 text-gray-800 dark:text-white transition-colors">Edit Bio</button>
+              )}
             </div>
           </div>
 

@@ -10,6 +10,7 @@ import { useUpload } from '@/contexts/UploadContext';
 import { invalidatePostsCache } from '@/lib/redis';
 import { useContentFilter } from '@/hooks/useContentFilter';
 import { CameraCapture } from '@/components/CameraCapture';
+import { toast } from 'sonner';
 
 const CreatePost = () => {
   const { currentUser } = useAuth();
@@ -54,6 +55,18 @@ const CreatePost = () => {
     }
   }, [location.search]);
 
+  useEffect(() => {
+    return () => {
+      if (preview && preview.startsWith('blob:')) URL.revokeObjectURL(preview);
+    };
+  }, [preview]);
+
+  useEffect(() => {
+    return () => {
+      if (thumbnailPreview && thumbnailPreview.startsWith('blob:')) URL.revokeObjectURL(thumbnailPreview);
+    };
+  }, [thumbnailPreview]);
+
   const categories = ['Entertainment', 'Learning', 'AI', 'Technology', 'Music', 'Gaming', 'News', 'Lifestyle', 'Sports', 'Art'];
 
   const handleLinkChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -67,17 +80,17 @@ const CreatePost = () => {
     const isImg = selectedFile.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp|svg)$/i.test(selectedFile.name);
 
     if (!isVid && !isImg) {
-      alert('Please select a valid image or video file (MP4, MOV, WebM, MKV, JPG, PNG, etc.).');
+      toast.error('Please select a valid image or video file (MP4, MOV, WebM, MKV, JPG, PNG, etc.).');
       return;
     }
 
     // High limit for videos (250MB) and images (30MB)
     if (isVid && selectedFile.size > 250 * 1024 * 1024) {
-      alert('Video file is too large. Please select a video under 250MB.');
+      toast.error('Video file is too large. Please select a video under 250MB.');
       return;
     }
     if (isImg && selectedFile.size > 30 * 1024 * 1024) {
-      alert('Image file is too large. Please select an image under 30MB.');
+      toast.error('Image file is too large. Please select an image under 30MB.');
       return;
     }
 
@@ -147,13 +160,18 @@ const CreatePost = () => {
   });
 
   const handleRemoveFile = () => {
+    const oldPreview = preview;
+    const oldThumb = thumbnailPreview;
     setFile(null);
     setIsVideoFile(false);
     setPreview(null);
     setThumbnailFile(null);
     setThumbnailPreview(null);
-    if (preview) {
-      URL.revokeObjectURL(preview);
+    if (oldPreview && oldPreview.startsWith('blob:')) {
+      URL.revokeObjectURL(oldPreview);
+    }
+    if (oldThumb && oldThumb.startsWith('blob:')) {
+      URL.revokeObjectURL(oldThumb);
     }
   };
 
@@ -211,6 +229,10 @@ const CreatePost = () => {
 
     const postData: any = {
       user_id: currentUser.id,
+      author_name: currentUser.display_name || currentUser.username || 'User',
+      author_username: currentUser.username || 'user',
+      author_avatar: currentUser.avatar_url || '',
+      author_verified: Boolean(currentUser.is_verified),
       content: caption,
       media_url: mediaUrl,
       media_type: mediaType,
@@ -225,6 +247,10 @@ const CreatePost = () => {
     if (file) {
       addUpload(file, 'post', {
         userId: currentUser.id,
+        authorName: postData.author_name,
+        authorUsername: postData.author_username,
+        authorAvatar: postData.author_avatar,
+        authorVerified: postData.author_verified,
         mediaType: mediaType,
         payload: postData,
         onSuccess: () => navigate('/')
@@ -233,9 +259,10 @@ const CreatePost = () => {
       try {
         await dualWritePost({ ...postData, created_at: new Date().toISOString() });
         await invalidatePostsCache();
+        toast.success('Post published!');
         navigate('/');
       } catch (error: any) {
-        alert(error.message || 'Failed to create post');
+        toast.error(error.message || 'Failed to create post');
       }
     }
     
@@ -450,7 +477,7 @@ const CreatePost = () => {
           )}
 
           {/* Details Section */}
-          <div className={`space-y-5 transition-all duration-500 ${!preview && !validEmbedUrl ? 'opacity-50 pointer-events-none blur-[1px]' : 'opacity-100'}`}>
+          <div className="space-y-5 transition-all duration-500 opacity-100">
             <div className="flex items-start gap-4 flex-col sm:flex-row">
               <div className="flex-1 space-y-4 w-full">
                 <div className="relative">
@@ -512,7 +539,7 @@ const CreatePost = () => {
             </button>
             <button type="button"
               onClick={handleSubmit}
-              disabled={isUploading || (!file && !validEmbedUrl)}
+              disabled={isUploading || (!caption.trim() && !file && !validEmbedUrl)}
               className="relative px-8 py-3 bg-[#1877F2] text-white rounded-full font-bold shadow-md shadow-[#1877F2]/20 hover:bg-[#166fe5] hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all transform active:scale-95 disabled:active:scale-100 overflow-hidden group"
             >
               <div className="absolute inset-0 w-full h-full bg-white/20 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700"></div>

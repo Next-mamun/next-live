@@ -52,12 +52,6 @@ interface Participant {
   isHost: boolean;
 }
 
-const STUN_URLS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' }
-];
-
 const Cinema: React.FC = () => {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
@@ -85,6 +79,7 @@ const Cinema: React.FC = () => {
 
   // P2P State
   const peerRef = useRef<Peer | null>(null);
+  const dataConnsRef = useRef<Record<string, DataConnection>>({});
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [showParticipants, setShowParticipants] = useState(false);
@@ -94,6 +89,7 @@ const Cinema: React.FC = () => {
 
   // Media Streams & Audio Ducking
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [micEnabled, setMicEnabled] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
@@ -130,6 +126,8 @@ const Cinema: React.FC = () => {
 
   const handleLeaveRoomRef = useRef<() => void>(() => {});
 
+  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
+
   // UNMOUNT CLEANUP: Ensure all media tracks, intervals, and peer connections are released when navigating away
   useEffect(() => {
     return () => {
@@ -141,16 +139,22 @@ const Cinema: React.FC = () => {
         clearInterval(duckingIntervalRef.current);
         duckingIntervalRef.current = null;
       }
+      if (typingTimerRef.current) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
       if (peerRef.current) {
         try { peerRef.current.destroy(); } catch (e) {}
         peerRef.current = null;
       }
+      dataConnsRef.current = {};
       if (audioContextRef.current) {
         try { audioContextRef.current.close(); } catch (e) {}
         audioContextRef.current = null;
       }
-      if (localStream) {
-        try { localStream.getTracks().forEach(track => track.stop()); } catch (e) {}
+      if (localStreamRef.current) {
+        try { localStreamRef.current.getTracks().forEach(track => track.stop()); } catch (e) {}
+        localStreamRef.current = null;
       }
       if ((window as any).cinemaLocalStream) {
         try { (window as any).cinemaLocalStream.getTracks().forEach((t: MediaStreamTrack) => t.stop()); } catch (e) {}
@@ -438,6 +442,7 @@ const Cinema: React.FC = () => {
   };
 
   const setupDataConnection = (conn: DataConnection, hostMode: boolean, cleanCode: string) => {
+    dataConnsRef.current[conn.peer] = conn;
     conn.on('open', () => {
       console.log(`[Cinema] Data connection opened with: ${conn.peer}`);
       setIsConnecting(false);
@@ -509,6 +514,7 @@ const Cinema: React.FC = () => {
   };
 
   const handlePeerDisconnect = (peerId: string) => {
+    delete dataConnsRef.current[peerId];
     setPeers(prev => {
       const updated = { ...prev };
       delete updated[peerId];
@@ -548,11 +554,13 @@ const Cinema: React.FC = () => {
         // MODULE 2: Lobby Sync -> Admin sees User B immediately
         setPeers(prev => {
           const existing = prev[peerId];
+          const conn = existing?.conn || dataConnsRef.current[peerId];
+          if (!conn) return prev;
           return {
             ...prev,
             [peerId]: {
               id: peerId,
-              conn: existing?.conn || (data as any),
+              conn,
               role: peerId === getHostPeerId(roomCodeRef.current) ? 'HOST' : 'GUEST',
               joinedAt: existing?.joinedAt || Date.now(),
               profile: data.user

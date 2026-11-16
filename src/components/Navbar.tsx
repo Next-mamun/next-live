@@ -3,8 +3,10 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Home, Users, MessageCircle, Bell, User, LogOut, Menu, BookOpen, Tv, LogIn } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { doc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { supabase } from '@/lib/supabase';
+import { fetchProfilesBatchSmart } from '@/lib/profileSync';
 import { VerifiedBadge } from './VerifiedBadge';
 import { ProfileAvatar } from './ProfileAvatar';
 import { useGlobalStore } from '@/store/useGlobalStore';
@@ -26,6 +28,7 @@ const Navbar: React.FC = () => {
     
     const validMsgs = storeMessages.filter(msg => {
       if (msg.is_read !== false) return false;
+      if (msg.receiver_id !== currentUser.id || msg.sender_id === currentUser.id) return false;
       if (msg.deleted_for_everyone || (msg.deleted_for || []).includes(currentUser.id)) return false;
       return true;
     });
@@ -59,7 +62,7 @@ const Navbar: React.FC = () => {
       const avatar = n.sender_avatar || sender?.avatar_url;
 
       let text = `${displayName}${usernameTag} interacted with you.`;
-      let link = `/profile/${currentUser.username}`;
+      let link = `/profile/${currentUser.username || currentUser.id}`;
       
       if (n.type === 'friend_request') {
         text = `${displayName}${usernameTag} sent you a friend request.`;
@@ -106,48 +109,22 @@ const Navbar: React.FC = () => {
   useEffect(() => {
     if (!currentUser) return;
     const fetchMissingProfiles = async () => {
-      const combined = [...storeNotifications, ...storeMessages.filter(m => m.is_read === false)];
-      const senderIds = [...new Set(combined.map(n => n.sender_id).filter(Boolean))];
-      
-      const missingIds = senderIds.filter(id => !profilesCacheRef.current[id as string] && !fetchingRefs.current.has(id as string));
+      const combined = [
+        ...storeNotifications,
+        ...storeMessages.filter(m => m.is_read === false && m.receiver_id === currentUser.id && m.sender_id !== currentUser.id)
+      ];
+      const senderIds = [...new Set(combined.map(n => n.sender_id).filter(Boolean))] as string[];
+
+      const missingIds = senderIds.filter(id => !profilesCacheRef.current[id] && !fetchingRefs.current.has(id));
       if (missingIds.length === 0) return;
 
-      missingIds.forEach(id => fetchingRefs.current.add(id as string));
+      missingIds.forEach(id => fetchingRefs.current.add(id));
 
-      const newProfiles: any[] = [];
-      const { collection, query, where, getDocs } = await import('firebase/firestore');
-      
-      // Process in chunks of 30 for 'in' queries
-      for (let i = 0; i < missingIds.length; i += 30) {
-        const chunk = missingIds.slice(i, i + 30);
-        try {
-          // In Firestore, id is __name__ but we can also use 'id' if we store it. Better to just fetch one by one if not __name__ or use documentId()
-          // We will use the helper if possible, or just standard query
-          const { documentId } = await import('firebase/firestore');
-          const q = query(collection(db, 'profiles'), where(documentId(), 'in', chunk));
-          const snap = await getDocs(q);
-          snap.docs.forEach(d => {
-            newProfiles.push({ id: d.id, ...d.data() });
-          });
-        } catch (err) {
-          console.warn("Chunk fetch error:", err);
-          // If documentId() fails in older SDKs, fallback to one-by-one:
-          for (const id of chunk) {
-             try {
-                const { doc, getDoc } = await import('firebase/firestore');
-                const dSnap = await getDoc(doc(db, 'profiles', id as string));
-                if (dSnap.exists()) {
-                   newProfiles.push({ id: dSnap.id, ...dSnap.data() });
-                }
-             } catch(e) {}
-          }
-        }
-      }
-      
-      if (newProfiles.length > 0) {
+      const fetchedMap = await fetchProfilesBatchSmart(missingIds);
+      if (fetchedMap.size > 0) {
         setProfilesCache(prev => {
           const next = { ...prev };
-          newProfiles.forEach((p: any) => { next[p.id] = p; });
+          fetchedMap.forEach((p, id) => { next[id] = p; });
           return next;
         });
       }
@@ -169,18 +146,33 @@ const Navbar: React.FC = () => {
     
     if (notif.type === 'message') {
       e.preventDefault();
-      // Navigate directly into that user's chatbox
       navigate(`/messages?user=${notif.sender_id}`, { state: { userId: notif.sender_id } });
 
       const store = useGlobalStore.getState();
-      const updatedMessages = store.messages.map(m => 
-        m.sender_id === notif.sender_id ? { ...m, is_read: true } : m
+      const updatedMessages = store.messages.map(m =>
+        m.sender_id === notif.sender_id && m.receiver_id === currentUser?.id
+          ? { ...m, is_read: true }
+          : m
       );
-      const unreadCount = updatedMessages.filter(m => m.is_read === false && m.receiver_id === currentUser?.id).length;
+      const unreadCount = updatedMessages.filter(
+        m =>
+          m.is_read === false &&
+          m.receiver_id === currentUser?.id &&
+          m.sender_id !== currentUser?.id &&
+          !m.deleted_for_everyone &&
+          !(m.deleted_for || []).includes(currentUser?.id)
+      ).length;
       useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
-      
-      if (notif.real_msg_id) {
-        try { await updateDoc(doc(db, 'messages', notif.real_msg_id), { is_read: true }); } catch(e) {}
+
+      if (currentUser?.id && notif.sender_id) {
+        try {
+          await supabase
+            .from('messages')
+            .update({ is_read: true })
+            .eq('sender_id', notif.sender_id)
+            .eq('receiver_id', currentUser.id)
+            .eq('is_read', false);
+        } catch (err) {}
       }
     }
   };
@@ -277,7 +269,7 @@ const Navbar: React.FC = () => {
         {/* Menu Dropdown */}
         {showDropdown && (
           <div className="absolute top-14 right-0 w-64 bg-white/90 dark:bg-black/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-white/20 dark:border-gray-800 p-2 animate-in fade-in zoom-in-95 duration-150 z-[60]">
-            <Link to={`/profile/${currentUser?.username}`} className="flex items-center gap-3 p-3 hover:bg-gray-100/50 dark:hover:bg-gray-800/50 rounded-xl transition-colors" onClick={() => setShowDropdown(false)}>
+            <Link to={`/profile/${currentUser?.username || currentUser?.id}`} className="flex items-center gap-3 p-3 hover:bg-gray-100/50 dark:hover:bg-gray-800/50 rounded-xl transition-colors" onClick={() => setShowDropdown(false)}>
               <ProfileAvatar userId={currentUser?.id || ''} defaultAvatar={currentUser?.avatar_url || undefined} name={currentUser?.display_name || currentUser?.username || 'User'} className="w-10 h-10 rounded-full object-cover border dark:border-gray-700 shadow-sm" />
               <div>
                 <p className="font-bold text-sm text-gray-900 dark:text-white flex items-center gap-1">

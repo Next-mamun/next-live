@@ -1,22 +1,41 @@
-import { Redis } from '@upstash/redis';
+const callCacheApi = async (payload: Record<string, any>) => {
+  try {
+    const res = await fetch('/api/cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+};
 
-// Note: Ensure VITE_UPSTASH_REDIS_REST_URL and VITE_UPSTASH_REDIS_REST_TOKEN are set in your environment
-const url = import.meta.env.VITE_UPSTASH_REDIS_REST_URL || 'https://relative-oyster-81682.upstash.io';
-const token = import.meta.env.VITE_UPSTASH_REDIS_REST_TOKEN || 'gQAAAAAAAT8SAAIgcDFkZTBkNjg1ZmE2NzE0NjFkYjUzOGU3MTRkYWM2YzgwZQ';
-
-export const redis = new Redis({
-  url: url,
-  token: token,
-});
+export const redis = {
+  get: async (key: string) => {
+    const data = await callCacheApi({ action: 'get', key });
+    return data?.result ?? null;
+  },
+  set: async (key: string, value: any) => {
+    await callCacheApi({ action: 'set', key, value });
+  },
+  setex: async (key: string, ttl: number, value: any) => {
+    await callCacheApi({ action: 'setex', key, ttl, value });
+  },
+  del: async (...keys: string[]) => {
+    await callCacheApi({ action: 'del', keys });
+  },
+  keys: async (pattern: string) => {
+    const data = await callCacheApi({ action: 'keys', key: pattern });
+    return Array.isArray(data?.result) ? data.result : [];
+  },
+};
 
 export const invalidatePostsCache = async () => {
   try {
-    const keys = await redis.keys('posts_cache_*');
-    if (keys.length > 0) {
-      await redis.del(...keys);
-    }
+    await callCacheApi({ action: 'invalidate-posts' });
   } catch (e) {
     console.error('Redis invalidation error:', e);
   }
 };
-

@@ -144,6 +144,7 @@ const Reels: React.FC = () => {
   const { addUpload } = useUpload();
   const { scanFile } = useContentFilter();
   const queryClient = useQueryClient();
+  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [activeReelId, setActiveReelId] = useState<string | null>(sharedReelId || null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -170,6 +171,12 @@ const Reels: React.FC = () => {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   const { data: sharedReel } = useQuery({
     queryKey: ['shared_reel', sharedReelId],
@@ -447,11 +454,11 @@ const Reels: React.FC = () => {
     if (file) {
       const isVid = file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm|3gp|flv|wmv|m4v|ts|ogv)$/i.test(file.name);
       if (!isVid) {
-        alert('Please select a valid video file (MP4, MOV, WebM, MKV, etc.).');
+        toast.error('Please select a valid video file (MP4, MOV, WebM, MKV, etc.).');
         return;
       }
       if (file.size > 250 * 1024 * 1024) {
-        alert('File is too large. Please select a video under 250MB.');
+        toast.error('File is too large. Please select a video under 250MB.');
         return;
       }
 
@@ -488,6 +495,7 @@ const Reels: React.FC = () => {
     };
 
     addUpload(localFile, 'reel', {
+      userId: currentUser?.id,
       payload,
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: ['reels_infinite_denormalized_v1'] });
@@ -497,6 +505,7 @@ const Reels: React.FC = () => {
     setIsUploadModalOpen(false);
     setCaption('');
     setLocalFile(null);
+    if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
   };
 
@@ -509,6 +518,9 @@ const Reels: React.FC = () => {
     const id = deleteConfirmId;
     setDeleteConfirmId(null);
 
+    const targetReel = reels.find((r: any) => r.id === id);
+    const targetCol = targetReel?.source_collection === 'reels' ? 'reels' : 'posts';
+
     // Optimistic delete
     queryClient.setQueriesData({ queryKey: ['reels_infinite_denormalized_v1'] }, (oldData: any) => {
       if (!oldData || !oldData.pages) return oldData;
@@ -520,13 +532,22 @@ const Reels: React.FC = () => {
         }))
       };
     });
+    const globalStore = useGlobalStore.getState();
+    globalStore.setDeletedPostIds([...new Set([...(globalStore.deletedPostIds || []), id])]);
+
     try {
-      localDB.posts.delete(id);
-      localDB.feed_videos.delete(id);
-      await setDoc(doc(db, 'deleted_posts', id), { postId: id, deletedAt: new Date().toISOString() });
-      await deleteDoc(doc(db, 'posts', id));
+      localDB.posts.delete(id).catch(() => {});
+      localDB.feed_videos.delete(id).catch(() => {});
+      await setDoc(doc(db, 'deleted_posts', id), {
+        postId: id,
+        user_id: currentUser?.id || targetReel?.user_id || '',
+        deletedAt: new Date().toISOString()
+      });
+      await deleteDoc(doc(db, targetCol, id));
+      toast.success('Reel deleted');
     } catch (e) {
       console.error(e);
+      toast.error('Failed to delete reel');
       queryClient.invalidateQueries({ queryKey: ['reels_infinite_denormalized_v1'] });
     }
   };
@@ -542,6 +563,22 @@ const Reels: React.FC = () => {
       onScroll={handleScroll}
       className="fixed inset-0 z-40 bg-black overflow-y-scroll snap-y snap-mandatory hide-scrollbar flex flex-col md:items-center overscroll-y-contain"
     >
+      {/* Floating Create Reel Trigger */}
+      <button
+        type="button"
+        onClick={() => {
+          if (!currentUser) {
+            openAuthModal(() => setIsUploadModalOpen(true), 'Sign in to create and share a reel');
+            return;
+          }
+          setIsUploadModalOpen(true);
+        }}
+        className="fixed top-4 right-16 md:right-8 z-50 flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-[#1877F2] hover:bg-blue-600 text-white text-xs font-bold shadow-lg backdrop-blur-md transition-all active:scale-95"
+        title="Create Reel"
+      >
+        <Plus size={16} />
+        <span>Create</span>
+      </button>
       {reels.length === 0 ? (
         <div className="h-full w-full flex flex-col items-center justify-center text-white/50 px-10 text-center shrink-0 mix-blend-screen">
           <Video size={80} strokeWidth={1} className="mb-4 opacity-20" />
@@ -600,7 +637,7 @@ const Reels: React.FC = () => {
                 {localFile && previewUrl ? (
                   <div className="relative w-full h-full flex flex-col items-center justify-center">
                       <video src={previewUrl} className="w-full h-full object-contain" controls />
-                      <button onClick={(e) => { e.stopPropagation(); setLocalFile(null); setPreviewUrl(null); }} className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full hover:bg-red-500"><X size={16} /></button>
+                      <button onClick={(e) => { e.stopPropagation(); if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl); setLocalFile(null); setPreviewUrl(null); }} className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full hover:bg-red-500"><X size={16} /></button>
                   </div>
                 ) : (
                   <div className="flex flex-col items-center gap-3 p-6 text-center">
@@ -609,7 +646,7 @@ const Reels: React.FC = () => {
                       </div>
                       <div>
                         <p className="font-bold text-gray-700 dark:text-gray-300">Upload Video</p>
-                        <p className="text-xs text-gray-400 mt-1">MP4, MOV (Max 10MB)</p>
+                        <p className="text-xs text-gray-400 mt-1">MP4, MOV (Max 250MB)</p>
                       </div>
                   </div>
                 )}
@@ -736,11 +773,30 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
         const cSnap = await getDocs(query(collection(db, 'comments'), where('post_id', '==', reel.id)));
         const fetchedComments = await Promise.all(cSnap.docs.map(async cd => {
           const cdData = cd.data();
-          let profileData = null;
-          try {
-            const uDoc = await getDoc(doc(db, 'profiles', cdData.user_id));
-            if (uDoc.exists()) profileData = uDoc.data();
-          } catch(e) {}
+          let profileData: any = null;
+          if (cdData.author_name) {
+            profileData = {
+              display_name: cdData.author_name,
+              username: cdData.author_username || 'user',
+              avatar_url: cdData.author_avatar || '',
+              is_verified: Boolean(cdData.author_verified)
+            };
+          } else {
+            try {
+              const cached = await localDB.users.get(cdData.user_id);
+              if (cached) {
+                profileData = {
+                  display_name: cached.display_name || cached.name || 'User',
+                  username: cached.username || 'user',
+                  avatar_url: cached.avatar_url || cached.avatar || '',
+                  is_verified: Boolean(cached.is_verified)
+                };
+              } else {
+                const prof = await getUserProfile(cdData.user_id);
+                if (prof) profileData = prof;
+              }
+            } catch(e) {}
+          }
           return {
             id: cd.id,
             ...cdData,
@@ -922,9 +978,7 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
         } else {
           const q = query(collection(db, 'likes'), where('post_id', '==', reel.id), where('user_id', '==', currentUser.id));
           const snap = await getDocs(q).catch(() => ({ docs: [] } as any));
-          (snap.docs || []).forEach(async (d: any) => {
-            await deleteDoc(doc(db, 'likes', d.id)).catch(() => {});
-          });
+          await Promise.all((snap.docs || []).map((d: any) => deleteDoc(doc(db, 'likes', d.id)).catch(() => {})));
         }
       } catch (e) {
         console.warn('Like background sync notice:', e);
@@ -976,7 +1030,16 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
     // 4. Background comment doc & notification
     (async () => {
       try {
-        const commentData = { post_id: reel.id, user_id: currentUser.id, content: submittedText, created_at: newComment.created_at };
+        const commentData = {
+          post_id: reel.id,
+          user_id: currentUser.id,
+          content: submittedText,
+          created_at: newComment.created_at,
+          author_name: currentUser.display_name || 'User',
+          author_username: currentUser.username || 'user',
+          author_avatar: currentUser.avatar_url || '',
+          author_verified: Boolean(currentUser.is_verified)
+        };
         await addDoc(collection(db, 'comments'), commentData);
         if (reel.user_id !== currentUser.id) {
           await addDoc(collection(db, 'notifications'), {

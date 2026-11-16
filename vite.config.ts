@@ -48,9 +48,7 @@ export default defineConfig(({ mode }) => {
         })
       ],
       define: {
-        'import.meta.env.VITE_BUILD_TIME': JSON.stringify(Date.now().toString()),
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'import.meta.env.VITE_BUILD_TIME': JSON.stringify(Date.now().toString())
       },
       resolve: {
         alias: {

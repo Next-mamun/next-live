@@ -2,7 +2,10 @@ import React, { useEffect } from 'react';
 import { Bell, Heart, MessageSquare, UserPlus, Eye, MessageCircle, Check, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '../lib/firebase';
-import { collection, query, where, getDocs, updateDoc, doc, getDoc, deleteDoc, onSnapshot, orderBy, limit, documentId } from 'firebase/firestore';
+import { collection, query, where, getDocs, updateDoc, doc, orderBy, limit } from 'firebase/firestore';
+import { supabase } from '@/lib/supabase';
+import { fetchProfilesBatchSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
+import { useGlobalStore } from '@/store/useGlobalStore';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
@@ -13,38 +16,67 @@ const Notifications: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    migrateUserMessagesOnce(currentUser.id)
+      .then((changed) => {
+        if (changed) queryClient.invalidateQueries({ queryKey: ['notifications', currentUser.id] });
+      })
+      .catch(() => {});
+  }, [currentUser?.id, queryClient]);
+
   const { data: notifications = [], isLoading: loading } = useQuery({
     queryKey: ['notifications', currentUser?.id],
     queryFn: async () => {
       if (!currentUser) return [];
-      
-      const qNotifs = query(
-        collection(db, 'notifications'),
-        where('user_id', '==', currentUser.id),
-        orderBy('created_at', 'desc'),
-        limit(50)
+
+      let notifs: any[] = [];
+      try {
+        const qNotifs = query(
+          collection(db, 'notifications'),
+          where('user_id', '==', currentUser.id),
+          orderBy('created_at', 'desc'),
+          limit(50)
+        );
+        const notifsSnap = await getDocs(qNotifs);
+        notifs = notifsSnap.docs.map(d => ({ id: d.id, ...d.data() }) as any);
+      } catch {
+        try {
+          const fallbackQ = query(
+            collection(db, 'notifications'),
+            where('user_id', '==', currentUser.id),
+            limit(50)
+          );
+          const snap = await getDocs(fallbackQ);
+          notifs = snap.docs.map(d => ({ id: d.id, ...d.data() }) as any);
+        } catch {}
+      }
+
+      const locallyReadIds = new Set<string>(
+        JSON.parse(localStorage.getItem('read_msg_ids_' + currentUser.id) || '[]')
       );
-      const notifsSnap = await getDocs(qNotifs);
-      const notifs = notifsSnap.docs.map(d => ({id: d.id, ...d.data()}) as any);
-      
-      const qMsgs = query(
-        collection(db, 'messages'),
-        where('receiver_id', '==', currentUser.id),
-        where('is_read', '==', false),
-        orderBy('created_at', 'desc'),
-        limit(50)
+
+      const { data: supaUnreadMsgs } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('receiver_id', currentUser.id)
+        .eq('is_read', false)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      const unreadMsgs = (supaUnreadMsgs || []).filter(
+        (msg: any) =>
+          !msg.deleted_for_everyone &&
+          !(msg.deleted_for || []).includes(currentUser.id) &&
+          !locallyReadIds.has(msg.id)
       );
-      const unreadMsgsSnap = await getDocs(qMsgs);
-      const unreadMsgs = unreadMsgsSnap.docs
-        .map(d => ({id: d.id, ...d.data()}) as any)
-        .filter((msg: any) => !msg.deleted_for_everyone && !(msg.deleted_for || []).includes(currentUser.id));
-        
+
       const validNotifs = notifs || [];
       const validMsgs = unreadMsgs || [];
-      
+
       const msgSenders = new Set();
       const msgNotifs: any[] = [];
-      
+
       validMsgs.forEach((msg: any) => {
         if (!msgSenders.has(msg.sender_id)) {
           msgSenders.add(msg.sender_id);
@@ -54,7 +86,8 @@ const Notifications: React.FC = () => {
             sender_id: msg.sender_id,
             created_at: msg.created_at,
             is_read: false,
-            real_msg_id: msg.id
+            real_msg_id: msg.id,
+            content: msg.content || msg.text || 'sent you a message'
           });
         }
       });
@@ -62,64 +95,99 @@ const Notifications: React.FC = () => {
       const combined = [...validNotifs, ...msgNotifs]
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
         .slice(0, 50);
-      
+
       if (combined.length === 0) return [];
 
-      const senderIds = [...new Set(combined.map(n => n.sender_id).filter(Boolean))];
+      const senderIds = [...new Set(combined.map(n => n.sender_id).filter(Boolean))] as string[];
       if (senderIds.length > 0) {
-        const chunkSize = 30;
-        const chunks = [];
-        for (let i = 0; i < senderIds.length; i += chunkSize) {
-          chunks.push(senderIds.slice(i, i + chunkSize));
-        }
-
-        const profiles = [];
-        for (const chunk of chunks) {
-          const q = query(collection(db, 'profiles'), where('__name__', 'in', chunk));
-          const snapshot = await getDocs(q);
-          snapshot.forEach(doc => {
-            profiles.push({ id: doc.id, ...doc.data() });
-          });
-        }
-          
-        if (profiles) {
-          const profileMap = profiles.reduce((acc: any, p: any) => {
-            acc[p.id] = p;
-            return acc;
-          }, {});
-          
-          return combined.map(n => ({
-            ...n,
-            sender: profileMap[n.sender_id] || null
-          }));
-        }
+        const profileMap = await fetchProfilesBatchSmart(senderIds);
+        return combined.map(n => ({
+          ...n,
+          sender: profileMap.get(n.sender_id) || null
+        }));
       }
 
       return combined;
     },
     enabled: !!currentUser,
-    staleTime: Infinity,
-    gcTime: Infinity,
+    staleTime: 5000,
+    gcTime: 60000,
   });
 
-  useEffect(() => {
-    if (!currentUser) return;
-    // Removed duplicate onSnapshot listener here. Global store handles real-time updates.
-  }, [currentUser, queryClient]);
+  const markMessageReadInSupabaseAndStore = async (msgId: string) => {
+    if (!currentUser?.id) return;
+    await supabase.from('messages').update({ is_read: true }).eq('id', msgId);
+    const key = 'read_msg_ids_' + currentUser.id;
+    const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+    if (!list.includes(msgId)) {
+      list.push(msgId);
+      localStorage.setItem(key, JSON.stringify(list.slice(-100)));
+    }
+    const store = useGlobalStore.getState();
+    const updatedMessages = store.messages.map(m => (m.id === msgId ? { ...m, is_read: true } : m));
+    const unreadCount = updatedMessages.filter(
+      m =>
+        m.is_read === false &&
+        m.receiver_id === currentUser.id &&
+        m.sender_id !== currentUser.id &&
+        !m.deleted_for_everyone &&
+        !(m.deleted_for || []).includes(currentUser.id)
+    ).length;
+    useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: unreadCount });
+  };
 
-  const markAsRead = async (id: string) => {
+  const markAsRead = async (item: any) => {
     try {
-        await updateDoc(doc(db, 'notifications', id), { is_read: true });
-        queryClient.invalidateQueries({ queryKey: ['notifications', currentUser?.id] });
-    } catch(e) {}
+      if (item?.real_msg_id) {
+        await markMessageReadInSupabaseAndStore(item.real_msg_id);
+      } else if (item?.id && !item.id.toString().startsWith('msg-')) {
+        await updateDoc(doc(db, 'notifications', item.id), { is_read: true }).catch(() => {});
+      }
+      queryClient.invalidateQueries({ queryKey: ['notifications', currentUser?.id] });
+    } catch (e) {}
   };
 
   const markAllAsRead = async () => {
-    const qNotifs = query(collection(db, 'notifications'), where('user_id', '==', currentUser?.id), where('is_read', '==', false));
-    const snap = await getDocs(qNotifs);
-    if (!snap.empty) {
-        await Promise.all(snap.docs.map(d => updateDoc(doc(db, 'notifications', d.id), { is_read: true })));
-        queryClient.invalidateQueries({ queryKey: ['notifications', currentUser?.id] });
+    if (!currentUser?.id) return;
+    try {
+      const qNotifs = query(collection(db, 'notifications'), where('user_id', '==', currentUser.id), where('is_read', '==', false));
+      const [notifsSnap, supaUnreadRes] = await Promise.all([
+        getDocs(qNotifs).catch(() => null),
+        supabase
+          .from('messages')
+          .select('id')
+          .eq('receiver_id', currentUser.id)
+          .eq('is_read', false)
+      ]);
+      const updates: Promise<any>[] = [];
+      if (notifsSnap && !notifsSnap.empty) {
+        notifsSnap.docs.forEach(d => updates.push(updateDoc(doc(db, 'notifications', d.id), { is_read: true }).catch(() => {})));
+      }
+      const unreadMsgIds = (supaUnreadRes?.data || []).map((m: any) => m.id);
+      if (unreadMsgIds.length > 0) {
+        updates.push(
+          Promise.resolve(
+            supabase
+              .from('messages')
+              .update({ is_read: true })
+              .eq('receiver_id', currentUser.id)
+              .eq('is_read', false)
+          ).catch(() => {})
+        );
+        const key = 'read_msg_ids_' + currentUser.id;
+        const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+        localStorage.setItem(key, JSON.stringify([...new Set([...list, ...unreadMsgIds])].slice(-100)));
+
+        const store = useGlobalStore.getState();
+        const updatedMessages = store.messages.map(m =>
+          m.receiver_id === currentUser.id ? { ...m, is_read: true } : m
+        );
+        useGlobalStore.setState({ messages: updatedMessages, unreadMessagesCount: 0 });
+      }
+      await Promise.all(updates);
+      queryClient.invalidateQueries({ queryKey: ['notifications', currentUser.id] });
+    } catch (e) {
+      console.warn('markAllAsRead warning:', e);
     }
   };
 
@@ -153,18 +221,22 @@ const Notifications: React.FC = () => {
   };
 
   const handleNotificationClick = async (n: any) => {
-    if (!n.id.toString().startsWith('msg-')) {
-        try {
-            await deleteDoc(doc(db, 'notifications', n.id));
-        } catch(e) {}
+    if (n.real_msg_id) {
+      try {
+        await markMessageReadInSupabaseAndStore(n.real_msg_id);
+      } catch (_) {}
+    } else if (!n.id.toString().startsWith('msg-')) {
+      try {
+        await updateDoc(doc(db, 'notifications', n.id), { is_read: true }).catch(() => {});
+      } catch (_) {}
     }
     queryClient.invalidateQueries({ queryKey: ['notifications', currentUser?.id] });
-    
+
     if (n.type === 'friend_request' || n.type === 'friend_accept') navigate('/friends');
     else if (n.type === 'message') navigate(`/messages?user=${n.sender_id}`, { state: { userId: n.sender_id } });
     else if (n.type === 'story_view') navigate('/');
     else if (n.post_id) navigate(`/post/${n.post_id}`);
-    else navigate(`/profile/${currentUser?.username}`);
+    else navigate(`/profile/${currentUser?.username || currentUser?.id}`);
   };
 
   return (

@@ -18,6 +18,7 @@ const BottomNav: React.FC = () => {
     if (!currentUser) return 0;
     const validMsgs = messages.filter(msg => {
       if (msg.is_read !== false) return false;
+      if (msg.receiver_id !== currentUser.id || msg.sender_id === currentUser.id) return false;
       if (msg.deleted_for_everyone || (msg.deleted_for || []).includes(currentUser.id)) return false;
       return true;
     });
@@ -111,8 +112,8 @@ const BottomNav: React.FC = () => {
           <span className="text-[10px] font-bold mt-1 text-[#1877F2]">Log In</span>
         </button>
       ) : (
-        <Link to={`/profile/${currentUser?.username}`} className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive(`/profile/${currentUser?.username}`) ? activeColor : inactiveColor }}>
-          <User size={iconSize} strokeWidth={isActive(`/profile/${currentUser?.username}`) ? 2.5 : 2} />
+        <Link to={`/profile/${currentUser?.username || currentUser?.id}`} className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive(`/profile/${currentUser?.username || currentUser?.id}`) ? activeColor : inactiveColor }}>
+          <User size={iconSize} strokeWidth={isActive(`/profile/${currentUser?.username || currentUser?.id}`) ? 2.5 : 2} />
           <span className="text-[10px] font-medium mt-1">Profile</span>
         </Link>
       )}

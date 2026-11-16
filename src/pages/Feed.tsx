@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import { Image as LucideImage, Video, ThumbsUp, Send, X, CheckCircle, Clapperboard, Link as LinkIcon, Search, Camera, Pencil } from 'lucide-react';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import ZoomableImage from '@/components/ZoomableImage';
@@ -22,6 +21,7 @@ import { useGlobalStore } from '@/store/useGlobalStore';
 import { localDB } from '@/lib/dexie';
 import { formatReelDoc, populateReelsWithProfiles } from './Reels';
 import { useContentFilter } from '@/hooks/useContentFilter';
+import { toast } from 'sonner';
 
 let globalFeedSeed = Math.random();
 
@@ -51,6 +51,18 @@ const Feed: React.FC = () => {
   useEffect(() => {
     setSearchQuery('');
   }, [selectedCategory, contentTypeFilter]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl && previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (thumbnailPreview && thumbnailPreview.startsWith('blob:')) URL.revokeObjectURL(thumbnailPreview);
+    };
+  }, [thumbnailPreview]);
   const [postCategory, setPostCategory] = useState('Entertainment');
   const [showCategoryInput, setShowCategoryInput] = useState(false);
   const [customCategory, setCustomCategory] = useState('');
@@ -70,21 +82,8 @@ const Feed: React.FC = () => {
   const { feedPosts, fetchHomeFeed, postsLoading, postsError, hasMorePosts, addPostOptimistic } = useGlobalStore();
 
   useEffect(() => {
-    // Generate fresh session seed and fetch dynamic feed on entry
     setFeedRandomSeed(Math.random());
-    
-    // Shuffle on new session to ensure dynamic feeling without burning extra reads if TTL is active
-    const isNewSession = !sessionStorage.getItem('session_feed_shuffled');
-    if (isNewSession) {
-      sessionStorage.setItem('session_feed_shuffled', 'true');
-      useGlobalStore.setState(s => ({
-        feedPosts: [...s.feedPosts].sort(() => Math.random() - 0.5)
-      }));
-      // On brand new session, force refresh to get latest data from FB
-      fetchHomeFeed(false, true);
-    } else {
-      fetchHomeFeed(false);
-    }
+    fetchHomeFeed(false, true);
   }, [fetchHomeFeed]);
 
   const handleLoadMore = () => {
@@ -96,7 +95,12 @@ const Feed: React.FC = () => {
   const handleRefreshFeed = () => {
     setFeedRandomSeed(Math.random());
     fetchHomeFeed(false, true); // Force refresh
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const mainEl = document.querySelector('main');
+    if (mainEl) {
+      mainEl.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   // Fetch Reels
@@ -312,10 +316,10 @@ const Feed: React.FC = () => {
   }, []);
 
   const incrementViewCount = async (postId: string) => {
+    if (!currentUser?.id) return;
     try {
       const postRef = doc(db, 'posts', postId);
       updateDoc(postRef, { views: increment(1) }).catch(() => {});
-      localDB.posts.update(postId, { views: ((posts.find(p => p.id === postId)?.views || 0) + 1) } as any).catch(() => {});
     } catch (err) {
       // Silently catch in case of quota or network issue
     }
@@ -342,6 +346,35 @@ const Feed: React.FC = () => {
       return matchSearch && matchCat && matchType;
     });
   }, [posts, searchQuery, selectedCategory, contentTypeFilter]);
+
+  const [visibleCount, setVisibleCount] = useState(15);
+  const progressiveSentinelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setVisibleCount(15);
+  }, [searchQuery, selectedCategory, contentTypeFilter, feedRandomSeed]);
+
+  const visiblePosts = useMemo(() => {
+    return filteredPosts.slice(0, visibleCount);
+  }, [filteredPosts, visibleCount]);
+
+  useEffect(() => {
+    if (visibleCount >= filteredPosts.length) return;
+    const el = progressiveSentinelRef.current;
+    if (!el) return;
+
+    const progObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((prev) => Math.min(prev + 15, filteredPosts.length));
+        }
+      },
+      { rootMargin: '400px 0px' }
+    );
+
+    progObserver.observe(el);
+    return () => progObserver.disconnect();
+  }, [visibleCount, filteredPosts.length]);
 
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
@@ -375,7 +408,7 @@ const Feed: React.FC = () => {
       const isVid = file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm|3gp|flv|wmv|m4v)$/i.test(file.name);
       const isImg = file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp|svg)$/i.test(file.name);
       if (!isVid && !isImg) {
-        alert('Please select a valid image or video file.');
+        toast.error('Please select a valid image or video file.');
         return;
       }
 
@@ -485,6 +518,10 @@ const Feed: React.FC = () => {
 
       const metadataObj: any = {
         userId: currentUser!.id,
+        authorName: currentUser?.display_name || currentUser?.username || 'User',
+        authorUsername: currentUser?.username || 'user',
+        authorAvatar: currentUser?.avatar_url || '',
+        authorVerified: Boolean(currentUser?.is_verified),
         content: newPostContent,
         mediaType: mType,
         category: category,
@@ -495,6 +532,10 @@ const Feed: React.FC = () => {
       if (thumbnailUrl) {
          metadataObj.payload = { 
              user_id: currentUser!.id,
+             author_name: metadataObj.authorName,
+             author_username: metadataObj.authorUsername,
+             author_avatar: metadataObj.authorAvatar,
+             author_verified: metadataObj.authorVerified,
              content: newPostContent,
              category: category,
              views: 0,
@@ -517,7 +558,7 @@ const Feed: React.FC = () => {
     } catch (error: any) {
       setIsUploading(false);
       console.error('Post creation error:', error);
-      alert('Failed to post: ' + (error.message || 'Unknown error.'));
+      toast.error('Failed to post: ' + (error.message || 'Unknown error.'));
     }
   };
 
@@ -800,7 +841,7 @@ const Feed: React.FC = () => {
       {postsError ? (
         <div className="flex flex-col items-center justify-center p-20 gap-4">
           <p className="font-bold text-red-500">Error loading posts: {postsError.message}</p>
-          <button type="button" onClick={() => window.location.reload()} className="bg-[#1877F2] text-white px-4 py-2 rounded-lg font-bold">Retry</button>
+          <button type="button" onClick={handleRefreshFeed} className="bg-[#1877F2] text-white px-4 py-2 rounded-lg font-bold">Retry</button>
         </div>
       ) : postsLoading && posts.length === 0 ? (
         <div className="flex flex-col gap-4">
@@ -843,15 +884,9 @@ const Feed: React.FC = () => {
             </div>
           ))}
 
-          <AnimatePresence mode="popLayout">
-            {filteredPosts.map((post, index) => (
-              <motion.div 
-                key={post.id}
-                initial={{ opacity: 0, y: 30, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
-                transition={{ duration: 0.4, type: "spring", bounce: 0.3 }}
-              >
+          <div className="flex flex-col gap-4">
+            {visiblePosts.map((post, index) => (
+              <div key={post.id} className="flex flex-col gap-4">
                 <PostCard 
                   post={post} 
                   onObserve={handleObserve}
@@ -862,9 +897,14 @@ const Feed: React.FC = () => {
                     slotType={Math.floor((index + 1) / 5) % 2 === 1 ? 'infeed' : 'display'} 
                   />
                 )}
-              </motion.div>
+              </div>
             ))}
-          </AnimatePresence>
+            {visibleCount < filteredPosts.length && (
+              <div ref={progressiveSentinelRef} className="h-8 w-full flex items-center justify-center text-xs font-bold text-gray-400">
+                Loading more posts...
+              </div>
+            )}
+          </div>
           {hasMorePosts && (
             <div ref={loadMoreRef} className="py-4 text-center font-bold text-gray-500">
               {postsLoading ? 'Loading more...' : 'Loading...'}
@@ -877,6 +917,22 @@ const Feed: React.FC = () => {
             <div className="text-center py-10">
               <p className="text-gray-500 dark:text-gray-400 font-bold">No posts found.</p>
               <p className="text-sm text-gray-400 mt-2">Be the first to create a post!</p>
+            </div>
+          )}
+          {!postsLoading && posts.length > 0 && filteredPosts.length === 0 && (
+            <div className="text-center py-10 bg-white dark:bg-black rounded-xl border border-gray-200 dark:border-gray-800 p-6">
+              <p className="text-gray-700 dark:text-gray-300 font-bold">No matching posts for current filters.</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedCategory('All');
+                  setContentTypeFilter('All');
+                }}
+                className="mt-3 px-4 py-2 rounded-full bg-[#1877F2] text-white text-xs font-bold hover:opacity-90 transition-opacity"
+              >
+                Reset Filters
+              </button>
             </div>
           )}
         </>

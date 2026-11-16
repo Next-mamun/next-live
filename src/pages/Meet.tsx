@@ -49,12 +49,6 @@ interface Participant {
   isHost: boolean;
 }
 
-const STUN_URLS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' }
-];
-
 const Meet: React.FC = () => {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
@@ -65,12 +59,22 @@ const Meet: React.FC = () => {
   const urlIsHost = searchParams.get('host') === 'true';
 
   const [roomCode, setRoomCode] = useState(urlRoomCode);
+  const [joinCode, setJoinCode] = useState(urlRoomCode);
   const [isHost, setIsHost] = useState(urlIsHost);
-  const [view, setView] = useState<'LOBBY' | 'ROOM'>(urlIsHost ? 'LOBBY' : 'ROOM');
+  const [view, setView] = useState<'ENTRY' | 'LOBBY' | 'ROOM'>(() => {
+    if (urlRoomCode) return urlIsHost ? 'LOBBY' : 'ROOM';
+    try {
+      const savedType = sessionStorage.getItem('active_room_type');
+      const savedCode = sessionStorage.getItem('active_room_code');
+      if (savedType === 'meet' && savedCode) return 'ROOM';
+    } catch (_) {}
+    return 'ENTRY';
+  });
   const [isCopied, setIsCopied] = useState(false);
 
   // P2P State
   const peerRef = useRef<Peer | null>(null);
+  const dataConnsRef = useRef<Record<string, DataConnection>>({});
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [showParticipants, setShowParticipants] = useState(false);
@@ -248,6 +252,7 @@ const Meet: React.FC = () => {
   };
 
   const setupDataConnection = (conn: DataConnection, hostMode: boolean, cleanCode: string) => {
+    dataConnsRef.current[conn.peer] = conn;
     conn.on('open', () => {
       console.log(`[Meet] Data connection opened with: ${conn.peer}`);
 
@@ -292,6 +297,7 @@ const Meet: React.FC = () => {
   };
 
   const handlePeerDisconnect = (peerId: string) => {
+    delete dataConnsRef.current[peerId];
     setPeers(prev => {
       const updated = { ...prev };
       delete updated[peerId];
@@ -321,11 +327,13 @@ const Meet: React.FC = () => {
       case 'PEER_IDENTITY':
         setPeers(prev => {
           const existing = prev[peerId];
+          const conn = existing?.conn || dataConnsRef.current[peerId];
+          if (!conn) return prev;
           return {
             ...prev,
             [peerId]: {
               id: peerId,
-              conn: existing?.conn || (data as any),
+              conn,
               joinedAt: existing?.joinedAt || Date.now(),
               isTyping: false,
               profile: data.user
@@ -441,13 +449,15 @@ const Meet: React.FC = () => {
     const effectiveHost = urlRoomCode ? urlIsHost : savedHost;
 
     if (!effectiveCode) {
-      navigate('/cinema');
+      setView('ENTRY');
       return;
     }
 
     setRoomCode(effectiveCode);
+    setJoinCode(effectiveCode);
     setIsHost(effectiveHost);
     isHostRef.current = effectiveHost;
+    setView(effectiveHost ? 'LOBBY' : 'ROOM');
 
     sessionStorage.setItem('active_room_code', effectiveCode);
     sessionStorage.setItem('active_room_type', 'meet');
@@ -456,13 +466,59 @@ const Meet: React.FC = () => {
     initPeerJS(effectiveCode, effectiveHost);
 
     return () => {
-      // Do not wipe DB data
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
+        callTimerRef.current = null;
+      }
+      if (peerRef.current) {
+        try { peerRef.current.destroy(); } catch (_) {}
+        peerRef.current = null;
+      }
+      dataConnsRef.current = {};
+      if ((window as any).meetLocalStream) {
+        try { (window as any).meetLocalStream.getTracks().forEach((t: MediaStreamTrack) => t.stop()); } catch (_) {}
+        (window as any).meetLocalStream = null;
+      }
+      if (audioContextRef.current) {
+        try { audioContextRef.current.close(); } catch (_) {}
+        audioContextRef.current = null;
+      }
+      if (ringtoneRef.current) {
+        try { ringtoneRef.current.pause(); } catch (_) {}
+      }
     };
   }, [urlRoomCode, urlIsHost]);
 
   const enterRoom = () => {
     setView('ROOM');
+  };
+
+  const handleCreateMeetRoom = () => {
+    const randomDigits = Math.floor(1000 + Math.random() * 9000).toString();
+    const code = `M${randomDigits}`;
+    navigate(`/meet?code=${code}&host=true`);
+  };
+
+  const handleJoinMeetRoom = () => {
+    const trimmed = joinCode.trim().toUpperCase();
+    if (!trimmed) {
+      toast.error('Please enter a Meet room code');
+      return;
+    }
+    const normalized = /^\d{4}$/.test(trimmed) ? `M${trimmed}` : trimmed;
+    if (normalized.startsWith('C')) {
+      navigate(`/cinema?code=${normalized}`);
+      return;
+    }
+    navigate(`/meet?code=${normalized}`);
   };
 
   // MODULE 4: Surgical Cleanup (STRICT DATA BAN - DO NOT TOUCH DEXIE OR FIREBASE)
@@ -478,6 +534,7 @@ const Meet: React.FC = () => {
       try { peerRef.current.destroy(); } catch (e) {}
       peerRef.current = null;
     }
+    dataConnsRef.current = {};
 
     if (localStream) {
       localStream.getTracks().forEach(t => t.stop());
@@ -498,9 +555,10 @@ const Meet: React.FC = () => {
     setRemoteStreams({});
     amIInCallRef.current = false;
     setCallType(null);
+    setView('ENTRY');
 
     toast.info('Left the Meet room');
-    navigate('/cinema');
+    navigate('/meet', { replace: true });
   };
 
   // --------------------------------------------------------------------------
@@ -783,6 +841,55 @@ const Meet: React.FC = () => {
   const closeViewOnce = () => {
     setViewingOnceMedia(null);
   };
+
+  // --------------------------------------------------------------------------
+  // VIEW: ENTRY (Standalone Meet Hub)
+  // --------------------------------------------------------------------------
+  if (view === 'ENTRY') {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 h-full w-full p-4 bg-gray-50 dark:bg-black">
+        <div className="w-full max-w-md bg-white dark:bg-gray-900 rounded-3xl p-6 shadow-xl border border-gray-100 dark:border-gray-800">
+          <div className="text-center mb-6">
+            <h1 className="text-2xl font-black text-gray-900 dark:text-white">Next Meet</h1>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Instant HD voice, video calls &amp; live encrypted messaging</p>
+          </div>
+
+          <div className="space-y-5">
+            <button
+              onClick={handleCreateMeetRoom}
+              className="w-full bg-[#1877F2] text-white rounded-2xl py-4 px-4 font-bold text-base hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2"
+            >
+              <Video size={22} />
+              <span>Create Meet Room</span>
+            </button>
+
+            <div className="relative flex items-center py-1">
+              <div className="flex-grow border-t border-gray-200 dark:border-gray-700" />
+              <span className="flex-shrink-0 mx-4 text-gray-400 font-semibold text-xs uppercase tracking-wider">OR JOIN WITH CODE</span>
+              <div className="flex-grow border-t border-gray-200 dark:border-gray-700" />
+            </div>
+
+            <div>
+              <input
+                type="text"
+                placeholder="Enter Meet Code (e.g. M3737)"
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleJoinMeetRoom()}
+                className="w-full bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl py-3.5 px-4 text-center font-bold text-gray-900 dark:text-white focus:ring-2 focus:ring-[#1877F2] mb-3 outline-none uppercase tracking-wider"
+              />
+              <button
+                onClick={handleJoinMeetRoom}
+                className="w-full bg-gray-900 dark:bg-white dark:text-black text-white rounded-2xl py-3.5 font-bold text-base hover:opacity-90 transition-all active:scale-95 shadow-md"
+              >
+                Join Meet Room
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // --------------------------------------------------------------------------
   // VIEW: LOBBY (Host Only)

@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { precacheAndRoute } from 'workbox-precaching';
+import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
 
 import { clientsClaim } from "workbox-core";
 
@@ -7,6 +7,9 @@ declare let self: ServiceWorkerGlobalScope;
 
 self.skipWaiting();
 clientsClaim();
+
+// Automatically clean up outdated precaches from prior versions
+cleanupOutdatedCaches();
 
 // Precache static assets built by Vite
 precacheAndRoute((self as any).__WB_MANIFEST || []);
@@ -42,18 +45,28 @@ try {
     // Module 2: Silent FCM Push Purge
     if (payload.data && payload.data.action === 'DELETE_POST' && payload.data.postId) {
       console.log('[sw.ts] Silent push purge for post:', payload.data.postId);
-      import('dexie').then(({ default: Dexie }) => {
-         const db = new Dexie('NextAppDB');
-         db.version(2).stores({
-            users: 'id, username',
-            friends: 'id, username, friendship_id, status',
-            messages: 'id, sender_id, receiver_id, created_at',
-            posts: 'id, user_id, created_at',
-            feed_videos: 'id, videoType, mediaUrl, youtubeId, thumbnailUrl, caption, author, timestamp'
-         });
-         db.table('feed_videos').delete(payload.data.postId).catch(console.error);
-         db.table('posts').delete(payload.data.postId).catch(console.error);
-      }).catch(err => console.warn('Dexie import failed in SW:', err));
+      const targetId = payload.data.postId;
+      try {
+        const req = indexedDB.open('NextAppDB');
+        req.onsuccess = () => {
+          const idb = req.result;
+          try {
+            const storesToClean = ['feed_videos', 'posts'].filter((name) => idb.objectStoreNames.contains(name));
+            if (storesToClean.length > 0) {
+              const tx = idb.transaction(storesToClean, 'readwrite');
+              storesToClean.forEach((storeName) => {
+                tx.objectStore(storeName).delete(targetId);
+              });
+            }
+          } catch (txErr) {
+            console.warn('[sw.ts] IndexedDB purge error:', txErr);
+          } finally {
+            idb.close();
+          }
+        };
+      } catch (err) {
+        console.warn('[sw.ts] IndexedDB open failed:', err);
+      }
       
       // Do not show a notification for silent background sync
       return;

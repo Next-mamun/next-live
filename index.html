@@ -7,6 +7,46 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   
+  <script>
+    // Failsafe White Screen Prevention: Intercept chunk/script mismatches immediately
+    (function() {
+      var reloadLockKey = 'next_chunk_reload_lock';
+      function triggerFailsafeReload(reason) {
+        var lastReload = Number(sessionStorage.getItem(reloadLockKey) || '0');
+        if (Date.now() - lastReload > 8000) {
+          sessionStorage.setItem(reloadLockKey, String(Date.now()));
+          console.warn('⚠️ [White Screen Prevention] Reloading due to chunk error:', reason);
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              regs.forEach(function(r) { r.unregister(); });
+            });
+          }
+          if ('caches' in window) {
+            caches.keys().then(function(names) {
+              names.forEach(function(n) { caches.delete(n); });
+            });
+          }
+          var cleanUrl = window.location.origin + window.location.pathname + '?_bust=' + Date.now() + window.location.hash;
+          window.location.replace(cleanUrl);
+        }
+      }
+
+      window.addEventListener('error', function(e) {
+        var msg = (e && (e.message || (e.error && e.error.message))) ? String(e.message || e.error.message) : '';
+        if (msg.indexOf('dynamically imported module') > -1 || msg.indexOf('Loading chunk') > -1 || msg.indexOf('Importing a module script failed') > -1 || msg.indexOf('SyntaxError') > -1) {
+          triggerFailsafeReload(msg);
+        }
+      }, true);
+
+      window.addEventListener('unhandledrejection', function(e) {
+        var reasonMsg = (e && e.reason) ? String(e.reason.message || e.reason) : '';
+        if (reasonMsg.indexOf('dynamically imported module') > -1 || reasonMsg.indexOf('Loading chunk') > -1 || reasonMsg.indexOf('Importing a module script failed') > -1) {
+          triggerFailsafeReload(reasonMsg);
+        }
+      });
+    })();
+  </script>
+  
   <!-- Primary Meta Tags -->
   <title>Next (Next Nexto) – Mamuns App | ceoofnext app | Abdullahs app | 100% Free High-Tech Social Media</title>
   <meta name="title" content="Next (Next Nexto) – Mamuns App | ceoofnext app | Abdullahs app | 100% Free High-Tech Social Media">

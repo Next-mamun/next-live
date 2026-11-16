@@ -1,5 +1,19 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Video, RotateCcw, X, Check, RefreshCw, Sparkles, StopCircle, Download } from 'lucide-react';
+import { Camera, Video, RotateCcw, X, Check, RefreshCw, StopCircle } from 'lucide-react';
+import { toast } from 'sonner';
+
+const getSupportedVideoMimeType = (): string => {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+  const candidates = [
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
+    'video/webm',
+    'video/mp4',
+  ];
+  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+};
 
 interface CameraCaptureProps {
   onCapture: (mediaUrl: string, type: 'image' | 'video') => void;
@@ -21,6 +35,8 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const capturedUrlRef = useRef<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
@@ -36,16 +52,22 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
 
   const activeFilterCss = filters.find(f => f.id === filter)?.css || '';
 
+  const stopActiveStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
   const startCamera = useCallback(async () => {
     try {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      stopActiveStream();
       const constraints: MediaStreamConstraints = {
         video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: true
       };
       const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = newStream;
       setStream(newStream);
       setHasPermission(true);
       if (videoRef.current) {
@@ -59,6 +81,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
         const videoOnlyStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode }
         });
+        streamRef.current = videoOnlyStream;
         setStream(videoOnlyStream);
         setHasPermission(true);
         if (videoRef.current) {
@@ -69,17 +92,22 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
         setHasPermission(false);
       }
     }
-  }, [facingMode]);
+  }, [facingMode, stopActiveStream]);
 
   useEffect(() => {
     startCamera();
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      stopActiveStream();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
-      if (timerRef.current) clearInterval(timerRef.current);
+      if (capturedUrlRef.current && capturedUrlRef.current.startsWith('blob:')) {
+        URL.revokeObjectURL(capturedUrlRef.current);
+        capturedUrlRef.current = null;
+      }
     };
-  }, [facingMode]);
+  }, [startCamera, stopActiveStream]);
 
   const toggleCamera = () => {
     setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
@@ -108,29 +136,40 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
   };
 
   const startRecording = () => {
-    if (!stream) return;
+    const activeStream = streamRef.current || stream;
+    if (!activeStream) return;
     recordedChunksRef.current = [];
     try {
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+      const mimeType = getSupportedVideoMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(activeStream, { mimeType })
+        : new MediaRecorder(activeStream);
+      const outputType = mimeType || recorder.mimeType || 'video/webm';
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           recordedChunksRef.current.push(e.data);
         }
       };
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, { type: outputType });
+        if (capturedUrlRef.current && capturedUrlRef.current.startsWith('blob:')) {
+          URL.revokeObjectURL(capturedUrlRef.current);
+        }
         const videoUrl = URL.createObjectURL(blob);
+        capturedUrlRef.current = videoUrl;
         setCapturedMedia({ url: videoUrl, type: 'video' });
       };
       recorder.start(100);
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       setRecordingSeconds(0);
+      if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         setRecordingSeconds(s => s + 1);
       }, 1000);
     } catch (e) {
       console.error('MediaRecorder start failed:', e);
+      toast.error('Video recording is not supported on this device or browser.');
     }
   };
 
@@ -146,13 +185,20 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
   };
 
   const handleRetake = () => {
+    if (capturedUrlRef.current && capturedUrlRef.current.startsWith('blob:')) {
+      URL.revokeObjectURL(capturedUrlRef.current);
+      capturedUrlRef.current = null;
+    }
     setCapturedMedia(null);
     startCamera();
   };
 
   const handleConfirm = () => {
     if (capturedMedia) {
-      onCapture(capturedMedia.url, capturedMedia.type);
+      const urlToSend = capturedMedia.url;
+      // Hand ownership to caller if confirmed (do not revoke immediately before fetch completes)
+      capturedUrlRef.current = null;
+      onCapture(urlToSend, capturedMedia.type);
     }
   };
 

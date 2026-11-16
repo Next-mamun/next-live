@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { UserMinus, MessageSquare, Check, X, UserPlus, Search, Users, Ban, UserCheck } from 'lucide-react';
+import { UserMinus, MessageSquare, Check, X, UserPlus, Search, Ban } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '../lib/firebase';
-import { collection, query, where, getDocs, updateDoc, doc, getDoc, deleteDoc, addDoc, onSnapshot, or, limit } from 'firebase/firestore';
+import { collection, addDoc } from 'firebase/firestore';
+import { supabase } from '@/lib/supabase';
+import {
+  backfillPublicProfilesOnce,
+  fetchProfilesBatchSmart,
+  migrateUserFriendshipsOnce,
+  cacheUserInDexie,
+  fetchUserFriendshipsSmart,
+  sendFriendRequestSmart,
+  updateFriendshipStatusSmart,
+  deleteFriendshipSmart,
+  blockUserSmart,
+} from '@/lib/profileSync';
 import { useNavigate } from 'react-router-dom';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
@@ -24,103 +36,130 @@ const Friends: React.FC = () => {
   const [localDeletedRequests, setLocalDeletedRequests] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser?.id) return;
 
-    // Always attach the listener so new friends appear instantly.
-    const q = query(collection(db, 'friendships'), or(where('sender_id', '==', currentUser.id), where('receiver_id', '==', currentUser.id)));
-    const unsub = onSnapshot(q, (snapshot) => {
-      // Re-fetch in background to update Dexie and UI if changes occur
-      queryClient.invalidateQueries({ queryKey: ['friends'] });
-    }, (error) => {
-      console.warn("friendships onSnapshot error:", error);
-    });
+    Promise.all([
+      backfillPublicProfilesOnce(),
+      migrateUserFriendshipsOnce(currentUser.id)
+    ])
+      .then(([profChanged, relChanged]) => {
+        if (profChanged || relChanged) {
+          queryClient.invalidateQueries({ queryKey: ['friends'] });
+        }
+      })
+      .catch(() => {});
 
-    return () => unsub();
-  }, [currentUser, queryClient]);
+    const channel = supabase
+      .channel(`friends-realtime-${currentUser.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'friendships' },
+        (payload: any) => {
+          const row = payload.new || payload.old;
+          if (
+            !row ||
+            !row.sender_id ||
+            row.sender_id === currentUser.id ||
+            row.receiver_id === currentUser.id
+          ) {
+            queryClient.invalidateQueries({ queryKey: ['friends'] });
+            queryClient.invalidateQueries({ queryKey: ['blockedUsers'] });
+            queryClient.invalidateQueries({ queryKey: ['friendsCount'] });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id, queryClient]);
 
   const { data: friendsData, isLoading: loading } = useQuery({
-    queryKey: ['friends', searchQuery],
+    queryKey: ['friends', currentUser?.id, searchQuery],
     queryFn: async () => {
       if (!currentUser?.id) return { requests: [], friends: [], discovery: [], blockedUsers: [] };
 
-      // Load from Dexie first for instant UI response if we have local data and no search query.
-      // But we STILL fetch from Firebase to keep things in sync.
-      const localCount = await localDB.friends.count();
       const cacheKey = `friends_cache_${currentUser.id}_${searchQuery.trim()}`;
-      const cachedStr = await redis.get(cacheKey).catch(() => null);
-      
-      // Let's perform the fetch from Firebase
-      const qRel = query(
-        collection(db, 'friendships'),
-        or(where('sender_id', '==', currentUser.id), where('receiver_id', '==', currentUser.id))
-      );
-      const relSnap = await getDocs(qRel);
-      const allRel = relSnap.docs.map(d => ({id: d.id, ...d.data()}) as any);
 
-      // Non-Empty Overwrite Guard
-      if (allRel.length === 0 && localCount > 0) {
-        console.log("Guard: Firebase returned empty but Dexie has data. Aborting Dexie overwrite.");
-        // Should return existing dexie data instead
+      // 1. Fetch friendships smart (Supabase primary + automatic Firestore fallback on 22P02 UUID mismatch)
+      const { rows: allRel, error: relErr } = await fetchUserFriendshipsSmart(currentUser.id);
+      if (relErr) {
+        console.warn('Friendships query error:', relErr.message || relErr);
       }
 
-      let qProf = query(collection(db, 'profiles'), limit(100));
-      const profSnap = await getDocs(qProf);
-      const allProfTemp = profSnap.docs.map(d => ({id: d.id, ...d.data()}) as any).filter(p => p.id !== currentUser.id && !p.is_group);
-      
-      allProfTemp.sort((a, b) => {
-        let timeA = 0; let timeB = 0;
-        if (a.created_at) timeA = typeof a.created_at.toDate === 'function' ? a.created_at.toDate().getTime() : new Date(a.created_at).getTime();
-        if (b.created_at) timeB = typeof b.created_at.toDate === 'function' ? b.created_at.toDate().getTime() : new Date(b.created_at).getTime();
-        return timeB - timeA;
-      });
+      // 2. Fetch profiles 100% from Supabase
+      let profQuery = supabase
+        .from('profiles')
+        .select('*')
+        .neq('id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(150);
+
+      if (searchQuery.trim()) {
+        const sq = searchQuery.trim();
+        profQuery = supabase
+          .from('profiles')
+          .select('*')
+          .neq('id', currentUser.id)
+          .or(`display_name.ilike.%${sq}%,username.ilike.%${sq}%`)
+          .limit(100);
+      }
+
+      const { data: profData, error: profErr } = await profQuery;
+      if (profErr) {
+        console.warn('Supabase profiles query error:', profErr.message);
+      }
+
+      // Offline/error fallback from Dexie cache so Friends never appears empty on transient network errors
+      if (relErr && profErr) {
+        try {
+          const cachedFriends = await localDB.friends.toArray();
+          const cachedUsers = await localDB.users.toArray();
+          const frsFallback = cachedFriends
+            .filter(f => f.status === 'accepted')
+            .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
+          const reqsFallback = cachedFriends
+            .filter(f => f.status === 'pending' && !f.is_pending)
+            .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
+          const relatedSet = new Set([currentUser.id, ...cachedFriends.map(f => f.id)]);
+          const discFallback = cachedUsers
+            .filter(u => u.id && !relatedSet.has(u.id))
+            .map(u => ({ id: u.id, display_name: u.display_name || u.name, username: u.username, avatar_url: u.avatar_url || u.avatar, is_verified: u.is_verified }));
+          return { requests: reqsFallback, friends: frsFallback, blockedUsers: [], discovery: discFallback };
+        } catch {}
+      }
+
+      const allProfTemp = (profData || [])
+        .filter((p: any) => !p.is_group && !String(p.id).startsWith('group_'));
+
+      allProfTemp.forEach((p: any) => cacheUserInDexie(p));
 
       let allProf = allProfTemp;
       if (searchQuery.trim()) {
-         const sq = searchQuery.toLowerCase();
-         allProf = allProfTemp.filter(p => 
-            p.display_name?.toLowerCase().includes(sq) || p.username?.toLowerCase().includes(sq)
-         );
+        const sq = searchQuery.toLowerCase();
+        allProf = allProfTemp.filter((p: any) =>
+          p.display_name?.toLowerCase().includes(sq) || p.username?.toLowerCase().includes(sq)
+        );
       }
 
       const profMap = new Map(allProf.map((p: any) => [p.id, p]));
-      
+
       const missingProfIds = allRel
-        .map(rel => rel.sender_id === currentUser.id ? rel.receiver_id : rel.sender_id)
-        .filter(id => !profMap.has(id));
+        .map(rel => (rel.sender_id === currentUser.id ? rel.receiver_id : rel.sender_id))
+        .filter(id => id && !profMap.has(id));
 
       if (missingProfIds.length > 0) {
-        // 2. Friends Center Batching: Stop querying profiles individually inside loops.
-        // Use batched array queries (e.g., Firestore where('id', 'in', batchOfIds))
-        const missingProfs = [];
-        for (let i = 0; i < missingProfIds.length; i += 30) {
-           const batch = missingProfIds.slice(i, i + 30);
-           const batchQ = query(collection(db, 'profiles'), where('__name__', 'in', batch));
-           const batchSnap = await getDocs(batchQ);
-           batchSnap.docs.forEach(d => {
-             const pData = { id: d.id, ...d.data() } as any;
-             missingProfs.push(pData);
-             localDB.users.put({
-               id: d.id,
-               name: pData.display_name || pData.name,
-               display_name: pData.display_name || pData.name,
-               username: pData.username || '',
-               avatar: pData.avatar_url || pData.avatar || '',
-               avatar_url: pData.avatar_url || pData.avatar || '',
-               is_verified: !!pData.is_verified
-             }).catch(() => {});
-           });
-        }
-        
-        missingProfs.forEach((p: any) => profMap.set(p.id, p));
+        const fetchedMap = await fetchProfilesBatchSmart(missingProfIds);
+        fetchedMap.forEach((p, id) => profMap.set(id, p));
       }
 
       const reqs: any[] = [];
       const frs: any[] = [];
       const blks: any[] = [];
       const disc: any[] = [];
-      
-      const relatedIds = new Set<string>([currentUser.id]);
 
+      const relatedIds = new Set<string>([currentUser.id]);
       const dexieUpdates: LocalFriend[] = [];
 
       allRel.forEach(rel => {
@@ -129,7 +168,7 @@ const Friends: React.FC = () => {
         if (!otherProf) return;
 
         relatedIds.add(otherId);
-        
+
         const localFriend: LocalFriend = {
           id: otherProf.id,
           friendship_id: rel.id,
@@ -150,7 +189,9 @@ const Friends: React.FC = () => {
             disc.push({ ...otherProf, friendship_id: rel.id, is_pending: true });
           }
         } else if (rel.status === 'blocked') {
-          blks.push({ ...otherProf, friendship_id: rel.id });
+          if (rel.sender_id === currentUser.id) {
+            blks.push({ ...otherProf, friendship_id: rel.id });
+          }
         }
       });
 
@@ -187,18 +228,21 @@ const Friends: React.FC = () => {
         discovery: uniqueById(filterList(disc))
       };
 
-      // Save to Dexie if this was a fresh fetch and we got data
-      if (allRel.length > 0 && !searchQuery.trim()) {
+      if (!relErr && !searchQuery.trim()) {
         try {
-          // Base64 all avatars before saving
-          for (let f of dexieUpdates) {
-             if (f.avatar && !f.avatar.startsWith('data:image')) {
+          if (dexieUpdates.length === 0) {
+            await localDB.friends.clear();
+          } else {
+            for (const f of dexieUpdates) {
+              if (f.avatar && !f.avatar.startsWith('data:image')) {
                 f.avatar = await getBase64Image(f.avatar);
-             }
+              }
+            }
+            await localDB.friends.clear();
+            await localDB.friends.bulkPut(dexieUpdates);
           }
-          await localDB.friends.bulkPut(dexieUpdates);
         } catch (err) {
-          console.error("Dexie save error:", err);
+          console.error('Dexie save error:', err);
         }
       }
 
@@ -217,7 +261,7 @@ const Friends: React.FC = () => {
   const { requests = [], friends = [], discovery = [], blockedUsers = [] } = friendsData || {};
 
   const displayedRequests = requests.filter((r: any) => !localAcceptedRequests[r.friendship_id] && !localDeletedRequests[r.friendship_id]);
-  
+
   const acceptedFriends = requests
     .filter((r: any) => localAcceptedRequests[r.friendship_id])
     .map((r: any) => ({
@@ -228,7 +272,7 @@ const Friends: React.FC = () => {
       is_verified: r.profiles?.is_verified || r.is_verified,
       friendship_id: r.friendship_id
     }));
-  
+
   const displayedFriends = [...friends, ...acceptedFriends].filter((f: any) => !localDeletedRequests[f.friendship_id]);
 
   const displayedDiscovery = discovery
@@ -241,32 +285,29 @@ const Friends: React.FC = () => {
     .filter((p: any) => !localDeletedRequests[p.friendship_id || p.id]);
 
   const handleStatus = async (id: string, status: 'accepted' | 'delete' | 'blocked') => {
-    // Optimistic Local Delete for instant UI update
     if (status === 'delete') {
       try {
         await localDB.friends.where('friendship_id').equals(id).delete();
       } catch (e) {
-        console.warn("Failed to delete from localDB", e);
+        console.warn('Failed to delete from localDB', e);
       }
       setLocalDeletedRequests(prev => ({ ...prev, [id]: true }));
-      // Attempt P2P Cascade Delete if possible (via global DataChannel if available)
       if ((window as any).cinemaPeers) {
         Object.values((window as any).cinemaPeers).forEach((peer: any) => {
-          if (peer?.open) peer.send({ type: "DELETE_SYNC", id });
+          if (peer?.open) peer.send({ type: 'DELETE_SYNC', id });
         });
       }
       if ((window as any).meetPeers) {
         Object.values((window as any).meetPeers).forEach((peer: any) => {
-          if (peer?.open) peer.send({ type: "DELETE_SYNC", id });
+          if (peer?.open) peer.send({ type: 'DELETE_SYNC', id });
         });
       }
     } else if (status === 'accepted') {
       setLocalAcceptedRequests(prev => ({ ...prev, [id]: true }));
     }
 
-    // Query Client optimistic Update as backup
-    const previousData = queryClient.getQueryData(['friends', searchQuery]);
-    queryClient.setQueryData(['friends', searchQuery], (old: any) => {
+    const previousData = queryClient.getQueryData(['friends', currentUser?.id, searchQuery]);
+    queryClient.setQueryData(['friends', currentUser?.id, searchQuery], (old: any) => {
       if (!old) return old;
       if (status === 'delete') {
         return {
@@ -289,85 +330,96 @@ const Friends: React.FC = () => {
 
     try {
       if (status === 'delete') {
-          // Realtime Database Deletion from Firestore
-          await deleteDoc(doc(db, 'friendships', id));
+        await deleteFriendshipSmart(id);
       } else {
-          await updateDoc(doc(db, 'friendships', id), { status });
-          
-          if (status === 'accepted') {
-            const docSnap = await getDoc(doc(db, 'friendships', id));
-            if (docSnap.exists()) {
-              const friendship = docSnap.data();
-              const otherId = friendship.sender_id === currentUser?.id ? friendship.receiver_id : friendship.sender_id;
-              const senderName = currentUser?.display_name || currentUser?.username || 'Someone';
-              const usernameTag = currentUser?.username ? ` (@${currentUser.username})` : '';
+        const friendship = await updateFriendshipStatusSmart(id, status);
 
-              await addDoc(collection(db, 'notifications'), {
-                user_id: otherId,
-                sender_id: currentUser?.id,
-                sender_name: senderName,
-                sender_username: currentUser?.username || '',
-                sender_avatar: currentUser?.avatar_url || '',
-                type: 'friend_accept',
-                is_read: false,
-                created_at: new Date().toISOString()
-              });
-              
-              triggerNotification(
-                otherId,
-                `${senderName}${usernameTag}`,
-                'accepted your friend request!',
-                {
-                  type: 'friend_accept',
-                  sender_id: currentUser?.id,
-                  sender_name: senderName,
-                  sender_username: currentUser?.username || '',
-                  sender_avatar: currentUser?.avatar_url || '',
-                  url: '/friends'
-                }
-              );
+        if (status === 'accepted' && friendship) {
+          const otherId = friendship.sender_id === currentUser?.id ? friendship.receiver_id : friendship.sender_id;
+          const senderName = currentUser?.display_name || currentUser?.username || 'Someone';
+          const usernameTag = currentUser?.username ? ` (@${currentUser.username})` : '';
 
-              queryClient.invalidateQueries({ queryKey: ['notifications', otherId] });
+          await addDoc(collection(db, 'notifications'), {
+            user_id: otherId,
+            sender_id: currentUser?.id,
+            sender_name: senderName,
+            sender_username: currentUser?.username || '',
+            sender_avatar: currentUser?.avatar_url || '',
+            type: 'friend_accept',
+            is_read: false,
+            created_at: new Date().toISOString()
+          });
+
+          triggerNotification(
+            otherId,
+            `${senderName}${usernameTag}`,
+            'accepted your friend request!',
+            {
+              type: 'friend_accept',
+              sender_id: currentUser?.id,
+              sender_name: senderName,
+              sender_username: currentUser?.username || '',
+              sender_avatar: currentUser?.avatar_url || '',
+              url: '/friends'
             }
-          }
+          );
+
+          queryClient.invalidateQueries({ queryKey: ['notifications', otherId] });
+        }
       }
+      queryClient.invalidateQueries({ queryKey: ['friends'] });
+      queryClient.invalidateQueries({ queryKey: ['friendsCount'] });
     } catch (err) {
-      console.error("Error updating status:", err);
-      // Revert states
+      console.error('Error updating status:', err);
       if (status === 'accepted') {
         setLocalAcceptedRequests(prev => ({ ...prev, [id]: false }));
       } else if (status === 'delete') {
         setLocalDeletedRequests(prev => ({ ...prev, [id]: false }));
       }
-      queryClient.setQueryData(['friends', searchQuery], previousData);
+      queryClient.setQueryData(['friends', currentUser?.id, searchQuery], previousData);
     }
   };
 
   const sendRequest = async (targetId: string) => {
-    // Local state optimistic update for instant rendering
+    if (!currentUser?.id) return;
     setLocalPendingRequests(prev => ({ ...prev, [targetId]: true }));
     setLocalCancelledRequests(prev => ({ ...prev, [targetId]: false }));
 
-    // Query Client optimistic Update as backup
-    const previousData = queryClient.getQueryData(['friends', searchQuery]);
-    queryClient.setQueryData(['friends', searchQuery], (old: any) => {
+    const tempId = 'temp-' + Date.now();
+    const previousData = queryClient.getQueryData(['friends', currentUser.id, searchQuery]);
+    queryClient.setQueryData(['friends', currentUser.id, searchQuery], (old: any) => {
       if (!old) return old;
       const targetUser = old.discovery.find((u: any) => u.id === targetId);
       if (!targetUser) return old;
       return {
         ...old,
-        discovery: old.discovery.map((u: any) => u.id === targetId ? { ...u, is_pending: true, friendship_id: 'temp-' + Date.now() } : u)
+        discovery: old.discovery.map((u: any) =>
+          u.id === targetId ? { ...u, is_pending: true, friendship_id: tempId } : u
+        )
       };
     });
 
     try {
-      await addDoc(collection(db, 'friendships'), { sender_id: currentUser?.id, receiver_id: targetId, status: 'pending' });
+      const inserted = await sendFriendRequestSmart(currentUser.id, targetId);
+
+      if (inserted?.id) {
+        queryClient.setQueryData(['friends', currentUser.id, searchQuery], (old: any) => {
+          if (!old) return old;
+          return {
+            ...old,
+            discovery: old.discovery.map((u: any) =>
+              u.id === targetId ? { ...u, is_pending: true, friendship_id: inserted.id } : u
+            )
+          };
+        });
+      }
+
       const senderName = currentUser?.display_name || currentUser?.username || 'Someone';
       const usernameTag = currentUser?.username ? ` (@${currentUser.username})` : '';
 
       await addDoc(collection(db, 'notifications'), {
         user_id: targetId,
-        sender_id: currentUser?.id,
+        sender_id: currentUser.id,
         sender_name: senderName,
         sender_username: currentUser?.username || '',
         sender_avatar: currentUser?.avatar_url || '',
@@ -382,7 +434,7 @@ const Friends: React.FC = () => {
         'sent you a friend request!',
         {
           type: 'friend_request',
-          sender_id: currentUser?.id,
+          sender_id: currentUser.id,
           sender_name: senderName,
           sender_username: currentUser?.username || '',
           sender_avatar: currentUser?.avatar_url || '',
@@ -391,58 +443,69 @@ const Friends: React.FC = () => {
       );
 
       queryClient.invalidateQueries({ queryKey: ['notifications', targetId] });
+      queryClient.invalidateQueries({ queryKey: ['friends'] });
     } catch (err) {
-      console.error("Error sending request:", err);
-      // Revert states
+      console.error('Error sending request:', err);
       setLocalPendingRequests(prev => ({ ...prev, [targetId]: false }));
-      queryClient.setQueryData(['friends', searchQuery], previousData);
+      queryClient.setQueryData(['friends', currentUser.id, searchQuery], previousData);
     }
   };
 
-  const cancelRequest = async (friendshipId: string) => {
-    // Local state optimistic update for instant rendering
-    // Find the profile ID from discovery or requests
-    const targetInDiscovery = discovery.find((u: any) => u.friendship_id === friendshipId);
-    if (targetInDiscovery) {
-      setLocalPendingRequests(prev => ({ ...prev, [targetInDiscovery.id]: false }));
-      setLocalCancelledRequests(prev => ({ ...prev, [targetInDiscovery.id]: true }));
+  const cancelRequest = async (friendshipId: string, targetUserId?: string) => {
+    const targetInDiscovery = discovery.find((u: any) =>
+      (friendshipId && u.friendship_id === friendshipId) || (targetUserId && u.id === targetUserId)
+    );
+    const resolvedTargetId = targetUserId || targetInDiscovery?.id;
+
+    if (resolvedTargetId) {
+      setLocalPendingRequests(prev => ({ ...prev, [resolvedTargetId]: false }));
+      setLocalCancelledRequests(prev => ({ ...prev, [resolvedTargetId]: true }));
     }
 
-    queryClient.setQueryData(['friends', searchQuery], (old: any) => {
+    queryClient.setQueryData(['friends', currentUser?.id, searchQuery], (old: any) => {
       if (!old) return old;
       return {
         ...old,
-        discovery: old.discovery.map((u: any) => u.friendship_id === friendshipId ? { ...u, is_pending: false, friendship_id: null } : u),
+        discovery: old.discovery.map((u: any) =>
+          (u.friendship_id === friendshipId || (resolvedTargetId && u.id === resolvedTargetId))
+            ? { ...u, is_pending: false, friendship_id: null }
+            : u
+        ),
         requests: old.requests.filter((u: any) => u.friendship_id !== friendshipId)
       };
     });
+
     try {
-        await deleteDoc(doc(db, 'friendships', friendshipId));
-    } catch(e) {
-      if (targetInDiscovery) {
-        setLocalPendingRequests(prev => ({ ...prev, [targetInDiscovery.id]: true }));
-        setLocalCancelledRequests(prev => ({ ...prev, [targetInDiscovery.id]: false }));
+      await deleteFriendshipSmart(friendshipId, currentUser?.id, resolvedTargetId);
+      queryClient.invalidateQueries({ queryKey: ['friends'] });
+    } catch (e) {
+      if (resolvedTargetId) {
+        setLocalPendingRequests(prev => ({ ...prev, [resolvedTargetId]: true }));
+        setLocalCancelledRequests(prev => ({ ...prev, [resolvedTargetId]: false }));
       }
     }
   };
 
   const blockUser = async (targetId: string, friendshipId?: string) => {
+    if (!currentUser?.id) return;
     try {
-        if (friendshipId) {
-            await updateDoc(doc(db, 'friendships', friendshipId), { status: 'blocked', sender_id: currentUser?.id, receiver_id: targetId });
-        } else {
-            await addDoc(collection(db, 'friendships'), { sender_id: currentUser?.id, receiver_id: targetId, status: 'blocked' });
-        }
-        // invalidated by onSnapshot
-    } catch(e) {}
+      await blockUserSmart(currentUser.id, targetId, friendshipId);
+      queryClient.invalidateQueries({ queryKey: ['friends'] });
+      queryClient.invalidateQueries({ queryKey: ['blockedUsers'] });
+    } catch (e) {
+      console.error('Error blocking user:', e);
+    }
   };
 
   const unblockUser = async (friendshipId: string) => {
-      try {
-          await deleteDoc(doc(db, 'friendships', friendshipId));
-          // invalidated by onSnapshot
-      } catch(e) {}
-  }
+    try {
+      await deleteFriendshipSmart(friendshipId);
+      queryClient.invalidateQueries({ queryKey: ['friends'] });
+      queryClient.invalidateQueries({ queryKey: ['blockedUsers'] });
+    } catch (e) {
+      console.error('Error unblocking user:', e);
+    }
+  };
 
   return (
     <div className="max-w-[1000px] mx-auto py-8 px-4 pb-24">
@@ -496,7 +559,7 @@ const Friends: React.FC = () => {
                         <div className="col-span-full text-center py-20 text-gray-400 font-medium">No pending friend requests.</div>
                     ) : displayedRequests.map((r: any) => (
                     <div key={r.id} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl shadow-sm p-5 flex flex-col items-center transition-all hover:shadow-md">
-                        <div onClick={() => navigate(`/profile/${r.profiles?.username || r.username}`)} className="cursor-pointer">
+                        <div onClick={() => navigate(`/profile/${r.profiles?.username || r.username || r.id}`)} className="cursor-pointer">
                             <ProfileAvatar userId={r.profiles?.id || r.id || ''} defaultAvatar={r.profiles?.avatar_url || r.avatar_url || undefined} name={r.profiles?.display_name || r.display_name || r.profiles?.username || r.username || 'User'} className="w-24 h-24 rounded-full object-cover shadow-lg border-2 border-white dark:border-gray-700 mb-4" />
                         </div>
                         <p className="font-bold text-gray-900 dark:text-white text-lg mb-4 flex items-center gap-1">
@@ -518,7 +581,7 @@ const Friends: React.FC = () => {
                         <div className="col-span-full text-center py-20 text-gray-400 font-medium">No new users found. Try searching!</div>
                     ) : displayedDiscovery.map((p: any) => (
                     <div key={p.id} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl p-4 flex flex-col items-center text-center transition-all hover:shadow-md relative group">
-                        <div onClick={() => navigate(`/profile/${p.username}`)} className="cursor-pointer">
+                        <div onClick={() => navigate(`/profile/${p.username || p.id}`)} className="cursor-pointer">
                             <ProfileAvatar userId={p.id} defaultAvatar={p.avatar_url || undefined} name={p.display_name || p.username || 'User'} className="w-20 h-20 rounded-full object-cover shadow-md mb-3 border-2 border-white dark:border-gray-700" />
                         </div>
                         <p className="font-bold text-gray-900 dark:text-white truncate w-full flex items-center justify-center gap-1">
@@ -527,7 +590,7 @@ const Friends: React.FC = () => {
                         </p>
                         <p className="text-xs text-gray-500 mb-4 font-medium italic">@{p.username}</p>
                         {p.is_pending ? (
-                            <button onClick={() => cancelRequest(p.friendship_id)} className="w-full bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-red-100 dark:hover:bg-red-900/40 transition-all">
+                            <button onClick={() => cancelRequest(p.friendship_id, p.id)} className="w-full bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-red-100 dark:hover:bg-red-900/40 transition-all">
                                 <X size={16}/> Cancel Request
                             </button>
                         ) : (
@@ -549,7 +612,7 @@ const Friends: React.FC = () => {
                         <div className="col-span-full text-center py-20 text-gray-400 font-medium">You haven't added any friends yet.</div>
                     ) : displayedFriends.map((f: any) => (
                     <div key={f.id} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl p-4 flex items-center justify-between shadow-sm hover:shadow-md transition-all group">
-                        <div className="flex items-center gap-4 cursor-pointer" onClick={() => navigate(`/profile/${f.username}`)}>
+                        <div className="flex items-center gap-4 cursor-pointer" onClick={() => navigate(`/profile/${f.username || f.id}`)}>
                         <ProfileAvatar userId={f.id} defaultAvatar={f.avatar_url || undefined} name={f.display_name || f.username || 'User'} className="w-16 h-16 rounded-full border shadow-sm object-cover" />
                         <div>
                             <p className="font-bold text-gray-900 dark:text-white text-lg group-hover:text-[#1877F2] transition-colors flex items-center gap-1">

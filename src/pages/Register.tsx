@@ -6,7 +6,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { generateBio } from '../services/geminiService';
 import { auth, db } from '../lib/firebase';
 import { createUserWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDoc, setDoc, query, collection, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { syncProfileToSupabase, isUsernameTaken, ensureUniqueUsername, cacheUserInDexie } from '../lib/profileSync';
 
 const Register: React.FC = () => {
   const [formData, setFormData] = useState({
@@ -46,14 +47,15 @@ const Register: React.FC = () => {
         const userDoc = await getDoc(doc(db, 'profiles', result.user.uid));
         if (!userDoc.exists()) {
           // Create new user profile
-          const emailUser = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-          const bio = await generateBio(emailUser);
+          const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
+          const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
+          const bio = await generateBio(uniqueUsername);
           const newProfile = {
-             username: emailUser,
-             display_name: result.user.displayName || emailUser,
+             username: uniqueUsername,
+             display_name: result.user.displayName || uniqueUsername,
              email: result.user.email,
              bio: bio,
-             avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`,
+             avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
              created_at: new Date().toISOString()
           };
           try {
@@ -61,20 +63,31 @@ const Register: React.FC = () => {
           } catch (e) {
             console.warn("Could not save profile to Firestore (quota?):", e);
           }
-          setCurrentUser({ id: result.user.uid, ...newProfile } as any);
+          const fullProfile = { id: result.user.uid, ...newProfile };
+          await syncProfileToSupabase(fullProfile);
+          await cacheUserInDexie(fullProfile);
+          setCurrentUser(fullProfile as any);
         } else {
-          setCurrentUser({ id: userDoc.id, ...userDoc.data() } as any);
+          const existingProfile = { id: userDoc.id, ...userDoc.data() };
+          await syncProfileToSupabase(existingProfile);
+          await cacheUserInDexie(existingProfile);
+          setCurrentUser(existingProfile as any);
         }
       } catch (dbError) {
         console.warn("Firestore error during Google login (quota exceeded?):", dbError);
-        const emailUser = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-        setCurrentUser({ 
+        const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
+        const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
+        const fallbackProfile = { 
           id: result.user.uid, 
-          username: emailUser, 
+          username: uniqueUsername, 
           email: result.user.email, 
-          display_name: result.user.displayName || emailUser,
-          avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`
-        } as any);
+          display_name: result.user.displayName || uniqueUsername,
+          avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
+          created_at: new Date().toISOString()
+        };
+        await syncProfileToSupabase(fallbackProfile);
+        await cacheUserInDexie(fallbackProfile);
+        setCurrentUser(fallbackProfile as any);
       }
       
       navigate('/');
@@ -101,27 +114,22 @@ const Register: React.FC = () => {
       return;
     }
 
-    const usernameLower = formData.username.toLowerCase();
+    const usernameLower = formData.username.trim().toLowerCase();
+    if (!usernameLower || /\s/.test(usernameLower)) {
+      setError('Username cannot be empty or contain spaces');
+      setLoading(false);
+      return;
+    }
 
-    // Check for existing user
-    let querySnapshot;
-    try {
-      const q = query(collection(db, 'profiles'), where('username', '==', usernameLower));
-      querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
-        setError('Username already taken');
-        setLoading(false);
-        return;
-      }
-    } catch (dbError) {
-      console.warn("Firestore lookup failed during registration (quota?):", dbError);
-      // We will proceed anyway, but there is a risk of duplicate usernames if the quota is hit.
-      // Usually, Firebase Auth will stop duplicates on email.
+    // Check for existing user across BOTH Supabase and Firestore
+    const taken = await isUsernameTaken(usernameLower);
+    if (taken) {
+      setError('Username already taken');
+      setLoading(false);
+      return;
     }
 
     try {
-      // In Firebase email auth is required. We'll construct a mock email if they don't provide one, or throw error.
-      // Easiest is to construct a mock email for purely username based accounts:
       const fakeEmail = `${usernameLower}@nextmedia.app`;
       
       const result = await createUserWithEmailAndPassword(auth, fakeEmail, formData.password);
@@ -132,7 +140,7 @@ const Register: React.FC = () => {
           username: usernameLower,
           password: formData.password, // Optional backup for legacy reasons
           email: fakeEmail,
-          display_name: formData.lastName ? `${formData.firstName} ${formData.lastName}` : formData.firstName,
+          display_name: formData.lastName ? `${formData.firstName.trim()} ${formData.lastName.trim()}` : formData.firstName.trim(),
           bio: bio,
           avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${usernameLower}`,
           created_at: new Date().toISOString()
@@ -143,8 +151,12 @@ const Register: React.FC = () => {
       } catch (dbError) {
         console.warn("Could not save profile to Firestore (quota?):", dbError);
       }
+
+      const fullProfile = { id: result.user.uid, ...newProfile };
+      await syncProfileToSupabase(fullProfile);
+      await cacheUserInDexie(fullProfile);
       
-      setCurrentUser({ id: result.user.uid, ...newProfile } as any);
+      setCurrentUser(fullProfile as any);
       
       try {
         const saved = localStorage.getItem('next_saved_accounts');

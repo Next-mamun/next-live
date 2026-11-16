@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
 import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
+import { fetchProfileSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
 
 interface Post {
   id: string;
@@ -64,6 +65,18 @@ let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
 const notifiedMessageIds = new Set<string>();
 
+const countUnreadMessages = (msgs: any[], userId: string): number => {
+  return msgs.filter(
+    (m) =>
+      m &&
+      m.is_read === false &&
+      m.receiver_id === userId &&
+      m.sender_id !== userId &&
+      !m.deleted_for_everyone &&
+      !(Array.isArray(m.deleted_for) && m.deleted_for.includes(userId))
+  ).length;
+};
+
 const handleIncomingMessageNotification = async (
   msg: any,
   currentUserId: string,
@@ -94,20 +107,17 @@ const handleIncomingMessageNotification = async (
 
   if (!senderName) {
     try {
-      const { localDB } = await import('@/lib/dexie');
       const cached = await localDB.users.get(msg.sender_id);
       if (cached) {
         senderName = cached.display_name || cached.name || (cached.username ? `@${cached.username}` : 'User');
         senderUsername = cached.username;
         senderAvatar = cached.avatar_url || cached.avatar;
       } else {
-        const snap = await getDoc(doc(db, 'profiles', msg.sender_id));
-        if (snap.exists()) {
-          const p = snap.data();
+        const p = await fetchProfileSmart(msg.sender_id);
+        if (p) {
           senderName = p.display_name || p.name || (p.username ? `@${p.username}` : 'User');
           senderUsername = p.username;
-          senderAvatar = p.avatar_url;
-          localDB.users.put({ id: snap.id, username: p.username || '', display_name: senderName, avatar_url: p.avatar_url }).catch(() => {});
+          senderAvatar = p.avatar_url || p.avatar;
         }
       }
     } catch (e) {}
@@ -170,9 +180,9 @@ export const useGlobalStore = create<GlobalState>()(
       setActiveChatId: (id: string | null) => set({ activeChatId: id }),
 
       triggerFirebaseFallback: () => {
-        if (get().isSupabaseActive) {
-          console.warn("⚠️ [Failover] Triggering Firebase Fallback for Messaging!");
-          set({ isSupabaseActive: false });
+        // Messaging is 100% Supabase; keep isSupabaseActive true.
+        if (!get().isSupabaseActive) {
+          set({ isSupabaseActive: true });
         }
       },
 
@@ -414,164 +424,141 @@ export const useGlobalStore = create<GlobalState>()(
       initMessageListener: (userId: string) => {
         if (messageUnsub) return messageUnsub;
         initialMessageLoad = true;
-        
+        let cancelled = false;
+
         // 1. Check local Dexie first for instant load
         localDB.messages.count().then(async count => {
+          if (cancelled) return;
           if (count > 0) {
             const localMsgs = await localDB.messages.toArray();
-            const unread = localMsgs.filter(m => m.is_read === false).length;
+            const unread = countUnreadMessages(localMsgs, userId);
             set({ messages: localMsgs, unreadMessagesCount: unread });
           }
 
-          // 2. Fetch initial messages from Supabase and Firebase
+          // 2. Fetch initial messages 100% from Supabase (1:1 + groups user belongs to)
           const fetchInitialMessages = async () => {
-            let fetchedMsgs: any[] = [];
+            try {
+              const { data: userGroups } = await supabase
+                .from('profiles')
+                .select('id')
+                .eq('is_group', true)
+                .contains('members', [userId]);
+              const groupIds = (userGroups || []).map((g: any) => g.id).filter(Boolean);
 
-            if (get().isSupabaseActive) {
-              try {
-                const { data: supaMsgs, error: supaErr } = await supabase
-                  .from('messages')
-                  .select('*')
-                  .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
-                  .order('created_at', { ascending: false })
-                  .limit(50);
-  
-                if (!supaErr && supaMsgs) {
-                  fetchedMsgs = supaMsgs.map(m => ({
-                    ...m,
-                    content: m.content || m.text
-                  }));
-                }
-              } catch (err) {
-                console.warn("Supabase initial messages fetch error:", err);
+              const directPromise = supabase
+                .from('messages')
+                .select('*')
+                .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`)
+                .order('created_at', { ascending: false })
+                .limit(100);
+
+              const groupPromise = groupIds.length > 0
+                ? supabase
+                    .from('messages')
+                    .select('*')
+                    .in('receiver_id', groupIds)
+                    .order('created_at', { ascending: false })
+                    .limit(50)
+                : Promise.resolve({ data: [] as any[], error: null });
+
+              const [directRes, groupRes] = await Promise.all([directPromise, groupPromise]);
+              const combinedMap = new Map<string, any>();
+
+              [...(directRes.data || []), ...(groupRes.data || [])].forEach((m: any) => {
+                combinedMap.set(m.id, { ...m, content: m.content || m.text });
+              });
+
+              const fetchedMsgs = Array.from(combinedMap.values())
+                .filter((m: any) => !m.deleted_for_everyone && !(m.deleted_for || []).includes(userId))
+                .sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+              if (fetchedMsgs.length > 0) {
+                const unread = countUnreadMessages(fetchedMsgs, userId);
+                set({ messages: fetchedMsgs, unreadMessagesCount: unread });
+                localDB.messages.bulkPut(fetchedMsgs as any[]).catch(() => {});
               }
-            }
-
-            // Also fallback/augment with Firebase if needed
-            if (fetchedMsgs.length === 0) {
-              try {
-                const qFb = query(
-                  collection(db, 'messages'),
-                  where('receiver_id', '==', userId),
-                  limit(50)
-                );
-                const snap = await getDocs(qFb);
-                fetchedMsgs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-              } catch (e) {
-                console.warn("Firebase initial messages fetch error:", e);
-              }
-            }
-
-            if (fetchedMsgs.length > 0) {
-              const unread = fetchedMsgs.filter(m => m.is_read === false && m.receiver_id === userId).length;
-              set({ messages: fetchedMsgs, unreadMessagesCount: unread });
-              try {
-                localDB.messages.bulkPut(fetchedMsgs as any[]);
-              } catch (e) {}
+            } catch (err) {
+              console.warn("Supabase initial messages fetch error:", err);
             }
           };
 
+          migrateUserMessagesOnce(userId)
+            .then((imported) => {
+              if (imported && !cancelled) {
+                fetchInitialMessages();
+              }
+            })
+            .catch(() => {});
+
           fetchInitialMessages().then(() => {
+            if (cancelled) return;
             initialMessageLoad = false;
-            const unsubs: Array<() => void> = [];
 
-            // 3. Setup Listener: Supabase Realtime
-            if (get().isSupabaseActive) {
-              const globalChannel = supabase.channel(`global-user-messages:${userId}`)
-                .on(
-                  'postgres_changes',
-                  {
-                    event: 'INSERT',
-                    schema: 'public',
-                    table: 'messages',
-                  },
-                  async (payload: any) => {
-                    const data = payload.new;
-                    if (!data) return;
-                    if (data.sender_id !== userId && data.receiver_id !== userId) return;
-                    if (data.deleted_for_everyone || (data.deleted_for || []).includes(userId)) return;
-  
-                    const formattedMsg = {
-                      id: data.id,
-                      ...data,
-                      content: data.content || data.text
-                    };
-  
+            // 3. Setup Listener: 100% Supabase Realtime (INSERT, UPDATE, DELETE)
+            const globalChannel = supabase.channel(`global-user-messages:${userId}`)
+              .on(
+                'postgres_changes',
+                {
+                  event: '*',
+                  schema: 'public',
+                  table: 'messages',
+                },
+                async (payload: any) => {
+                  if (payload.eventType === 'DELETE') {
+                    const delId = payload.old?.id;
+                    if (!delId) return;
                     set((state) => {
-                      const exists = state.messages.some(m => m.id === formattedMsg.id);
-                      const updated = exists ? state.messages.map(m => m.id === formattedMsg.id ? formattedMsg : m) : [formattedMsg, ...state.messages];
-                      const unread = updated.filter(m => m.is_read === false && m.receiver_id === userId).length;
-                      return { messages: updated, unreadMessagesCount: unread };
+                      const updated = state.messages.filter(m => m.id !== delId);
+                      return { messages: updated, unreadMessagesCount: countUnreadMessages(updated, userId) };
                     });
-
-                    // Trigger instant notification for incoming messages
-                    if (!initialMessageLoad && data.sender_id !== userId && data.receiver_id === userId) {
-                      handleIncomingMessageNotification(formattedMsg, userId, get);
-                    }
-  
-                    try {
-                      localDB.messages.put(formattedMsg as any);
-                      // If we receive a new message, un-hide the chat if it was deleted
-                      const contactId = formattedMsg.sender_id === userId ? formattedMsg.receiver_id : formattedMsg.sender_id;
-                      if (contactId) {
-                        const deletedKey = 'deleted_chats_' + userId;
-                        const deletedIds = JSON.parse(localStorage.getItem(deletedKey) || '[]');
-                        if (deletedIds.includes(contactId)) {
-                          const newIds = deletedIds.filter((id: string) => id !== contactId);
-                          localStorage.setItem(deletedKey, JSON.stringify(newIds));
-                          // Trigger re-render of contacts query globally
-                          import('@tanstack/react-query').then(({ QueryClient }) => {
-                            window.dispatchEvent(new Event('chat_undeleted'));
-                          });
-                        }
-                      }
-                    } catch (e) {}
+                    localDB.messages.delete(delId).catch(() => {});
+                    return;
                   }
-                )
-                .subscribe();
 
-              unsubs.push(() => {
-                supabase.removeChannel(globalChannel);
-              });
-            }
-            
-            // 4. Setup Listener: Firebase Firestore onSnapshot (guaranteed delivery)
-            try {
-              const qMessages = query(
-                collection(db, 'messages'), 
-                where('receiver_id', '==', userId),
-                limit(50)
-              );
-              
-              const fbUnsub = onSnapshot(qMessages, async (snapshot) => {
-                const msgs = snapshot.docs.map(document => ({ id: document.id, ...document.data() })) as Message[];
-                const unread = msgs.filter(m => m.is_read === false && m.receiver_id === userId).length;
-                
-                set((state) => {
-                  const map = new Map<string, any>();
-                  state.messages.forEach(m => map.set(m.id, m));
-                  msgs.forEach(m => map.set(m.id, { ...map.get(m.id), ...m }));
-                  const merged = Array.from(map.values());
-                  return { messages: merged, unreadMessagesCount: unread };
-                });
+                  const data = payload.new;
+                  if (!data) return;
+                  const isGroupMsg = typeof data.receiver_id === 'string' && data.receiver_id.startsWith('group_');
+                  if (!isGroupMsg && data.sender_id !== userId && data.receiver_id !== userId) return;
 
-                if (!initialMessageLoad) {
-                  snapshot.docChanges().forEach((change) => {
-                    if (change.type === 'added') {
-                      const msgData = { id: change.doc.id, ...change.doc.data() } as any;
-                      if (msgData.sender_id !== userId && msgData.receiver_id === userId && !msgData.is_read) {
-                        handleIncomingMessageNotification(msgData, userId, get);
-                      }
-                    }
+                  if (data.deleted_for_everyone || (data.deleted_for || []).includes(userId)) {
+                    set((state) => {
+                      const updated = state.messages.filter(m => m.id !== data.id);
+                      return { messages: updated, unreadMessagesCount: countUnreadMessages(updated, userId) };
+                    });
+                    localDB.messages.delete(data.id).catch(() => {});
+                    return;
+                  }
+
+                  const formattedMsg = {
+                    id: data.id,
+                    ...data,
+                    content: data.content || data.text
+                  };
+
+                  set((state) => {
+                    const exists = state.messages.some(m => m.id === formattedMsg.id);
+                    const updated = exists
+                      ? state.messages.map(m => m.id === formattedMsg.id ? formattedMsg : m)
+                      : [formattedMsg, ...state.messages];
+                    return { messages: updated, unreadMessagesCount: countUnreadMessages(updated, userId) };
                   });
-                }
-                
-                if (msgs.length > 0) {
+
+                  // Trigger instant notification for newly inserted incoming messages
+                  if (
+                    payload.eventType === 'INSERT' &&
+                    !initialMessageLoad &&
+                    data.sender_id !== userId &&
+                    data.receiver_id === userId
+                  ) {
+                    handleIncomingMessageNotification(formattedMsg, userId, get);
+                  }
+
                   try {
-                    localDB.messages.bulkPut(msgs as any[]);
-                    // Un-hide chats for new messages
-                    msgs.forEach(msg => {
-                      const contactId = msg.sender_id === userId ? msg.receiver_id : msg.sender_id;
+                    localDB.messages.put(formattedMsg as any);
+                    if (payload.eventType === 'INSERT') {
+                      const contactId = isGroupMsg
+                        ? formattedMsg.receiver_id
+                        : (formattedMsg.sender_id === userId ? formattedMsg.receiver_id : formattedMsg.sender_id);
                       if (contactId) {
                         const deletedKey = 'deleted_chats_' + userId;
                         const deletedIds = JSON.parse(localStorage.getItem(deletedKey) || '[]');
@@ -581,28 +568,22 @@ export const useGlobalStore = create<GlobalState>()(
                           window.dispatchEvent(new Event('chat_undeleted'));
                         }
                       }
-                    });
+                    }
                   } catch (e) {}
                 }
-              }, (err) => {
-                console.warn("Global message listener snapshot warning:", err);
-              });
-
-              unsubs.push(fbUnsub);
-            } catch (fbErr) {
-              console.warn("Firebase global message listener setup error:", fbErr);
-            }
+              )
+              .subscribe();
 
             messageUnsub = () => {
-              unsubs.forEach(u => {
-                try { u(); } catch (e) {}
-              });
+              cancelled = true;
+              supabase.removeChannel(globalChannel);
               messageUnsub = null;
             };
           });
         });
 
         return () => {
+          cancelled = true;
           if (messageUnsub) {
             messageUnsub();
             messageUnsub = null;
@@ -646,12 +627,11 @@ export const useGlobalStore = create<GlobalState>()(
 
               if (!senderName && n.sender_id) {
                 try {
-                  const pDoc = await getDoc(doc(db, 'profiles', n.sender_id));
-                  if (pDoc.exists()) {
-                    const pData = pDoc.data();
+                  const pData = await fetchProfileSmart(n.sender_id);
+                  if (pData) {
                     senderName = pData.display_name || pData.name || (pData.username ? `@${pData.username}` : 'User');
                     senderUsername = pData.username;
-                    senderAvatar = pData.avatar_url;
+                    senderAvatar = pData.avatar_url || pData.avatar;
                   }
                 } catch (e) {}
               }

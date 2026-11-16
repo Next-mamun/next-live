@@ -3,9 +3,11 @@ import React, { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { auth, db } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { generateBio } from '../services/geminiService';
+import { syncProfileToSupabase, ensureUniqueUsername, cacheUserInDexie, fetchProfileSmart } from '../lib/profileSync';
 import { User, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -46,14 +48,15 @@ const Login: React.FC = () => {
       try {
         const userDoc = await getDoc(doc(db, 'profiles', result.user.uid));
         if (!userDoc.exists()) {
-          const emailUser = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-          const bio = await generateBio(emailUser);
+          const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
+          const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
+          const bio = await generateBio(uniqueUsername);
           const newProfile = {
-             username: emailUser,
-             display_name: result.user.displayName || emailUser,
+             username: uniqueUsername,
+             display_name: result.user.displayName || uniqueUsername,
              email: result.user.email,
              bio: bio,
-             avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`,
+             avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
              created_at: new Date().toISOString()
           };
           try {
@@ -61,20 +64,36 @@ const Login: React.FC = () => {
           } catch (e) {
             console.warn("Could not save profile to Firestore (quota?):", e);
           }
-          setCurrentUser({ id: result.user.uid, ...newProfile } as any);
+          const fullProfile = { id: result.user.uid, ...newProfile };
+          await syncProfileToSupabase(fullProfile);
+          await cacheUserInDexie(fullProfile);
+          setCurrentUser(fullProfile as any);
         } else {
-          setCurrentUser({ id: userDoc.id, ...userDoc.data() } as any);
+          const existingProfile = { id: userDoc.id, ...userDoc.data() };
+          await syncProfileToSupabase(existingProfile);
+          await cacheUserInDexie(existingProfile);
+          setCurrentUser(existingProfile as any);
         }
       } catch (dbError) {
         console.warn("Firestore error during Google login (quota exceeded?):", dbError);
-        const emailUser = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-        setCurrentUser({ 
-          id: result.user.uid, 
-          username: emailUser, 
-          email: result.user.email, 
-          display_name: result.user.displayName || emailUser,
-          avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${emailUser}`
-        } as any);
+        const existingSupa = await fetchProfileSmart(result.user.uid);
+        if (existingSupa) {
+          setCurrentUser(existingSupa as any);
+        } else {
+          const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
+          const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
+          const fallbackProfile = { 
+            id: result.user.uid, 
+            username: uniqueUsername, 
+            email: result.user.email, 
+            display_name: result.user.displayName || uniqueUsername,
+            avatar_url: result.user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${uniqueUsername}`,
+            created_at: new Date().toISOString()
+          };
+          await syncProfileToSupabase(fallbackProfile);
+          await cacheUserInDexie(fallbackProfile);
+          setCurrentUser(fallbackProfile as any);
+        }
         toast.success("Logged in, but some data might be delayed (database busy).");
       }
       
@@ -103,33 +122,45 @@ const Login: React.FC = () => {
     }
 
     try {
-      const isEmail = username.includes('@');
+      const trimmedInput = username.trim();
+      const isEmail = trimmedInput.includes('@');
       
       if (isEmail) {
         // Direct email login bypasses initial Firestore lookup
-        const userCredential = await signInWithEmailAndPassword(auth, username, password);
+        const userCredential = await signInWithEmailAndPassword(auth, trimmedInput, password);
         try {
           const profileDoc = await getDoc(doc(db, 'profiles', userCredential.user.uid));
           if (profileDoc.exists()) {
-             setCurrentUser({ id: profileDoc.id, ...profileDoc.data() } as any);
+             const prof = { id: profileDoc.id, ...profileDoc.data() };
+             await syncProfileToSupabase(prof);
+             await cacheUserInDexie(prof);
+             setCurrentUser(prof as any);
           } else {
-             // Fallback if profile doesn't exist but auth succeeded
-             setCurrentUser({ 
+             const supaProf = await fetchProfileSmart(userCredential.user.uid);
+             const resolved = supaProf || { 
                id: userCredential.user.uid, 
-               username: username.split('@')[0], 
-               email: username, 
-               display_name: username.split('@')[0] 
-             } as any);
+               username: trimmedInput.split('@')[0].toLowerCase(), 
+               email: trimmedInput, 
+               display_name: trimmedInput.split('@')[0],
+               created_at: new Date().toISOString()
+             };
+             await syncProfileToSupabase(resolved);
+             await cacheUserInDexie(resolved);
+             setCurrentUser(resolved as any);
           }
         } catch (dbError) {
           console.warn("Firestore error during login (quota exceeded?):", dbError);
-          // Fallback to memory state if DB is unreachable
-          setCurrentUser({ 
+          const supaProf = await fetchProfileSmart(userCredential.user.uid);
+          const resolved = supaProf || { 
             id: userCredential.user.uid, 
-            username: username.split('@')[0], 
-            email: username, 
-            display_name: username.split('@')[0] 
-          } as any);
+            username: trimmedInput.split('@')[0].toLowerCase(), 
+            email: trimmedInput, 
+            display_name: trimmedInput.split('@')[0],
+            created_at: new Date().toISOString()
+          };
+          await syncProfileToSupabase(resolved);
+          await cacheUserInDexie(resolved);
+          setCurrentUser(resolved as any);
           toast.success("Logged in, but some data might be delayed (database busy).");
         }
         
@@ -138,43 +169,66 @@ const Login: React.FC = () => {
         return;
       }
 
-      // If username provided, we must lookup in Firestore
-      let querySnapshot;
+      // Username lookup: Firestore first, Supabase fallback
+      const usernameLower = trimmedInput.toLowerCase();
+      let profileId = '';
+      let profileData: any = null;
+
       try {
-        const q = query(collection(db, 'profiles'), where('username', '==', username.toLowerCase()));
-        querySnapshot = await getDocs(q);
+        const q = query(collection(db, 'profiles'), where('username', '==', usernameLower));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          profileId = querySnapshot.docs[0].id;
+          profileData = querySnapshot.docs[0].data();
+        }
       } catch (dbError) {
-        console.error("Firestore lookup failed:", dbError);
-        setError('Database is too busy (quota limit). Please log in using your Email address instead.');
-        setLoading(false);
-        return;
+        console.warn("Firestore username lookup failed, checking Supabase:", dbError);
+      }
+
+      if (!profileData) {
+        try {
+          const { data: supaMatch } = await supabase
+            .from('profiles')
+            .select('*')
+            .ilike('username', usernameLower)
+            .limit(1)
+            .maybeSingle();
+          if (supaMatch) {
+            profileId = supaMatch.id;
+            profileData = supaMatch;
+          }
+        } catch (supaErr) {
+          console.warn("Supabase username lookup error:", supaErr);
+        }
       }
        
-      if (querySnapshot.empty) {
+      if (!profileData || !profileId) {
         setError('User not found');
         setLoading(false);
         return;
       }
        
-      const profileDoc = querySnapshot.docs[0];
-      const profileData = profileDoc.data();
-       
-      if (profileData.password === password || profileData.email) {
-        if (profileData.email) {
-           await signInWithEmailAndPassword(auth, profileData.email, password);
-        } else {
-           setCurrentUser({ id: profileDoc.id, ...profileData } as any);
+      const loginEmail = profileData.email || `${profileData.username}@nextmedia.app`;
+
+      if (profileData.password === password || loginEmail) {
+        if (loginEmail) {
+           await signInWithEmailAndPassword(auth, loginEmail, password);
         }
+
+        const fullProfile = { id: profileId, ...profileData };
+        await syncProfileToSupabase(fullProfile);
+        await cacheUserInDexie(fullProfile);
+        setCurrentUser(fullProfile as any);
         
         try {
           const saved = localStorage.getItem('next_saved_accounts');
           let accounts = saved ? JSON.parse(saved) : [];
           if (!Array.isArray(accounts)) accounts = [];
           const newAcc = {
-            id: profileDoc.id,
+            id: profileId,
             username: profileData.username,
             display_name: profileData.display_name,
-            email: profileData.email || `${profileData.username}@nextmedia.app`,
+            email: loginEmail,
             password: password,
             avatar_url: profileData.avatar_url || ''
           };

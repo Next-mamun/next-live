@@ -29,8 +29,8 @@ export const getDynamicIceConfig = () => {
   ];
 
   return {
-    iceServers: isIOS ? heavyIce : fastIce,
-    iceCandidatePoolSize: isIOS ? 10 : 2
+    iceServers: heavyIce,
+    iceCandidatePoolSize: isIOS ? 10 : 4
   };
 };
 

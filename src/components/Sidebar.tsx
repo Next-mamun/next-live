@@ -6,9 +6,7 @@ import { Users, Settings, UserCircle, Home, MessageCircle, BookOpen, Tv, Camera 
 import { useAuth } from '@/contexts/AuthContext';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { db } from '../lib/firebase';
-import { collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { useQueryClient } from '@tanstack/react-query';
 
 const SidebarItem = React.memo<{ icon: React.ReactNode, label: string | React.ReactNode, to: string, badge?: number, onClick?: () => void }>(({ icon, label, to, badge, onClick }) => {
   const location = useLocation();
@@ -38,6 +36,7 @@ const Sidebar: React.FC = () => {
     if (!currentUser) return 0;
     const validMsgs = messages.filter(msg => {
       if (msg.is_read !== false) return false;
+      if (msg.receiver_id !== currentUser.id || msg.sender_id === currentUser.id) return false;
       if (msg.deleted_for_everyone || (msg.deleted_for || []).includes(currentUser.id)) return false;
       return true;
     });
@@ -56,7 +55,7 @@ const Sidebar: React.FC = () => {
             {currentUser?.is_verified && <VerifiedBadge />}
           </div>
         } 
-        to={`/profile/${currentUser?.username}`}
+        to={`/profile/${currentUser?.username || currentUser?.id}`}
       />
       <SidebarItem icon={<Home size={24} />} label="Home" to="/" />
       <SidebarItem icon={<Users size={24} />} label="Friends" to="/friends" />

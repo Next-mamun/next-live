@@ -1,9 +1,23 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   BookOpen, AlertCircle, Code, ChevronLeft, Play, ExternalLink, Camera, 
-  RefreshCw, Download, RotateCcw, Video, StopCircle, GraduationCap, Award, 
-  Maximize2, Minimize2, Sparkles, X, Check, FlipHorizontal
+  RefreshCw, Download, RotateCcw, StopCircle, GraduationCap, Award, 
+  Maximize2, Minimize2, Sparkles, X, Check
 } from 'lucide-react';
+import { toast } from 'sonner';
+
+const getSupportedVideoMimeType = (): string => {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+  const candidates = [
+    'video/webm;codecs=vp8,opus',
+    'video/webm;codecs=vp9,opus',
+    'video/webm',
+    'video/mp4',
+  ];
+  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+};
 
 // Safe pushState to prevent DOMException / SecurityError crashes in iframes & WebViews
 const safePushState = (data: any) => {
@@ -104,11 +118,14 @@ const Lab: React.FC = () => {
       // 1. Android App WebView: Top-level full page navigation so Cloudflare/anti-bot verification works without iframe blocking
       window.location.href = targetUrl;
     } else {
-      // 2. Regular browser: open official site in a new tab
-      const win = window.open(targetUrl, '_blank', 'noopener,noreferrer');
-      if (!win) {
-        window.location.href = targetUrl;
-      }
+      // 2. Regular browser: open official site in a new tab via anchor link
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
   }, []);
 
@@ -123,14 +140,13 @@ const Lab: React.FC = () => {
 </head>
 <body>
   <h1>Hello Lab!</h1>
-  <p>Write your HTML, CSS, and JS here.</p>
-  <button onclick="alert('Running offline!')">Test JavaScript</button>
+  <p id="demo-status">Write your HTML, CSS, and JS here.</p>
+  <button onclick="document.getElementById('demo-status').textContent = 'Running offline!'">Test JavaScript</button>
 </body>
 </html>`);
   const [runCode, setRunCode] = useState(htmlCode);
 
   // Camera Lab state (TikTok style)
-  const [stream, setStream] = useState<MediaStream | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [cameraFilter, setCameraFilter] = useState('none');
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
@@ -138,10 +154,13 @@ const Lab: React.FC = () => {
   const [cameraMode, setCameraMode] = useState<'photo' | 'video'>('photo');
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [recordedVideoExt, setRecordedVideoExt] = useState<'webm' | 'mp4'>('webm');
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordedUrlRef = useRef<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<any>(null);
@@ -149,17 +168,30 @@ const Lab: React.FC = () => {
   const activeFilter = CAMERA_FILTERS.find(f => f.id === cameraFilter);
   const activeFilterCss = activeFilter?.css || '';
 
+  const stopActiveStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  const clearRecordedVideo = useCallback(() => {
+    if (recordedUrlRef.current && recordedUrlRef.current.startsWith('blob:')) {
+      URL.revokeObjectURL(recordedUrlRef.current);
+      recordedUrlRef.current = null;
+    }
+    setRecordedVideoUrl(null);
+  }, []);
+
   const startCamera = useCallback(async () => {
     try {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
+      stopActiveStream();
       const constraints: MediaStreamConstraints = {
         video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: true
       };
       const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-      setStream(newStream);
+      streamRef.current = newStream;
       setHasCameraPermission(true);
       if (videoRef.current) {
         videoRef.current.srcObject = newStream;
@@ -168,7 +200,7 @@ const Lab: React.FC = () => {
     } catch (err) {
       try {
         const videoOnly = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
-        setStream(videoOnly);
+        streamRef.current = videoOnly;
         setHasCameraPermission(true);
         if (videoRef.current) {
           videoRef.current.srcObject = videoOnly;
@@ -178,25 +210,35 @@ const Lab: React.FC = () => {
         setHasCameraPermission(false);
       }
     }
-  }, [facingMode]);
+  }, [facingMode, stopActiveStream]);
 
   useEffect(() => {
     if (activeTab === 'camera') {
       startCamera();
     } else {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        setStream(null);
+      stopActiveStream();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
-      if (timerRef.current) clearInterval(timerRef.current);
     }
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
+      stopActiveStream();
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
-      if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [activeTab, facingMode]);
+  }, [activeTab, startCamera, stopActiveStream]);
+
+  useEffect(() => {
+    return () => {
+      if (recordedUrlRef.current && recordedUrlRef.current.startsWith('blob:')) {
+        URL.revokeObjectURL(recordedUrlRef.current);
+        recordedUrlRef.current = null;
+      }
+    };
+  }, []);
 
   const toggleCamera = () => {
     setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
@@ -224,29 +266,41 @@ const Lab: React.FC = () => {
   };
 
   const startRecording = () => {
-    if (!stream) return;
+    const activeStream = streamRef.current;
+    if (!activeStream) return;
     recordedChunksRef.current = [];
     try {
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+      const mimeType = getSupportedVideoMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(activeStream, { mimeType })
+        : new MediaRecorder(activeStream);
+      const outputType = mimeType || recorder.mimeType || 'video/webm';
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           recordedChunksRef.current.push(e.data);
         }
       };
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, { type: outputType });
+        if (recordedUrlRef.current && recordedUrlRef.current.startsWith('blob:')) {
+          URL.revokeObjectURL(recordedUrlRef.current);
+        }
         const videoUrl = URL.createObjectURL(blob);
+        recordedUrlRef.current = videoUrl;
+        setRecordedVideoExt(outputType.includes('mp4') ? 'mp4' : 'webm');
         setRecordedVideoUrl(videoUrl);
       };
       recorder.start(100);
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       setRecordingSeconds(0);
+      if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         setRecordingSeconds(s => s + 1);
       }, 1000);
     } catch (e) {
       console.error('Recording start failed:', e);
+      toast.error('Video recording is not supported on this device/browser.');
     }
   };
 
@@ -277,7 +331,7 @@ const Lab: React.FC = () => {
                 onClick={() => {
                   handleSelectTab('menu');
                   setCapturedPhoto(null);
-                  setRecordedVideoUrl(null);
+                  clearRecordedVideo();
                 }}
                 className="p-2 -ml-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-1 text-gray-700 dark:text-gray-300"
                 title="Back to Lab Menu"
@@ -640,7 +694,7 @@ const Lab: React.FC = () => {
                 onClick={() => {
                   handleSelectTab('menu');
                   setCapturedPhoto(null);
-                  setRecordedVideoUrl(null);
+                  clearRecordedVideo();
                 }}
                 className="w-10 h-10 rounded-full bg-black/50 backdrop-blur-md border border-white/15 text-white flex items-center justify-center hover:bg-black/70 transition-all active:scale-95"
                 title="Back to Lab Menu"
@@ -818,7 +872,7 @@ const Lab: React.FC = () => {
                   <button
                     onClick={() => {
                       setCapturedPhoto(null);
-                      setRecordedVideoUrl(null);
+                      clearRecordedVideo();
                       startCamera();
                     }}
                     className="flex-1 flex items-center justify-center gap-2 py-3.5 px-5 bg-white/15 hover:bg-white/25 backdrop-blur-md text-white rounded-2xl text-xs font-bold transition-all border border-white/20 active:scale-95 shadow-lg"
@@ -829,7 +883,7 @@ const Lab: React.FC = () => {
 
                   <a
                     href={capturedPhoto || recordedVideoUrl || '#'}
-                    download={capturedPhoto ? `next_photo_${Date.now()}.jpg` : `next_video_${Date.now()}.webm`}
+                    download={capturedPhoto ? `next_photo_${Date.now()}.jpg` : `next_video_${Date.now()}.${recordedVideoExt}`}
                     className="flex-1 flex items-center justify-center gap-2 py-3.5 px-5 bg-[#1877F2] hover:bg-blue-600 text-white rounded-2xl text-xs font-bold transition-all shadow-lg active:scale-95"
                   >
                     <Download size={16} />

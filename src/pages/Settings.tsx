@@ -14,7 +14,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useUpload } from '@/contexts/UploadContext';
 
 import { db, auth } from '../lib/firebase';
-import { collection, query, where, getDocs, deleteDoc, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { supabase } from '@/lib/supabase';
+import { syncProfileToSupabase, fetchProfileSmart, fetchProfilesBatchSmart, isUsernameTaken, cacheUserInDexie, migrateUserFriendshipsOnce, fetchUserFriendshipsSmart, deleteFriendshipSmart } from '@/lib/profileSync';
 import { updatePassword, signOut, signInWithEmailAndPassword } from 'firebase/auth';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
@@ -45,28 +47,26 @@ const BlockedUsersSection: React.FC = () => {
   const queryClient = useQueryClient();
 
   const { data: blockedUsers = [], isLoading } = useQuery({
-    queryKey: ['blockedUsers'],
+    queryKey: ['blockedUsers', currentUser?.id],
     queryFn: async () => {
-      if (!currentUser) return [];
-      
-      const q = query(
-        collection(db, 'friendships'),
-        where('sender_id', '==', currentUser.id),
-        where('status', '==', 'blocked')
-      );
-      const snap = await getDocs(q);
-      
-      const profiles = await Promise.all(snap.docs.map(async d => {
-        const f = d.data();
-        const pDoc = await getDoc(doc(db, 'profiles', f.receiver_id));
-        if (pDoc.exists()) {
-           return { id: pDoc.id, ...pDoc.data(), friendshipId: d.id };
-        }
-        return null;
-      }));
+      if (!currentUser?.id) return [];
+      migrateUserFriendshipsOnce(currentUser.id).catch(() => {});
 
-      // Filter out nulls and duplicates
-      return Array.from(new Map(profiles.filter(Boolean).map((p: any) => [p.id, p])).values());
+      const { rows } = await fetchUserFriendshipsSmart(currentUser.id);
+      const blockedRows = rows.filter((r: any) => r.status === 'blocked' && r.sender_id === currentUser.id);
+      if (blockedRows.length === 0) return [];
+
+      const receiverIds = blockedRows.map((r: any) => r.receiver_id).filter(Boolean);
+      const profMap = await fetchProfilesBatchSmart(receiverIds);
+
+      const profiles = blockedRows
+        .map((r: any) => {
+          const p = profMap.get(r.receiver_id);
+          return p ? { ...p, friendshipId: r.id } : null;
+        })
+        .filter(Boolean);
+
+      return Array.from(new Map(profiles.map((p: any) => [p.id, p])).values());
     },
     enabled: !!currentUser,
   });
@@ -75,11 +75,13 @@ const BlockedUsersSection: React.FC = () => {
     if (!currentUser) return;
     if (confirm('Are you sure you want to unblock this user?')) {
       try {
-        await deleteDoc(doc(db, 'friendships', user.friendshipId));
+        await deleteFriendshipSmart(user.friendshipId);
         queryClient.invalidateQueries({ queryKey: ['blockedUsers'] });
+        queryClient.invalidateQueries({ queryKey: ['friends'] });
         queryClient.invalidateQueries({ queryKey: ['blockStatus'] });
         queryClient.invalidateQueries({ queryKey: ['isBlockedByMe'] });
-      } catch(e) {
+        toast.success('User unblocked.');
+      } catch (e) {
         toast.error('Failed to unblock user.');
       }
     }
@@ -236,9 +238,9 @@ const Settings: React.FC = () => {
 
   const fetchProfile = async () => {
     if (!currentUser?.id) return;
-    const docSnap = await getDoc(doc(db, 'profiles', currentUser.id));
-    if (docSnap.exists()) {
-       setProfile(docSnap.data());
+    const data = await fetchProfileSmart(currentUser.id);
+    if (data) {
+      setProfile(data);
     }
   };
 
@@ -479,31 +481,42 @@ const Settings: React.FC = () => {
   const handleSave = async () => {
     if (!editingField || !currentUser) return;
     setIsSaving(true);
-    
+
     try {
       if (editingField === 'password') {
         const user = auth.currentUser;
-        if (!user) throw new Error("Not logged in");
+        if (!user) throw new Error('Not logged in');
         await updatePassword(user, editValue);
-        alert('Password updated successfully!');
+        toast.success('Password updated successfully!');
       } else {
-        const updates = { [editingField]: editValue };
+        const normalizedValue = editingField === 'username' ? editValue.trim().toLowerCase() : editValue.trim();
+        if (!normalizedValue) {
+          throw new Error(`${editingField} cannot be empty.`);
+        }
+
+        if (editingField === 'username' && normalizedValue !== (currentUser.username || '').toLowerCase()) {
+          if (!/^[a-zA-Z0-9._]{3,30}$/.test(normalizedValue)) {
+            throw new Error('Username must be 3-30 characters (letters, numbers, . or _).');
+          }
+          const taken = await isUsernameTaken(normalizedValue);
+          if (taken) {
+            throw new Error('This username is already taken.');
+          }
+        }
+
+        const updates = { [editingField]: normalizedValue };
         await updateDoc(doc(db, 'profiles', currentUser.id), updates);
-        
-        // Update local profile state
-        setProfile((prev: any) => ({ ...prev, ...updates }));
-        
-        // Update currentUser globally
+
         const updatedData = { ...currentUser, ...updates };
+        await syncProfileToSupabase(updatedData);
+        await cacheUserInDexie(updatedData);
+
+        setProfile((prev: any) => ({ ...prev, ...updates }));
         setCurrentUser(updatedData);
-        
-        // Update IndexedDB to reflect globally
-        import('@/lib/dexie').then(({ localDB }) => {
-           localDB.users.put(updatedData);
-        });
+        toast.success('Profile updated!');
       }
     } catch (error: any) {
-      alert(error.message || 'An error occurred');
+      toast.error(error.message || 'An error occurred');
     } finally {
       setIsSaving(false);
       setEditingField(null);
@@ -896,11 +909,12 @@ const Settings: React.FC = () => {
                               userId: currentUser.id,
                               payload: { avatar_url: '' },
                               onSuccess: async () => {
-                                const docSnap = await getDoc(doc(db, 'profiles', currentUser.id));
-                                if (docSnap.exists()) {
-                                  const fresh = docSnap.data();
+                                const fresh = await fetchProfileSmart(currentUser.id);
+                                if (fresh) {
+                                  await syncProfileToSupabase(fresh);
+                                  await cacheUserInDexie(fresh);
                                   setProfile(fresh);
-                                  setCurrentUser({ id: docSnap.id, ...fresh } as any);
+                                  setCurrentUser(fresh as any);
                                   toast.success('Profile photo updated!');
                                 }
                               }

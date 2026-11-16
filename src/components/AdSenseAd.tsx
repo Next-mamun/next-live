@@ -89,8 +89,7 @@ const AdSenseAd: React.FC<AdSenseAdProps> = ({ slotType = 'infeed', className = 
 
   return (
     <div
-      className={`transition-all duration-300 ${adLoaded ? 'block mb-4' : 'hidden'} ${className}`}
-      style={{ display: adLoaded ? 'block' : 'none' }}
+      className={`transition-all duration-300 ${adLoaded ? 'block mb-4' : 'w-full h-0 overflow-hidden opacity-0 pointer-events-none m-0 p-0'} ${className}`}
     >
       <div className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden p-3 flex flex-col items-center justify-center">
         <div className="w-full flex items-center justify-between mb-2 px-1">

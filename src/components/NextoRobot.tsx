@@ -188,7 +188,6 @@ const NextoRobot: React.FC = () => {
                 <iframe 
                   src={targetUrl}
                   className="w-full h-full border-none min-h-[600px]"
-                  style={{ display: isLoading && !hasOpenedOnce ? 'none' : 'block' }}
                   title="Nexto Window"
                   onLoad={() => setIsLoading(false)}
                   allow="microphone *; camera *; display-capture *; geolocation *; autoplay *; encrypted-media *"
@@ -198,17 +197,6 @@ const NextoRobot: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Hidden Iframe for Caching when window is closed */}
-      {!showWindow && hasOpenedOnce && (
-        <div className="hidden">
-          <iframe 
-             src={targetUrl} 
-             title="Nexto Cache" 
-             allow="microphone *; camera *; display-capture *; geolocation *; autoplay *; encrypted-media *" 
-          />
-        </div>
-      )}
     </>
   );
 };

@@ -1,8 +1,7 @@
-import { addDoc, collection, doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { addDoc, collection } from 'firebase/firestore';
 import { db } from './firebase';
 import { supabase } from './supabase';
 import { localDB, saveLocalConversation } from './dexie';
-import { useGlobalStore } from '@/store/useGlobalStore';
 
 const DB_SWITCH_KEY = 'next_media_db_fallback';
 const DB_SWITCH_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
@@ -92,17 +91,25 @@ export const dualWritePost = async (postData: any) => {
   return postRef || { id: 'supa-' + Date.now().toString() };
 };
 
-export const dualWriteMessage = async (messageData: any) => {
+/**
+ * Writes a chat message directly to Dexie (instant local cache) and Supabase `messages` (100% Supabase, no Firestore).
+ */
+export const writeSupabaseMessage = async (messageData: any) => {
   const msgRefId = messageData.id || crypto.randomUUID();
-  
+
   let createdAtStr = new Date().toISOString();
   if (messageData.created_at && typeof messageData.created_at === 'string') {
     createdAtStr = messageData.created_at;
   } else if (messageData.created_at?.toDate) {
     createdAtStr = messageData.created_at.toDate().toISOString();
+  } else if (typeof messageData.local_created_at === 'string') {
+    createdAtStr = messageData.local_created_at;
   }
 
-  const chatId = messageData.chat_id || messageData.chatId || [messageData.sender_id, messageData.receiver_id].sort().join('_');
+  const isGroup = typeof messageData.receiver_id === 'string' && messageData.receiver_id.startsWith('group_');
+  const chatId = isGroup
+    ? messageData.receiver_id
+    : (messageData.chat_id || messageData.chatId || [messageData.sender_id, messageData.receiver_id].sort().join('_'));
 
   let textContent = messageData.text || '';
   if (!textContent && messageData.content) {
@@ -123,9 +130,13 @@ export const dualWriteMessage = async (messageData: any) => {
   const payload: any = {
     ...messageData,
     id: msgRefId,
-    text: textContent || messageData.text || messageData.content || '',
+    text: textContent || messageData.text || (typeof messageData.content === 'string' ? messageData.content : ''),
+    content: messageData.content || textContent || '',
     chatId: chatId,
     chat_id: chatId,
+    is_read: Boolean(messageData.is_read),
+    deleted_for: Array.isArray(messageData.deleted_for) ? messageData.deleted_for : [],
+    deleted_for_everyone: Boolean(messageData.deleted_for_everyone),
     created_at: createdAtStr,
     synced: true
   };
@@ -148,46 +159,30 @@ export const dualWriteMessage = async (messageData: any) => {
     console.warn("Dexie local write error:", err);
   }
 
-  // 2. True Dual-Write: Persist to Firebase Firestore AND Supabase simultaneously
-  // Firebase Firestore write (Primary, persistent source of truth across all clients)
-  const writeFirebase = async () => {
-    try {
-      const msgRef = doc(db, 'messages', msgRefId);
-      const firebasePayload = { ...payload };
-      delete firebasePayload.synced; // Clean up before sending to FB
-      await setDoc(msgRef, firebasePayload);
-      console.log(`✅ [Firebase Message Success]: ${msgRefId}`);
-    } catch (firebaseErr) {
-      console.error("Firebase message write error:", firebaseErr);
-    }
+  // 2. Persist 100% to Supabase `messages`
+  const supabaseRow: Record<string, any> = {
+    id: msgRefId,
+    sender_id: payload.sender_id,
+    receiver_id: payload.receiver_id,
+    text: payload.text,
+    content: payload.content,
+    chat_id: chatId,
+    is_read: payload.is_read,
+    media_url: payload.media_url || null,
+    media_type: payload.media_type || null,
+    deleted_for: payload.deleted_for,
+    deleted_for_everyone: payload.deleted_for_everyone,
+    created_at: createdAtStr
   };
 
-  // Supabase write (Realtime broadcast & query sync)
-  const writeSupabase = async () => {
-    try {
-      const { error } = await supabase.from('messages').insert({
-        id: msgRefId,
-        sender_id: payload.sender_id,
-        receiver_id: payload.receiver_id,
-        text: payload.text,
-        content: payload.content || payload.text,
-        chat_id: chatId,
-        is_read: payload.is_read || false,
-        media_url: payload.media_url || null,
-        media_type: payload.media_type || null,
-        created_at: createdAtStr
-      });
-      if (error) throw error;
-      console.log(`✅ [Supabase Message Success]: ${msgRefId}`);
-    } catch (error) {
-      console.warn('Supabase message insert warning:', error);
-      useGlobalStore.getState().triggerFirebaseFallback();
-    }
-  };
-
-  // Run both writes in parallel for guaranteed persistence across all devices
-  await Promise.allSettled([writeFirebase(), writeSupabase()]);
+  const { error } = await supabase.from('messages').insert(supabaseRow);
+  if (error) {
+    console.error('Supabase message insert error:', error);
+    throw error;
+  }
 
   return { id: msgRefId };
 };
 
+// Backwards-compatible export alias (now 100% Supabase + Dexie)
+export const dualWriteMessage = writeSupabaseMessage;

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 
 // Singleton model promise to prevent multiple reloads and memory leaks
 let modelPromise: Promise<nsfwjs.NSFWJS> | null = null;
+let isModelReady = false;
 
 // Concise, standard message without lengthy clutter
 export const ADULT_BLOCKED_MESSAGE = 'Adult content is not allowed. Please upload appropriate content.';
@@ -14,10 +15,17 @@ export const ADULT_BLOCKED_MESSAGE = 'Adult content is not allowed. Please uploa
 export async function getNSFWModel(): Promise<nsfwjs.NSFWJS> {
   if (!modelPromise) {
     modelPromise = (async () => {
-      await tf.ready();
-      // Load bundled MobileNetV2 for optimal speed and accuracy
-      const model = await nsfwjs.load();
-      return model;
+      try {
+        await tf.ready();
+        // Load bundled MobileNetV2 for optimal speed and accuracy
+        const model = await nsfwjs.load();
+        isModelReady = true;
+        return model;
+      } catch (err) {
+        modelPromise = null;
+        isModelReady = false;
+        throw err;
+      }
     })();
   }
   return modelPromise;
@@ -130,9 +138,9 @@ async function scanImageBlob(blob: Blob | File): Promise<ModerationResult> {
       img.src = objectUrl;
     });
 
-    // 2-second maximum safety timeout: never block legitimate user uploads if scanning stalls
+    const timeoutMs = isModelReady ? 2500 : 8000;
     const timeoutPromise = new Promise<ModerationResult>((resolve) => {
-      setTimeout(() => resolve({ isSafe: true }), 2000);
+      setTimeout(() => resolve({ isSafe: true }), timeoutMs);
     });
 
     return await Promise.race([scanPromise, timeoutPromise]);
@@ -182,8 +190,9 @@ async function scanVideoFile(file: File | Blob): Promise<ModerationResult> {
       video.src = objectUrl;
     });
 
+    const timeoutMs = isModelReady ? 2500 : 8000;
     const timeoutPromise = new Promise<ModerationResult>((resolve) => {
-      setTimeout(() => resolve({ isSafe: true }), 2500);
+      setTimeout(() => resolve({ isSafe: true }), timeoutMs);
     });
 
     return await Promise.race([scanPromise, timeoutPromise]);

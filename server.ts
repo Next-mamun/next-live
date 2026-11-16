@@ -1,20 +1,69 @@
 import express from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import admin from 'firebase-admin';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import fs from 'fs';
 import { createClient } from '@supabase/supabase-js';
 import { Redis } from '@upstash/redis';
+import { GoogleGenAI } from '@google/genai';
 
+function getValidSupabaseUrl(): string {
+  let raw =
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    'https://zdrubxtuxotqyasmsuqz.supabase.co';
+
+  if (!raw || typeof raw !== 'string') {
+    return 'https://zdrubxtuxotqyasmsuqz.supabase.co';
+  }
+  raw = raw.trim();
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
+  }
+  return `https://${raw}${raw.includes('.') ? '' : '.supabase.co'}`;
+}
+
+function getFirebaseDatabaseId(): string | undefined {
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      if (cfg.firestoreDatabaseId && cfg.firestoreDatabaseId !== '(default)') {
+        return cfg.firestoreDatabaseId;
+      }
+    }
+  } catch (e) {
+    console.warn('Could not read firebase-applet-config.json:', e);
+  }
+  return undefined;
+}
+
+function getAdminFirestore() {
+  const dbId = getFirebaseDatabaseId();
+  return dbId ? getFirestore(admin.app(), dbId) : admin.firestore();
+}
+
+function getServerRedis() {
+  const redisUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.VITE_UPSTASH_REDIS_REST_URL || 'https://relative-oyster-81682.upstash.io';
+  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.VITE_UPSTASH_REDIS_REST_TOKEN || 'gQAAAAAAAT8SAAIgcDFkZTBkNjg1ZmE2NzE0NjFkYjUzOGU3MTRkYWM2YzgwZQ';
+  return new Redis({ url: redisUrl, token: redisToken });
+}
+
+function getServerAiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+  });
+}
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   // Initialize Firebase Admin
-  // Use service account from env if available, otherwise it might fail to send notifications
-  // but we can at least start the server.
   const serviceAccountVar = process.env.FIREBASE_SERVICE_ACCOUNT;
   let serviceAccount = null;
 
@@ -35,26 +84,34 @@ async function startServer() {
     }
   }
 
+  let firebaseProjectId: string | undefined;
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      firebaseProjectId = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).projectId;
+    }
+  } catch {}
+
   if (serviceAccount) {
     try {
       admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
+        credential: admin.credential.cert(serviceAccount),
+        ...(firebaseProjectId ? { projectId: firebaseProjectId } : {})
       });
       console.log('Firebase Admin initialized with service account.');
     } catch (e) {
       console.error('Failed to initialize Firebase admin:', e);
     }
   } else {
-    // Try to check if we are in environment where default credentials work
-    console.warn('Service account not found. Push notifications may fail.');
+    console.warn('Service account not found. Using default credentials.');
     try {
-        admin.initializeApp();
+      admin.initializeApp(firebaseProjectId ? { projectId: firebaseProjectId } : undefined);
     } catch (e) {
-        console.error('Default Admin initialization failed:', e);
+      console.error('Default Admin initialization failed:', e);
     }
   }
 
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
 
   // API Routes
   app.get('/api/health', async (req, res) => {
@@ -70,7 +127,7 @@ async function startServer() {
 
     // 1. Check Supabase
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://zdrubxtuxotqyasmsuqz.supabase.co';
+      const supabaseUrl = getValidSupabaseUrl();
       const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkcnVieHR1eG90cXlhc21zdXF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MjYwMjUsImV4cCI6MjA4NzAwMjAyNX0.bmabhbjLx_ZUmW0wJRx9fUY8Noiv9dz8i-pzWe-PEyI';
       const supabase = createClient(supabaseUrl, supabaseAnonKey);
       const { error } = await supabase.from('messages').select('id').limit(1);
@@ -85,9 +142,7 @@ async function startServer() {
 
     // 2. Check Upstash Redis
     try {
-      const redisUrl = process.env.VITE_UPSTASH_REDIS_REST_URL || 'https://relative-oyster-81682.upstash.io';
-      const redisToken = process.env.VITE_UPSTASH_REDIS_REST_TOKEN || 'gQAAAAAAAT8SAAIgcDFkZTBkNjg1ZmE2NzE0NjFkYjUzOGU3MTRkYWM2YzgwZQ';
-      const redis = new Redis({ url: redisUrl, token: redisToken });
+      const redis = getServerRedis();
       const ping = await redis.ping();
       if (ping === 'PONG') {
         status.redis = 'ONLINE';
@@ -100,7 +155,7 @@ async function startServer() {
 
     // 3. Check Firebase Admin Connection
     try {
-      const db = admin.firestore();
+      const db = getAdminFirestore();
       await db.listCollections();
       status.firebase = 'ONLINE';
     } catch (err: any) {
@@ -147,6 +202,89 @@ async function startServer() {
       services: status,
       errors: Object.keys(errors).length > 0 ? errors : undefined,
     });
+  });
+
+  // Server-side Gemini AI Endpoints
+  app.post('/api/ai/enhance-post', async (req, res) => {
+    const { text } = req.body || {};
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'text is required' });
+    }
+    const ai = getServerAiClient();
+    if (!ai) {
+      return res.json({ text });
+    }
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Enhance the following social media post to make it more engaging and friendly, but keep it concise: "${text}"`,
+      });
+      return res.json({ text: response.text || text });
+    } catch (error: any) {
+      console.error('Gemini enhance-post error:', error?.message || error);
+      return res.json({ text });
+    }
+  });
+
+  app.post('/api/ai/generate-bio', async (req, res) => {
+    const { username } = req.body || {};
+    const safeName = typeof username === 'string' && username.trim() ? username.trim() : 'friend';
+    const ai = getServerAiClient();
+    if (!ai) {
+      return res.json({ bio: 'Just joined Next!' });
+    }
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Create a funny and creative one-sentence bio for a user named ${safeName} for a new social media app called Next.`,
+      });
+      return res.json({ bio: response.text || 'Just joined Next!' });
+    } catch (error: any) {
+      console.error('Gemini generate-bio error:', error?.message || error);
+      return res.json({ bio: 'Exploring the world of Next.' });
+    }
+  });
+
+  // Server-side Upstash Redis Cache Proxy (keeps Redis token off the client)
+  app.post('/api/cache', async (req, res) => {
+    const { action, key, keys, value, ttl } = req.body || {};
+    try {
+      const redis = getServerRedis();
+      if (action === 'get' && typeof key === 'string') {
+        const result = await redis.get(key);
+        return res.json({ result });
+      }
+      if (action === 'set' && typeof key === 'string') {
+        await redis.set(key, value);
+        return res.json({ success: true });
+      }
+      if (action === 'setex' && typeof key === 'string') {
+        await redis.setex(key, Number(ttl) || 60, value);
+        return res.json({ success: true });
+      }
+      if (action === 'del') {
+        const targetKeys = Array.isArray(keys) ? keys : (typeof key === 'string' ? [key] : []);
+        if (targetKeys.length > 0) {
+          await redis.del(...targetKeys);
+        }
+        return res.json({ success: true });
+      }
+      if (action === 'keys' && typeof key === 'string') {
+        const result = await redis.keys(key);
+        return res.json({ result });
+      }
+      if (action === 'invalidate-posts') {
+        const matched = await redis.keys('posts_cache_*');
+        if (matched.length > 0) {
+          await redis.del(...matched);
+        }
+        return res.json({ success: true, cleared: matched.length });
+      }
+      return res.status(400).json({ error: 'Invalid cache action' });
+    } catch (err: any) {
+      console.warn('Cache proxy error:', err?.message || err);
+      return res.status(200).json({ result: null, success: false });
+    }
   });
 
   app.post('/api/send-notification', async (req, res) => {
@@ -224,17 +362,16 @@ async function startServer() {
       if (isNotRegistered) {
         console.log(`[FCM] Token no longer registered or expired (${token.substring(0, 10)}...). Removing stale token.`);
         
-        // Auto-cleanup stale token in Firestore so subsequent calls won't fail
         try {
-          const firestore = admin.firestore();
+          const firestore = getAdminFirestore();
           if (userId) {
             firestore.collection('profiles').doc(userId).update({
-              fcm_token: admin.firestore.FieldValue.delete()
+              fcm_token: FieldValue.delete()
             }).catch(() => {});
           } else {
             firestore.collection('profiles').where('fcm_token', '==', token).get().then(snap => {
               snap.forEach(d => {
-                d.ref.update({ fcm_token: admin.firestore.FieldValue.delete() }).catch(() => {});
+                d.ref.update({ fcm_token: FieldValue.delete() }).catch(() => {});
               });
             }).catch(() => {});
           }

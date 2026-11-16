@@ -73,6 +73,39 @@ html, body {
   overscroll-behavior: none;
 }
 
+#root {
+  position: fixed !important;
+  inset: 0 !important;
+  margin: 0;
+  padding: 0;
+  width: 100% !important;
+  max-height: 100dvh !important;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+.app-viewport-shell {
+  position: fixed !important;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  max-height: 100dvh !important;
+  overflow: hidden !important;
+}
+
+.app-inner-shell {
+  min-height: 0 !important;
+  max-height: 100% !important;
+  height: 100%;
+}
+
+.scroll-container {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
+
 .h-screen {
   height: 100vh;
 }

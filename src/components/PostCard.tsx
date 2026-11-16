@@ -46,11 +46,8 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
   
   const cardRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-    let unmounted = false;
-    // Avoid N+1 Firebase read - rely on initialIsLiked or likes array if provided
-    if (initialIsLiked) setIsLiked(true);
-    return () => { unmounted = true; };
+  useEffect(() => {
+    setIsLiked(Boolean(initialIsLiked));
   }, [post.id, currentUser?.id, initialIsLiked]);
 
   const loadCommentsOnDemand = async () => {
@@ -146,18 +143,20 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       openAuthModal(() => handleLike(), 'Sign in to like this post and join the conversation');
       return;
     }
-    // Optimistic update
-    const newIsLiked = !isLiked;
+    // Optimistic update (capture previous state cleanly for deterministic rollback)
+    const prevLiked = Boolean(isLiked);
+    const prevCount = likesCount;
+    const prevLikes = Array.isArray(post.likes) ? post.likes : [];
+    const newIsLiked = !prevLiked;
     setIsLiked(newIsLiked);
-    const newLikesCount = newIsLiked ? likesCount + 1 : likesCount - 1;
-    setLikesCount(newLikesCount);
+    setLikesCount(Math.max(0, prevCount + (newIsLiked ? 1 : -1)));
     
     // Update global store
-    const { updatePostOptimistic } = (await import('@/store/useGlobalStore')).useGlobalStore.getState();
+    const { updatePostOptimistic } = useGlobalStore.getState();
     updatePostOptimistic(post.id, { 
       likes: newIsLiked 
-        ? [...(post.likes || []), { user_id: currentUser.id }] 
-        : (post.likes || []).filter((l: any) => l.user_id !== currentUser.id)
+        ? [...prevLikes, { user_id: currentUser.id }] 
+        : prevLikes.filter((l: any) => l.user_id !== currentUser.id)
     });
 
     if (newIsLiked) {
@@ -169,7 +168,7 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       const likeId = `${post.id}_${currentUser.id}`;
       const likeDocRef = doc(db, 'likes', likeId);
 
-      if (isLiked) {
+      if (prevLiked) {
         // Delete like using deterministic ID
         await deleteDoc(likeDocRef);
       } else {
@@ -213,9 +212,11 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       queryClient.invalidateQueries({ queryKey: ['posts'] });
       queryClient.invalidateQueries({ queryKey: ['userPosts'] });
     } catch (error) {
-      // Revert on failure
-      setIsLiked(isLiked);
-      setLikesCount(post.likes?.length || 0);
+      // Revert cleanly to pre-click state on failure
+      setIsLiked(prevLiked);
+      setLikesCount(prevCount);
+      updatePostOptimistic(post.id, { likes: prevLikes });
+      toast.error('Failed to update like');
       console.error("Failed to toggle like", error);
     }
   };
@@ -294,7 +295,11 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
         post_id: post.id, 
         user_id: currentUser.id, 
         content: commentText, 
-        created_at: newComment.created_at 
+        created_at: newComment.created_at,
+        author_name: currentUser.display_name || 'User',
+        author_username: currentUser.username || 'user',
+        author_avatar: currentUser.avatar_url || '',
+        author_verified: Boolean(currentUser.is_verified)
       });
 
       // Update with real Firestore ID
@@ -311,7 +316,7 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
       const { updatePostOptimistic } = useGlobalStore.getState();
       updatePostOptimistic(post.id, { 
         comment_count: (post.comment_count || 0) + 1,
-        comments: [...(post.comments || []), newComment]
+        comments: [...(post.comments || []), { ...newComment, id: docRef.id }]
       });
 
       if (post.user_id !== currentUser.id) {
@@ -349,6 +354,8 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
         queryClient.invalidateQueries({ queryKey: ['notifications', post.user_id] });
       }
     } catch (error) {
+      setLocalComments(prev => prev.filter(c => c.id !== newComment.id));
+      setCommentsCount(c => Math.max(0, c - 1));
       console.error("Failed to post comment", error);
       toast.error("Failed to send comment");
     }
@@ -423,10 +430,13 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
     }
   };
 
+  const resolvedMediaUrl = post.media_url || post.image_url || post.video_url || '';
+  const resolvedMediaType = post.media_type || (post.image_url ? 'image' : (post.video_url ? 'video' : 'text'));
+
   return (
-    <div ref={cardRef} data-post-id={post.id} style={{ contentVisibility: 'auto', containIntrinsicSize: '0 500px' }} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden transition-all">
+    <div ref={cardRef} data-post-id={post.id} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden transition-all">
       <div className="p-4 flex justify-between items-center">
-        <Link to={`/profile/${post.profiles?.username || 'unknown'}`} className="flex gap-3 hover:opacity-80 transition-opacity">
+        <Link to={`/profile/${post.profiles?.username || post.user_id || 'unknown'}`} className="flex gap-3 hover:opacity-80 transition-opacity">
           <ProfileAvatar userId={post.user_id} defaultAvatar={post.profiles?.avatar_url || post.profiles?.avatar} name={post.profiles?.display_name || post.profiles?.name} className="w-[40px] h-[40px] rounded-full object-cover border border-gray-200 dark:border-gray-800" />
           <div>
             <p className="font-bold text-[15px] text-gray-900 dark:text-white leading-tight flex items-center gap-2">
@@ -451,7 +461,7 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
                   onClick={async () => {
                     setShowMenu(false);
                     try {
-                      const { localDB } = require('@/lib/dexie');
+                      const { localDB } = await import('@/lib/dexie');
                       await localDB.saved_content.put({
                         id: post.id,
                         media_url: post.media_url || '',
@@ -501,14 +511,14 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
 
       </div>
       <p className="px-4 pb-3 text-[15px] text-gray-800 dark:text-gray-200 leading-relaxed font-medium">{post.content}</p>
-      {post.media_url && (
+      {resolvedMediaUrl && (
         <div className="bg-black flex items-center justify-center">
-          {post.media_url.includes('/embed/') || post.media_url.includes('plugins/video.php') ? (
-            <EmbedPlayer src={post.media_url} />
-          ) : post.media_type === 'image' ? (
-            <ZoomableImage src={post.media_url} className="w-full max-h-[600px] object-contain" referrerPolicy="no-referrer" />
+          {resolvedMediaUrl.includes('/embed/') || resolvedMediaUrl.includes('plugins/video.php') || resolvedMediaUrl.includes('youtube.com/watch') || resolvedMediaUrl.includes('youtu.be/') ? (
+            <EmbedPlayer src={resolvedMediaUrl} />
+          ) : resolvedMediaType === 'image' ? (
+            <ZoomableImage src={resolvedMediaUrl} className="w-full max-h-[600px] object-contain" referrerPolicy="no-referrer" />
           ) : (
-            <VideoPlayer src={post.media_url} className="w-full max-h-[600px]" />
+            <VideoPlayer src={resolvedMediaUrl} className="w-full max-h-[600px]" />
           )}
         </div>
       )}
@@ -535,11 +545,11 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
           <div className="max-h-60 overflow-y-auto py-2 space-y-3 scrollbar-hide">
             {localComments.map((c: any, index: number) => (
               <div key={c.id || index} className="flex gap-2">
-                <Link to={`/profile/${c.profiles?.username || 'unknown'}`}>
+                <Link to={`/profile/${c.profiles?.username || c.user_id || 'unknown'}`}>
                   <ProfileAvatar userId={c.user_id} defaultAvatar={c.profiles?.avatar_url} name={c.profiles?.display_name} className="w-[32px] h-[32px] rounded-full object-cover border border-gray-200 dark:border-gray-800" />
                 </Link>
                 <div className="bg-white dark:bg-black px-3 py-2 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 flex-1">
-                  <Link to={`/profile/${c.profiles?.username || 'unknown'}`} className="font-bold text-[13px] text-gray-900 dark:text-white hover:underline flex items-center gap-1">
+                  <Link to={`/profile/${c.profiles?.username || c.user_id || 'unknown'}`} className="font-bold text-[13px] text-gray-900 dark:text-white hover:underline flex items-center gap-1">
                     {c.profiles?.display_name || 'User'}
                     {c.profiles?.is_verified && <VerifiedBadge size={12} />}
                   </Link>
