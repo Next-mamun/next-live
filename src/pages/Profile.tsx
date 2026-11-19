@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Camera, Edit2, Plus, Save, X, MessageCircle, UserPlus, Check, Users, RefreshCw, Calendar, CheckCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '../lib/firebase';
-import { doc, getDoc, updateDoc, collection, query, where, getDocs, addDoc, orderBy, limit, increment } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs, addDoc, orderBy, limit, increment } from 'firebase/firestore';
 import { supabase } from '@/lib/supabase';
 import { localDB } from '@/lib/dexie';
 import {
@@ -17,6 +17,7 @@ import {
 } from '@/lib/profileSync';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
+import ZoomableImage from '@/components/ZoomableImage';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useUpload } from '@/contexts/UploadContext';
@@ -36,6 +37,8 @@ const Profile: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState({ display_name: '', bio: '', avatar_url: '', cover_url: '' });
   const [isUploading, setIsUploading] = useState(false);
+  const [coverUploading, setCoverUploading] = useState(false);
+  const [coverPreviewUrl, setCoverPreviewUrl] = useState<string | null>(null);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error', msg: string } | null>(null);
   const deletedPostIds = useGlobalStore(state => state.deletedPostIds || []);
@@ -43,7 +46,12 @@ const Profile: React.FC = () => {
   const viewedPostsRef = useRef<Set<string>>(new Set());
   const observer = useRef<IntersectionObserver | null>(null);
 
-  const isOwnProfile = Boolean(currentUser && (currentUser.username === username || currentUser.id === username));
+  const isOwnProfile = Boolean(
+    currentUser &&
+      username &&
+      (currentUser.id === username ||
+        (currentUser.username || '').toLowerCase() === username.toLowerCase())
+  );
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -63,10 +71,20 @@ const Profile: React.FC = () => {
       if (!username) return null;
       let userData: any = null;
 
-      // Check Dexie first if own profile or cached
+      // Check Dexie & localStorage first so updates are never clobbered by stale closures
       try {
         if (isOwnProfile && currentUser) {
-          userData = currentUser;
+          const freshLocal = await localDB.users.get(currentUser.id).catch(() => null);
+          let freshStored: any = null;
+          try {
+            const raw = localStorage.getItem('next_media_user');
+            if (raw) freshStored = JSON.parse(raw);
+          } catch {}
+          userData = {
+            ...currentUser,
+            ...(freshStored?.id === currentUser.id ? freshStored : {}),
+            ...(freshLocal || {}),
+          };
         } else {
           const allLocal = await localDB.users.toArray();
           const lower = username.toLowerCase();
@@ -239,35 +257,84 @@ const Profile: React.FC = () => {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'avatar' | 'cover') => {
     const file = e.target.files?.[0];
     const inputEl = e.target;
-    if (file) {
-      // Ultra-strict AI Content Scanning for Profile Images
-      const isSafe = await scanFile(file, inputEl);
-      if (!isSafe) {
-        return;
-      }
-
-      addUpload(file, 'profile', {
-        userId: currentUser?.id,
-        payload: type === 'avatar' ? { avatar_url: '' } : { cover_url: '' }, // URL will be added by UploadContext
-        onSuccess: async () => {
-          const uDoc = await getDoc(doc(db, 'profiles', currentUser?.id as string));
-          if (uDoc.exists()) {
-            const freshData = { id: uDoc.id, ...uDoc.data() } as any;
-            await syncProfileToSupabase(freshData);
-            await cacheUserInDexie(freshData);
-            setCurrentUser(freshData);
-            setEditData({
-              display_name: freshData.display_name,
-              bio: freshData.bio || '',
-              avatar_url: freshData.avatar_url,
-              cover_url: freshData.cover_url || ''
-            });
-            queryClient.invalidateQueries({ queryKey: ['profile', username] });
-            toast.success(`${type === 'avatar' ? 'Profile picture' : 'Cover photo'} updated!`);
-          }
-        }
-      });
+    if (!file || !currentUser?.id) {
+      if (inputEl) inputEl.value = '';
+      return;
     }
+
+    if (type === 'cover') setCoverUploading(true);
+    else setIsUploading(true);
+
+    // Clear input so the user can re-pick the same image if needed
+    inputEl.value = '';
+
+    // Ultra-strict AI Content Scanning for Profile Images
+    const isSafe = await scanFile(file, inputEl);
+    if (!isSafe) {
+      if (type === 'cover') setCoverUploading(false);
+      else setIsUploading(false);
+      return;
+    }
+
+    const localPreview = URL.createObjectURL(file);
+    if (type === 'cover') {
+      setCoverPreviewUrl(localPreview);
+    }
+
+    const fieldKey = type === 'avatar' ? 'avatar_url' : 'cover_url';
+
+    addUpload(file, 'profile', {
+      userId: currentUser.id,
+      fullProfile: currentUser,
+      skipModeration: true,
+      payload: { [fieldKey]: '' }, // Cloudinary URL populated by UploadContext
+      onSuccess: async (uploadedUrl?: string) => {
+        try {
+          let freshDocData: any = null;
+          try {
+            const uDoc = await getDoc(doc(db, 'profiles', currentUser.id));
+            if (uDoc.exists()) freshDocData = { id: uDoc.id, ...uDoc.data() };
+          } catch (_) {}
+
+          const mergedData = {
+            ...(currentUser || {}),
+            ...(freshDocData || {}),
+            id: currentUser.id,
+            ...(uploadedUrl ? { [fieldKey]: uploadedUrl } : {}),
+          } as any;
+
+          await syncProfileToSupabase(mergedData);
+          await cacheUserInDexie(mergedData);
+          localStorage.setItem('next_media_user', JSON.stringify(mergedData));
+          setCurrentUser(mergedData);
+          setEditData({
+            display_name: mergedData.display_name || '',
+            bio: mergedData.bio || '',
+            avatar_url: mergedData.avatar_url || '',
+            cover_url: mergedData.cover_url || ''
+          });
+          queryClient.setQueryData(['profile', username, currentUser.id], mergedData);
+          toast.success(`${type === 'avatar' ? 'Profile picture' : 'Cover photo'} updated!`);
+        } finally {
+          if (type === 'cover') {
+            setCoverPreviewUrl(null);
+            setCoverUploading(false);
+          } else {
+            setIsUploading(false);
+          }
+          URL.revokeObjectURL(localPreview);
+        }
+      },
+      onError: () => {
+        if (type === 'cover') {
+          setCoverPreviewUrl(null);
+          setCoverUploading(false);
+        } else {
+          setIsUploading(false);
+        }
+        URL.revokeObjectURL(localPreview);
+      }
+    });
   };
 
   const handleSendRequest = async () => {
@@ -309,24 +376,27 @@ const Profile: React.FC = () => {
   };
 
   const handleUpdate = async () => {
+    if (!currentUser?.id) return;
     setIsUploading(true);
     try {
-      await updateDoc(doc(db, 'profiles', currentUser?.id as string), editData);
-      const uDoc = await getDoc(doc(db, 'profiles', currentUser?.id as string));
-      if (uDoc.exists()) {
-        const updatedData = { id: uDoc.id, ...uDoc.data() };
-        await syncProfileToSupabase(updatedData);
-        await cacheUserInDexie(updatedData);
-        setCurrentUser(updatedData as any);
-
-        setTimeout(() => {
-          window.location.reload();
-        }, 500);
-        setIsEditing(false);
-        queryClient.invalidateQueries({ queryKey: ['profile', username] });
-      }
+      await setDoc(doc(db, 'profiles', currentUser.id), editData, { merge: true }).catch(() => {});
+      let updatedData: any = { ...currentUser, ...editData, id: currentUser.id };
+      try {
+        const uDoc = await getDoc(doc(db, 'profiles', currentUser.id));
+        if (uDoc.exists()) {
+          updatedData = { ...updatedData, id: uDoc.id, ...uDoc.data(), ...editData };
+        }
+      } catch (_) {}
+      await syncProfileToSupabase(updatedData);
+      await cacheUserInDexie(updatedData);
+      localStorage.setItem('next_media_user', JSON.stringify(updatedData));
+      setCurrentUser(updatedData as any);
+      queryClient.setQueryData(['profile', username, currentUser.id], updatedData);
+      setIsEditing(false);
+      toast.success('Profile updated!');
     } catch (e) {
       console.error('Failed to update profile', e);
+      toast.error('Failed to update profile');
     }
     setIsUploading(false);
   };
@@ -357,37 +427,56 @@ const Profile: React.FC = () => {
       )}
       <div className="w-full max-w-[1100px] mx-auto">
         <div className="relative mb-6 md:mb-24">
-          <div className="h-[200px] md:h-[300px] bg-gradient-to-r from-blue-400 to-blue-600 rounded-b-xl overflow-hidden shadow-sm relative z-0 group">
-            {(isEditing ? editData.cover_url : profile.cover_url) && (
-              <img src={(isEditing ? editData.cover_url : profile.cover_url) || undefined} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+          <div className="h-[200px] md:h-[300px] bg-gradient-to-r from-blue-400 to-blue-600 rounded-b-xl overflow-hidden shadow-sm relative z-10 group">
+            {(coverPreviewUrl || (isEditing ? editData.cover_url : ((isOwnProfile ? currentUser?.cover_url : undefined) || profile.cover_url))) && (
+              <ZoomableImage
+                src={(coverPreviewUrl || (isEditing ? editData.cover_url : ((isOwnProfile ? currentUser?.cover_url : undefined) || profile.cover_url))) as string}
+                alt="Cover photo"
+                className="w-full h-full object-cover"
+              />
             )}
             {isOwnProfile && (
               <>
                 <input type="file" ref={coverInputRef} hidden onChange={(e) => handleFileUpload(e, 'cover')} accept="image/*" />
-                <button 
-                  onClick={() => coverInputRef.current?.click()}
-                  className="absolute bottom-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2.5 rounded-full backdrop-blur-md border border-white/20 shadow-xl transition-all md:opacity-0 md:group-hover:opacity-100 flex items-center gap-2"
+                <button
+                  type="button"
+                  disabled={coverUploading}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    coverInputRef.current?.click();
+                  }}
+                  className="absolute top-3 right-3 md:top-auto md:bottom-4 md:right-4 z-30 bg-black/65 hover:bg-black/85 text-white px-3.5 py-2 rounded-full backdrop-blur-md border border-white/20 shadow-xl transition-all flex items-center gap-2 min-h-[40px] cursor-pointer disabled:opacity-70"
                 >
-                  <Camera size={20} />
-                  <span className="text-sm font-bold pr-1">Update Cover</span>
+                  {coverUploading ? (
+                    <>
+                      <RefreshCw size={18} className="animate-spin" />
+                      <span className="text-xs sm:text-sm font-bold">Uploading...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Camera size={18} />
+                      <span className="text-xs sm:text-sm font-bold">Update Cover</span>
+                    </>
+                  )}
                 </button>
               </>
             )}
           </div>
           
-          <div className="relative -mt-16 px-4 flex flex-col items-center gap-4 md:gap-6 md:mt-0 md:px-0 md:flex-row md:items-end md:absolute md:-bottom-20 md:left-10 md:w-[calc(100%-5rem)] z-20">
-            <div className="relative group cursor-pointer" onClick={() => !isEditing && setShowPhotoModal(true)}>
+          <div className="pointer-events-none relative -mt-16 px-4 flex flex-col items-center gap-4 md:gap-6 md:mt-0 md:px-0 md:flex-row md:items-end md:absolute md:-bottom-20 md:left-10 md:w-[calc(100%-5rem)] z-20">
+            <div className="pointer-events-auto relative group cursor-pointer" onClick={() => !isEditing && setShowPhotoModal(true)}>
               <ProfileAvatar userId={profile.id} defaultAvatar={isEditing ? editData.avatar_url : profile.avatar_url} name={profile.display_name} className="w-32 h-32 md:w-44 md:h-44 rounded-full border-4 border-white dark:border-black shadow-2xl object-cover bg-white dark:bg-gray-800 hover:brightness-90 transition-all" />
               {isOwnProfile && (
                 <>
                   <input type="file" ref={avatarInputRef} hidden onChange={(e) => handleFileUpload(e, 'avatar')} accept="image/*" />
-                  <button onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }} className="absolute bottom-2 right-2 bg-gray-100 dark:bg-gray-800 p-2.5 rounded-full border-2 border-white dark:border-black shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={isUploading}>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }} className="absolute bottom-2 right-2 bg-gray-100 dark:bg-gray-800 p-2.5 rounded-full border-2 border-white dark:border-black shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={isUploading}>
                     <Camera size={18} className="text-gray-600 dark:text-gray-300" />
                   </button>
                 </>
               )}
             </div>
-            <div className="flex-1 text-center md:text-left md:pb-2">
+            <div className="pointer-events-auto flex-1 text-center md:text-left md:pb-2">
               {isEditing ? (
                 <div className="flex flex-col gap-2 mt-2">
                   <input value={editData.display_name} onChange={e => setEditData({...editData, display_name: e.target.value})} className="text-3xl font-black border dark:border-gray-700 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-300 text-gray-900 dark:text-white bg-transparent" />
@@ -400,7 +489,7 @@ const Profile: React.FC = () => {
               )}
               <p className="text-gray-700 dark:text-gray-300 font-bold bg-white/30 dark:bg-black/30 backdrop-blur-sm inline-block px-2 rounded-md mt-1">@{profile.username || profile.id}</p>
             </div>
-            <div className="flex flex-wrap justify-center gap-2 md:pb-2">
+            <div className="pointer-events-auto flex flex-wrap justify-center gap-2 md:pb-2">
               {isOwnProfile ? (
                 isEditing ? (
                   <>

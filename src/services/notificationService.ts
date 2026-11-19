@@ -3,24 +3,78 @@ import { toast } from 'sonner';
 import { messaging, db, auth } from '@/lib/firebase';
 import { getToken } from 'firebase/messaging';
 import { doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import { normalizeAppRoute } from '@/lib/utils';
 
-export const updateFCMTokenInDb = async (token: string) => {
-  if (token && auth.currentUser) {
+const PENDING_FCM_TOKEN_KEY = 'pending_android_fcm_token';
+const shownNotifKeys = new Map<string, number>();
+
+const getActiveUserIdFallback = (): string | null => {
+  if (auth.currentUser?.uid) return auth.currentUser.uid;
+  try {
+    const saved = localStorage.getItem('next_media_user');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed?.id) return String(parsed.id);
+    }
+  } catch (_) {}
+  return null;
+};
+
+export const shouldShowNotificationOnce = (dedupeKey?: string | null): boolean => {
+  if (!dedupeKey) return true;
+  const now = Date.now();
+  const prev = shownNotifKeys.get(dedupeKey);
+  if (prev && now - prev < 30_000) {
+    return false;
+  }
+  shownNotifKeys.set(dedupeKey, now);
+  if (shownNotifKeys.size > 200) {
+    const cutoff = now - 30_000;
+    for (const [k, ts] of shownNotifKeys.entries()) {
+      if (ts < cutoff) shownNotifKeys.delete(k);
+    }
+  }
+  return true;
+};
+
+export const updateFCMTokenInDb = async (token: string, explicitUserId?: string) => {
+  if (!token || typeof token !== 'string') return;
+  const uid = explicitUserId || getActiveUserIdFallback();
+  if (!uid) {
     try {
-      await setDoc(doc(db, 'profiles', auth.currentUser.uid), {
+      localStorage.setItem(PENDING_FCM_TOKEN_KEY, token);
+    } catch (_) {}
+    return;
+  }
+
+  try {
+    localStorage.removeItem(PENDING_FCM_TOKEN_KEY);
+  } catch (_) {}
+
+  if (auth.currentUser?.uid === uid) {
+    try {
+      await setDoc(doc(db, 'profiles', uid), {
         fcm_token: token,
         updated_at: new Date().toISOString()
       }, { merge: true });
-      console.log('FCM Token saved to profile:', token.substring(0, 10) + '...');
     } catch (err) {
-      console.error('Failed to update FCM token in DB:', err);
+      console.warn('Failed to update FCM token in Firestore:', err);
     }
-
-    try {
-      const { syncProfileToSupabase } = await import('@/lib/profileSync');
-      await syncProfileToSupabase({ id: auth.currentUser.uid, fcm_token: token });
-    } catch (e) {}
   }
+
+  try {
+    const { syncProfileToSupabase } = await import('@/lib/profileSync');
+    await syncProfileToSupabase({ id: uid, fcm_token: token });
+  } catch (_) {}
+};
+
+export const flushPendingFCMToken = async (userId?: string) => {
+  try {
+    const pending = localStorage.getItem(PENDING_FCM_TOKEN_KEY);
+    if (pending) {
+      await updateFCMTokenInDb(pending, userId);
+    }
+  } catch (_) {}
 };
 
 // Global callback for Android native code to pass the token back
@@ -33,39 +87,72 @@ export const requestNotificationPermission = async () => {
   // Check if running inside our specific Android WebView with a JavascriptInterface named "AndroidApp"
   if ((window as any).AndroidApp && typeof (window as any).AndroidApp.requestPushPermission === 'function') {
     console.log('Running in Android WebView. Requesting native push permission...');
-    (window as any).AndroidApp.requestPushPermission();
+    try {
+      (window as any).AndroidApp.requestPushPermission();
+    } catch (_) {}
+    await flushPendingFCMToken();
     return true; // Token will arrive asynchronously via setAndroidFCMToken
   }
 
-  if (!("Notification" in window)) {
-    console.log("This browser does not support desktop notification");
+  if (typeof window === 'undefined' || !("Notification" in window)) {
     return false;
   }
 
   try {
-    const permission = await Notification.requestPermission();
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission();
     if (permission === 'granted') {
       try {
-        const registration = await navigator.serviceWorker.register('/sw.js');
+        let registration: ServiceWorkerRegistration | undefined;
+        if ('serviceWorker' in navigator) {
+          registration = await navigator.serviceWorker.getRegistration('/');
+          if (!registration) {
+            registration = await navigator.serviceWorker.register('/sw.js');
+          }
+          // Wait for SW activation cleanly before calling getToken
+          if (!registration.active) {
+            await Promise.race([
+              navigator.serviceWorker.ready.then((r) => { registration = r; }),
+              new Promise((resolve) => setTimeout(resolve, 4000))
+            ]);
+          }
+        }
         const msg = await messaging();
-        if (msg) {
+        if (msg && registration) {
           const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY || 'BF1N2MaGEU8mze53cT65jsQZmwTj7-qbNhsqPGuc3cswdZMKu6eYi8Q9gOXNggerRSSvolQhalQIiIiNGNzC8FQ';
           const token = await getToken(msg, {
-            vapidKey: vapidKey,
+            vapidKey,
             serviceWorkerRegistration: registration
           });
-          await updateFCMTokenInDb(token);
+          if (token) {
+            await updateFCMTokenInDb(token);
+          }
         }
       } catch (tokenErr) {
-        console.error('Failed to get FCM token:', tokenErr);
+        console.warn('FCM token fetch warning:', tokenErr);
       }
       return true;
     }
     return false;
   } catch (error) {
-    console.error("Error requesting notification permission or getting token:", error);
+    console.warn("Error requesting notification permission or getting token:", error);
     return false;
   }
+};
+
+const sanitizePushData = (data?: any): Record<string, string> => {
+  const clean: Record<string, string> = {};
+  if (!data || typeof data !== 'object') return clean;
+  for (const [k, v] of Object.entries(data)) {
+    if (v === undefined || v === null) continue;
+    const str = typeof v === 'string' ? v : String(v);
+    if (k === 'sender_avatar' && (str.startsWith('data:') || str.length > 512)) {
+      continue;
+    }
+    clean[k] = str.slice(0, 1000);
+  }
+  return clean;
 };
 
 export const sendPushNotification = async (token: string, title: string, body: string, data?: any, receiverId?: string) => {
@@ -75,7 +162,7 @@ export const sendPushNotification = async (token: string, title: string, body: s
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ token, title, body, data, userId: receiverId }),
+      body: JSON.stringify({ token, title, body, data: sanitizePushData(data), userId: receiverId }),
     });
     const result = await response.json();
     
@@ -102,23 +189,28 @@ const tokenCache = new Map<string, { token: string, expiry: number }>();
 export const triggerNotification = async (receiverId: string, title: string, body: string, data?: any) => {
   if (!receiverId) return null;
 
-  // 1. Instant Real-Time In-App Delivery via Supabase Broadcast
+  // 1. Instant Real-Time In-App Delivery via Supabase REST Broadcast (httpSend avoids unsubscribed channel failures)
   try {
     const { supabase } = await import('@/lib/supabase');
-    const channel = supabase.channel(`user_notifications_${receiverId}`);
-    channel.send({
-      type: 'broadcast',
-      event: 'IN_APP_NOTIFICATION',
-      payload: {
-        title,
-        body,
-        data,
-        timestamp: Date.now()
-      }
-    }).catch(() => {});
+    const channel: any = supabase.channel(`user_notifications_${receiverId}`);
+    const broadcastPayload = {
+      title,
+      body,
+      data,
+      timestamp: Date.now()
+    };
+    if (typeof channel.httpSend === 'function') {
+      channel.httpSend('IN_APP_NOTIFICATION', broadcastPayload).catch(() => {});
+    } else {
+      channel.send({
+        type: 'broadcast',
+        event: 'IN_APP_NOTIFICATION',
+        payload: broadcastPayload
+      }).catch(() => {});
+    }
   } catch (e) {}
 
-  // 2. High-Priority FCM Push Notification directly without sequential queue bottleneck
+  // 2. High-Priority FCM Push Notification
   (async () => {
     try {
       let token = '';
@@ -126,6 +218,8 @@ export const triggerNotification = async (receiverId: string, title: string, bod
       if (cached && Date.now() < cached.expiry) {
         token = cached.token;
       } else {
+        let supaToken = '';
+        let fbToken = '';
         try {
           const { supabase } = await import('@/lib/supabase');
           const { data: supaProf } = await supabase
@@ -134,16 +228,19 @@ export const triggerNotification = async (receiverId: string, title: string, bod
             .eq('id', receiverId)
             .maybeSingle();
           if (supaProf?.fcm_token) {
-            token = supaProf.fcm_token;
+            supaToken = supaProf.fcm_token;
           }
         } catch (e) {}
+
+        token = supaToken;
 
         if (!token) {
           const userDoc = await getDoc(doc(db, 'profiles', receiverId));
           if (userDoc.exists()) {
             const userData = userDoc.data();
             if (userData.fcm_token) {
-              token = userData.fcm_token;
+              fbToken = userData.fcm_token;
+              token = fbToken;
               try {
                 const { syncProfileToSupabase } = await import('@/lib/profileSync');
                 syncProfileToSupabase({ id: receiverId, ...userData, fcm_token: token }).catch(() => {});
@@ -153,12 +250,23 @@ export const triggerNotification = async (receiverId: string, title: string, bod
         }
 
         if (token) {
-          tokenCache.set(receiverId, { token, expiry: Date.now() + 60 * 60 * 1000 });
+          tokenCache.set(receiverId, { token, expiry: Date.now() + 10 * 60 * 1000 });
         }
       }
 
       if (token) {
-        await sendPushNotification(token, title, body, data, receiverId);
+        const res = await sendPushNotification(token, title, body, data, receiverId);
+        // If Supabase token was stale, fallback-check Firestore once for a fresher token
+        if (res?.notRegistered) {
+          try {
+            const userDoc = await getDoc(doc(db, 'profiles', receiverId));
+            const fbToken = userDoc.exists() ? userDoc.data()?.fcm_token : '';
+            if (fbToken && fbToken !== token) {
+              tokenCache.set(receiverId, { token: fbToken, expiry: Date.now() + 10 * 60 * 1000 });
+              await sendPushNotification(fbToken, title, body, data, receiverId);
+            }
+          } catch (_) {}
+        }
       }
     } catch (err) {
       console.warn('Failed to trigger FCM notification:', err);
@@ -206,7 +314,8 @@ export const showInAppNotificationToast = ({
   avatar,
   url,
   type,
-  senderId
+  senderId,
+  dedupeKey
 }: {
   title: string;
   body: string;
@@ -214,7 +323,12 @@ export const showInAppNotificationToast = ({
   url: string;
   type?: string;
   senderId?: string;
+  dedupeKey?: string;
 }) => {
+  if (dedupeKey && !shouldShowNotificationOnce(dedupeKey)) {
+    return;
+  }
+
   // Play sound and vibration
   playNotificationSound();
 
@@ -225,7 +339,8 @@ export const showInAppNotificationToast = ({
         {
           onClick: () => {
             toast.dismiss(t);
-            const targetUrl = url || (senderId ? `/messages?user=${senderId}` : '/messages');
+            const rawTarget = url || (senderId ? `/messages?user=${senderId}` : '/messages');
+            const targetUrl = normalizeAppRoute(rawTarget);
             if (senderId) {
               window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: senderId } }));
             }
@@ -310,7 +425,13 @@ export const showNotification = (title: string, options?: NotificationOptions) =
         e.preventDefault();
         window.focus();
         notification.close();
-        const targetUrl = (options?.data as any)?.url || '/messages';
+        const dataObj = options?.data as any;
+        const targetUrl = normalizeAppRoute(
+          dataObj?.url || (dataObj?.sender_id ? `/messages?user=${dataObj.sender_id}` : '/messages')
+        );
+        if (dataObj?.sender_id) {
+          window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: dataObj.sender_id } }));
+        }
         if ((window as any).__appNavigate) {
           (window as any).__appNavigate(targetUrl);
         } else {

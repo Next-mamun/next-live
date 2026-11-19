@@ -1,6 +1,6 @@
 import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/dexie";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink } from 'lucide-react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
@@ -268,6 +268,7 @@ const Messages: React.FC = () => {
   const { addUpload } = useUpload();
   const navigate = useNavigate();
   const location = useLocation();
+  const { id: routeChatId } = useParams<{ id?: string }>();
   const queryClient = useQueryClient();
   const [selectedChat, setSelectedChat] = useState<any>(null);
   const [chatToDelete, setChatToDelete] = useState<any>(null);
@@ -810,6 +811,24 @@ const Messages: React.FC = () => {
         return next;
       });
 
+      // Immediately open optimistic chat header so deep links never stall on network lookups
+      const isTargetGroup = String(targetUserId).startsWith('group_');
+      setSelectedChat((prev: any) =>
+        prev?.id === targetUserId
+          ? prev
+          : {
+              id: targetUserId,
+              display_name: isTargetGroup ? 'Group' : 'Loading...',
+              name: isTargetGroup ? 'Group' : 'Loading...',
+              username: '',
+              avatar_url: '',
+              avatar: '',
+              is_group: isTargetGroup
+            }
+      );
+      setIsChatOpen(true);
+      setActiveChatId(targetUserId);
+
       // Check existing local conversation or user
       const [localConv, localUser] = await Promise.all([
         localDB.conversations.get(targetUserId).catch(() => null),
@@ -887,15 +906,31 @@ const Messages: React.FC = () => {
     };
   }, [openChatWithUserId]);
 
+  const handledDeepLinkRef = useRef<string>('');
+
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search);
-    const targetUserId = location.state?.userId || searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId');
+    const stateUserId = (location.state as any)?.userId || '';
+    const queryUserId = searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId') || '';
+    const targetUserId = routeChatId || stateUserId || queryUserId;
 
-    if (targetUserId) {
-      openChatWithUserId(targetUserId);
-      navigate(location.pathname, { replace: true, state: {} });
+    if (!targetUserId) {
+      handledDeepLinkRef.current = '';
+      return;
     }
-  }, [location.state, location.search, location.pathname, navigate, openChatWithUserId]);
+
+    const linkSig = `${location.key}|${targetUserId}`;
+    if (handledDeepLinkRef.current === linkSig) return;
+    handledDeepLinkRef.current = linkSig;
+
+    // Normalize URL & clear deep-link state BEFORE openChatWithUserId pushes { chatOpen }
+    // so React Router replace/navigate does not wipe history.state.chatOpen and hardware Back returns cleanly to /messages
+    if (window.location.pathname !== '/messages' || window.location.search || stateUserId) {
+      window.history.replaceState({ deepLinkHandled: targetUserId }, '', '/messages');
+    }
+
+    openChatWithUserId(targetUserId);
+  }, [routeChatId, location.key, location.search, location.state, openChatWithUserId]);
 
   useEffect(() => {
     const handleUndelete = () => {
@@ -2130,11 +2165,14 @@ const Messages: React.FC = () => {
     queryClient.invalidateQueries({ queryKey: ['messages', selectedChat?.id] });
   };
 
-  // Intercept browser back button for selectedChat on mobile
+  // Intercept browser back button for selectedChat on mobile (keyed strictly by chat ID to prevent duplicate history entries)
+  const selectedChatId = selectedChat?.id || null;
   useEffect(() => {
-    if (!selectedChat) return;
-    const stateId = 'chat_' + selectedChat.id;
-    window.history.pushState({ chatOpen: stateId }, '');
+    if (!selectedChatId) return;
+    const stateId = 'chat_' + selectedChatId;
+    if (window.history.state?.chatOpen !== stateId) {
+      window.history.pushState({ chatOpen: stateId }, '');
+    }
     const handlePopState = (e: PopStateEvent) => {
       if (!e.state || e.state.chatOpen !== stateId) {
         setSelectedChat(null);
@@ -2145,7 +2183,7 @@ const Messages: React.FC = () => {
     return () => {
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [selectedChat, setIsChatOpen]);
+  }, [selectedChatId, setIsChatOpen]);
 
   const handleBackToSidebar = () => {
     setSelectedChat(null);
@@ -2344,6 +2382,7 @@ const Messages: React.FC = () => {
         const safeNotifBody = getSafeMessagePreview({ content: messageText, is_view_once: isViewOnceMsg });
         const notifPayload = {
           type: 'message',
+          notif_id: msgRefId,
           sender_id: currentUser?.id,
           sender_name: senderName,
           sender_username: senderUsername,
@@ -2357,6 +2396,7 @@ const Messages: React.FC = () => {
         if (!selectedChat.is_group) {
           addDoc(collection(db, 'notifications'), {
             user_id: selectedChat.id,
+            notif_id: msgRefId,
             sender_id: currentUser?.id,
             sender_name: senderName,
             sender_username: senderUsername,
@@ -2379,6 +2419,7 @@ const Messages: React.FC = () => {
             if (memberId !== currentUser?.id) {
               addDoc(collection(db, 'notifications'), {
                 user_id: memberId,
+                notif_id: msgRefId,
                 sender_id: currentUser?.id,
                 sender_name: senderName,
                 sender_username: senderUsername,

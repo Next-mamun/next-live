@@ -138,7 +138,7 @@ async function scanImageBlob(blob: Blob | File): Promise<ModerationResult> {
       img.src = objectUrl;
     });
 
-    const timeoutMs = isModelReady ? 2500 : 8000;
+    const timeoutMs = isModelReady ? 1800 : 2500;
     const timeoutPromise = new Promise<ModerationResult>((resolve) => {
       setTimeout(() => resolve({ isSafe: true }), timeoutMs);
     });
@@ -190,7 +190,7 @@ async function scanVideoFile(file: File | Blob): Promise<ModerationResult> {
       video.src = objectUrl;
     });
 
-    const timeoutMs = isModelReady ? 2500 : 8000;
+    const timeoutMs = isModelReady ? 1800 : 2500;
     const timeoutPromise = new Promise<ModerationResult>((resolve) => {
       setTimeout(() => resolve({ isSafe: true }), timeoutMs);
     });

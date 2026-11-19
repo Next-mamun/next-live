@@ -14,10 +14,33 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { localDB, getBase64Image } from '@/lib/dexie';
 import { syncProfileToSupabase, ensureUniqueUsername, backfillPublicProfilesOnce, fetchProfileSmart, cacheUserInDexie } from '@/lib/profileSync';
 import { useWakeLock } from '@/hooks/useWakeLock';
-import { requestNotificationPermission } from '@/services/notificationService';
+import { requestNotificationPermission, flushPendingFCMToken, playNotificationSound, showInAppNotificationToast, listenForegroundMessages } from '@/services/notificationService';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
+import { normalizeAppRoute, isChatMuted } from '@/lib/utils';
+
+const extractChatUserIdFromTarget = (route: string): string | null => {
+  try {
+    const parsed = new URL(route, 'https://next-nexto.vercel.app');
+    if (parsed.pathname.startsWith('/messages')) {
+      const qUser = parsed.searchParams.get('user') || parsed.searchParams.get('userId') || parsed.searchParams.get('chatId');
+      if (qUser) return qUser;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (parts.length >= 2 && parts[0] === 'messages') return parts[1];
+    }
+  } catch (_) {}
+  return null;
+};
+
+const AuthRouteRedirect: React.FC = () => {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const rawReturn = params.get('returnUrl');
+  const target = rawReturn ? normalizeAppRoute(rawReturn) : '/';
+  const safeTarget = (target.startsWith('/login') || target.startsWith('/register')) ? '/' : target;
+  return <Navigate to={safeTarget} replace />;
+};
 
 // Robust dynamic import and chunk loading failure handler (Prevents White Screen of Death on updates)
 const handleDynamicImportError = async (err: any) => {
@@ -96,7 +119,6 @@ const Features = safeLazy(() => import('@/pages/Features'));
 
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { AuthContext, AuthContextType, ThemeContext, ThemeContextType, useAuth, useTheme } from '@/contexts/AuthContext';
-import { playNotificationSound, showInAppNotificationToast, listenForegroundMessages } from '@/services/notificationService';
 
 const AppLayout: React.FC = () => {
   const { currentUser } = useAuth();
@@ -107,11 +129,17 @@ const AppLayout: React.FC = () => {
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
 
-  // Global navigator for push notification clicks
+  // Global navigator for push notification clicks & Android native bridge
   useEffect(() => {
-    (window as any).__appNavigate = (url: string) => {
-      navigate(url);
+    const navigateToAppUrl = (rawUrl: string) => {
+      const target = normalizeAppRoute(rawUrl);
+      navigate(target);
+      const chatUid = extractChatUserIdFromTarget(target);
+      if (chatUid) {
+        window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid } }));
+      }
     };
+    (window as any).__appNavigate = navigateToAppUrl;
     return () => {
       delete (window as any).__appNavigate;
     };
@@ -122,7 +150,12 @@ const AppLayout: React.FC = () => {
     if ('serviceWorker' in navigator) {
       const handleSwMsg = (event: MessageEvent) => {
         if (event.data?.type === 'NAVIGATE' && event.data?.url) {
-          navigate(event.data.url);
+          const target = normalizeAppRoute(event.data.url);
+          navigate(target);
+          const chatUid = extractChatUserIdFromTarget(target);
+          if (chatUid) {
+            window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid } }));
+          }
         }
       };
       navigator.serviceWorker.addEventListener('message', handleSwMsg);
@@ -137,24 +170,33 @@ const AppLayout: React.FC = () => {
     let unsubForeground: any;
     listenForegroundMessages((payload) => {
       const senderId = payload.data?.sender_id;
-      const targetUrl = payload.data?.url || (payload.data?.type === 'message' && senderId ? `/messages?user=${senderId}` : '/');
+      const msgType = payload.data?.type;
+      if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
+
+      const targetUrl = normalizeAppRoute(
+        payload.data?.url || (msgType === 'message' && senderId ? `/messages?user=${senderId}` : '/')
+      );
       const title = payload.notification?.title || payload.data?.title || 'New Notification';
       const body = payload.notification?.body || payload.data?.body || 'You have a new message';
 
       const { isChatOpen, activeChatId } = useGlobalStore.getState();
-      if (payload.data?.type === 'message' && isChatOpen && activeChatId === senderId) {
+      if (msgType === 'message' && isChatOpen && activeChatId === senderId) {
         playNotificationSound();
         return;
       }
 
-      playNotificationSound();
+      const dedupeKey = payload.data?.notif_id
+        ? `msg_${payload.data.notif_id}`
+        : (senderId ? `msg_fc_${senderId}_${body}` : undefined);
+
       showInAppNotificationToast({
         title,
         body,
         avatar: payload.data?.sender_avatar,
         url: targetUrl,
-        type: payload.data?.type,
-        senderId
+        type: msgType,
+        senderId,
+        dedupeKey
       });
     }).then(unsub => {
       unsubForeground = unsub;
@@ -178,18 +220,26 @@ const AppLayout: React.FC = () => {
           if (!payload) return;
           const { isChatOpen, activeChatId } = useGlobalStore.getState();
           const senderId = payload.data?.sender_id;
-          if (payload.data?.type === 'message' && isChatOpen && activeChatId === senderId) {
+          const msgType = payload.data?.type;
+          if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
+
+          if (msgType === 'message' && isChatOpen && activeChatId === senderId) {
             playNotificationSound();
             return;
           }
-          const targetUrl = payload.data?.url || (senderId ? `/messages?user=${senderId}` : '/');
+          const targetUrl = normalizeAppRoute(payload.data?.url || (senderId ? `/messages?user=${senderId}` : '/'));
+          const dedupeKey = payload.data?.notif_id
+            ? `msg_${payload.data.notif_id}`
+            : (senderId ? `msg_bc_${senderId}_${payload.body || ''}` : undefined);
+
           showInAppNotificationToast({
             title: payload.title || 'New Notification',
             body: payload.body || 'You received a notification',
             avatar: payload.data?.sender_avatar,
             url: targetUrl,
-            type: payload.data?.type,
-            senderId
+            type: msgType,
+            senderId,
+            dedupeKey
           });
         })
         .subscribe();
@@ -435,8 +485,8 @@ const AppLayout: React.FC = () => {
               <Route path="/profile/:username" element={<Profile />} />
 
               {/* Auth Pages */}
-              <Route path="/login" element={!currentUser ? <Login /> : <Navigate to="/" />} />
-              <Route path="/register" element={!currentUser ? <Register /> : <Navigate to="/" />} />
+              <Route path="/login" element={!currentUser ? <Login /> : <AuthRouteRedirect />} />
+              <Route path="/register" element={!currentUser ? <Register /> : <AuthRouteRedirect />} />
 
               {/* Protected Features with Guest Locked View */}
               <Route 
@@ -759,12 +809,15 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser?.id) {
       localStorage.setItem('next_media_user', JSON.stringify(currentUser));
       useGlobalStore.getState().setCurrentUser(currentUser);
-      
-      // Request notification on explicit user gesture
-      if (typeof window !== 'undefined' && 'Notification' in window) {
+      flushPendingFCMToken(currentUser.id).catch(() => {});
+
+      // Ensure native Android WebView push permission or Web Notification permission
+      if ((window as any).AndroidApp && typeof (window as any).AndroidApp.requestPushPermission === 'function') {
+        requestNotificationPermission();
+      } else if (typeof window !== 'undefined' && 'Notification' in window) {
         if (Notification.permission === 'default') {
            setTimeout(() => {
              toast('Enable Push Notifications', {
@@ -809,7 +862,7 @@ const App: React.FC = () => {
         if (unsubNotifs) unsubNotifs();
       };
     }
-  }, [currentUser]);
+  }, [currentUser?.id]);
 
   useEffect(() => {
     let unmounted = false;

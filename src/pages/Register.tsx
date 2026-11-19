@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { User, Lock, Shield, UserCircle, Key } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { generateBio } from '../services/geminiService';
@@ -8,6 +8,7 @@ import { auth, db } from '../lib/firebase';
 import { createUserWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { syncProfileToSupabase, isUsernameTaken, ensureUniqueUsername, cacheUserInDexie } from '../lib/profileSync';
+import { normalizeAppRoute } from '@/lib/utils';
 
 const Register: React.FC = () => {
   const [formData, setFormData] = useState({
@@ -21,12 +22,15 @@ const Register: React.FC = () => {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const { currentUser, setCurrentUser } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const returnUrl = normalizeAppRoute(searchParams.get('returnUrl') || '/');
 
   React.useEffect(() => {
     if (currentUser) {
-      navigate('/');
+      navigate(returnUrl, { replace: true });
     }
-  }, [currentUser, navigate]);
+  }, [currentUser, navigate, returnUrl]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -90,7 +94,7 @@ const Register: React.FC = () => {
         setCurrentUser(fallbackProfile as any);
       }
       
-      navigate('/');
+      navigate(returnUrl, { replace: true });
     } catch (error: any) {
       if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user') {
         const provider = new GoogleAuthProvider();
@@ -181,7 +185,7 @@ const Register: React.FC = () => {
         console.error('Failed to save account to switcher:', e);
       }
       
-      navigate('/');
+      navigate(returnUrl, { replace: true });
     } catch (err: any) {
       if (err.code === 'auth/network-request-failed') {
         setError('Network error: Please check your internet connection and disable ad-blockers.');
@@ -280,7 +284,7 @@ const Register: React.FC = () => {
             {isGoogleLoading ? 'Connecting...' : 'Sign up with Google'}
           </button>
 
-          <Link to="/login" className="text-gray-400 text-center mt-4 text-sm hover:text-white font-bold transition-colors">
+          <Link to={returnUrl && returnUrl !== '/' ? `/login?returnUrl=${encodeURIComponent(returnUrl)}` : '/login'} className="text-gray-400 text-center mt-4 text-sm hover:text-white font-bold transition-colors">
             Already have an account? Log in
           </Link>
 

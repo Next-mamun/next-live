@@ -288,9 +288,9 @@ async function startServer() {
   });
 
   app.post('/api/send-notification', async (req, res) => {
-    const { token, title, body, data, userId } = req.body;
+    const { token, title, body, data, userId } = req.body || {};
 
-    if (!token) {
+    if (!token || typeof token !== 'string') {
       return res.status(400).json({ error: 'FCM token is required' });
     }
 
@@ -299,14 +299,35 @@ async function startServer() {
       if (data && typeof data === 'object') {
         for (const [key, val] of Object.entries(data)) {
           if (val !== undefined && val !== null) {
-            stringData[key] = typeof val === 'string' ? val : String(val);
+            const strVal = typeof val === 'string' ? val : String(val);
+            // FCM data payload is strictly capped at 4KB; skip base64 data URIs or huge strings
+            if (key === 'sender_avatar' && (strVal.startsWith('data:') || strVal.length > 512)) {
+              continue;
+            }
+            stringData[key] = strVal.slice(0, 1000);
           }
         }
       }
 
-      const notifTitle = String(title || 'New Notification');
-      const notifBody = String(body || '');
-      const targetUrl = stringData.url || (stringData.sender_id ? `/messages?user=${stringData.sender_id}` : '/messages');
+      const notifTitle = String(title || stringData.title || 'New Notification');
+      const notifBody = String(body || stringData.body || '');
+      const rawTargetUrl = stringData.url || (stringData.sender_id ? `/messages?user=${stringData.sender_id}` : '/messages');
+      const relativeTarget = rawTargetUrl.startsWith('/') ? rawTargetUrl : `/${rawTargetUrl}`;
+      stringData.url = rawTargetUrl.startsWith('http') ? rawTargetUrl : relativeTarget;
+      stringData.title = notifTitle;
+      stringData.body = notifBody;
+
+      // FCM webpush.fcmOptions.link strictly requires a valid HTTPS URL
+      const reqOrigin = typeof req.headers.origin === 'string' && req.headers.origin.startsWith('https://')
+        ? req.headers.origin
+        : 'https://next-nexto.vercel.app';
+      const absoluteHttpsLink = rawTargetUrl.startsWith('https://')
+        ? rawTargetUrl
+        : `${reqOrigin}${relativeTarget}`;
+
+      const safeIcon = (stringData.sender_avatar && stringData.sender_avatar.startsWith('https://'))
+        ? stringData.sender_avatar
+        : '/favicon.ico';
 
       const response = await admin.messaging().send({
         token,
@@ -336,14 +357,14 @@ async function startServer() {
             title: notifTitle,
             body: notifBody,
             requireInteraction: true,
-            icon: stringData.sender_avatar || '/favicon.ico',
+            icon: safeIcon,
             badge: '/favicon.ico',
             tag: stringData.chat_id || stringData.sender_id || 'next_notification',
             renotify: true,
             data: stringData
           },
           fcmOptions: {
-            link: targetUrl
+            link: absoluteHttpsLink
           }
         }
       });
@@ -387,7 +408,18 @@ async function startServer() {
     }
   });
 
-  // Search Engine & Crawler Routes
+  // Search Engine, Deep Linking & Crawler Routes
+  app.get('/.well-known/assetlinks.json', (req, res) => {
+    const assetlinksPath = path.join(process.cwd(), 'public', '.well-known', 'assetlinks.json');
+    if (fs.existsSync(assetlinksPath)) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.sendFile(assetlinksPath, { dotfiles: 'allow' });
+    }
+    res.status(404).json({ error: 'assetlinks.json not found' });
+  });
+
   app.get('/sitemap.xml', (req, res) => {
     const sitemapPath = path.join(process.cwd(), 'public', 'sitemap.xml');
     if (fs.existsSync(sitemapPath)) {
@@ -410,6 +442,56 @@ async function startServer() {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    // Serve a clean FCM-capable Service Worker in dev so SW registration succeeds with application/javascript
+    app.get('/sw.js', (req, res) => {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.send(`
+importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
+try {
+  firebase.initializeApp({
+    projectId: "next-489515",
+    appId: "1:947258146571:web:2dd66aa09474e5f7d22c0e",
+    apiKey: "AIzaSyAiczfp6lTr57-VrZyJXZKWbHKx32kBBtg",
+    authDomain: "next-489515.firebaseapp.com",
+    storageBucket: "next-489515.firebasestorage.app",
+    messagingSenderId: "947258146571"
+  });
+  var messaging = firebase.messaging();
+  messaging.onBackgroundMessage(function(payload) {
+    var data = payload.data || {};
+    var title = (payload.notification && payload.notification.title) || data.title || 'New Notification';
+    var body = (payload.notification && payload.notification.body) || data.body || 'You have a new message';
+    self.registration.showNotification(title, {
+      body: body,
+      icon: '/favicon.ico',
+      badge: '/favicon.ico',
+      tag: data.chat_id || data.sender_id || 'next_notification',
+      renotify: true,
+      data: data
+    });
+  });
+} catch (e) {}
+self.addEventListener('notificationclick', function(event) {
+  event.notification.close();
+  var data = event.notification.data || {};
+  var urlToOpen = data.url || (data.sender_id ? '/messages?user=' + encodeURIComponent(data.sender_id) : '/');
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
+      if (clients && clients.length > 0) {
+        var client = clients[0];
+        try { client.postMessage({ type: 'NAVIGATE', url: urlToOpen }); } catch (e) {}
+        if (client.focus) return client.focus();
+        return client;
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(urlToOpen);
+    })
+  );
+});
+`);
+    });
+
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -418,10 +500,11 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath, {
-      setHeaders: (res, path) => {
-        if (path.endsWith('.html')) {
+      dotfiles: 'allow',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html') || filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js') || filePath.endsWith('version.json')) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-        } else if (path.includes('/assets/')) {
+        } else if (filePath.includes('/assets/')) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         }
       }

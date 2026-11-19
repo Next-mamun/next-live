@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { db, storage, auth } from '../lib/firebase';
-import { collection, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, setDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { dualWritePost, dualWriteMessage } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
-import { syncProfileToSupabase } from '@/lib/profileSync';
+import { syncProfileToSupabase, cacheUserInDexie } from '@/lib/profileSync';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import Draggable from 'react-draggable';
 import { Pause, Play, X, RefreshCw } from 'lucide-react';
@@ -118,14 +118,15 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         if (isVideo || isImage || isAudio || isDoc) {
           try {
-            // Perform ultra-strict AI content scan for images and videos
-            if (isImage || isVideo) {
+            // Perform ultra-strict AI content scan for images and videos (unless already scanned by caller)
+            if ((isImage || isVideo) && !metadata?.skipModeration) {
               const moderationCheck = await scanMediaContent(file);
               if (!moderationCheck.isSafe) {
                 clearInterval(interval);
                 setUploads(prev => prev.filter(x => x.id !== id));
                 idb.del(`file_${id}`);
                 showAdultContentBlockedAlert(moderationCheck.message);
+                if (metadata?.onError) metadata.onError(new Error(moderationCheck.message || 'Blocked'));
                 return;
               }
             }
@@ -194,14 +195,17 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               setUploads(prev => prev.map(x => x.id === id ? { ...x, progress: 100 } : x));
 
             } else {
-              if (isImage) {
+              if (isImage && fileBody.size > 400 * 1024) {
                 try {
                   const options = {
                     maxSizeMB: 2,
                     maxWidthOrHeight: 1920,
-                    useWebWorker: true,
+                    useWebWorker: false,
                   };
-                  fileBody = await imageCompression(fileBody as File, options);
+                  fileBody = await Promise.race([
+                    imageCompression(fileBody as File, options),
+                    new Promise<File | Blob>((resolve) => setTimeout(() => resolve(fileBody), 4000))
+                  ]);
                 } catch (err) {
                   console.warn('Image optimization failed, uploading raw.', err);
                 }
@@ -219,7 +223,8 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 mediaUrl = await new Promise((resolve, reject) => {
                   const xhr = new XMLHttpRequest();
                   const cloudName = 'dcwe6ln0h'; // User-provided cloud name
-                  xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`);
+                  const resourceType = mediaType === 'image' ? 'image' : mediaType === 'video' ? 'video' : 'auto';
+                  xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`);
                   
                   xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable) {
@@ -399,7 +404,8 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         await dualWritePost(payload);
       } else if (type === 'message') {
         const createdAtIso = metadata?.payload?.local_created_at || new Date().toISOString();
-        const payload = { ...metadata.payload, created_at: createdAtIso };
+        const msgId = metadata?.payload?.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+        const payload = { ...metadata.payload, id: msgId, created_at: createdAtIso };
         if (mediaUrl) payload.media_url = mediaUrl;
         if (!payload.media_type && mediaType) payload.media_type = mediaType;
         await dualWriteMessage(payload);
@@ -423,6 +429,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             notifBody,
             {
               type: 'message',
+              notif_id: msgId,
               sender_id: senderId,
               sender_name: senderName,
               sender_username: senderUsername,
@@ -445,11 +452,13 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         await addDoc(collection(db, 'notifications'), {
           user_id: receiverId,
+          notif_id: msgId,
           sender_id: senderId,
           sender_name: senderName,
           sender_username: senderUsername,
           sender_avatar: senderAvatar,
           type: 'message',
+          is_view_once: isViewOnce,
           content: notifBody,
           is_read: false,
           created_at: new Date().toISOString()
@@ -467,8 +476,12 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             .update({ ...payload, updated_at: new Date().toISOString() })
             .eq('id', targetId);
         } else if (targetId) {
-          await updateDoc(doc(db, 'profiles', targetId), payload).catch(() => {});
-          await syncProfileToSupabase({ id: targetId, ...payload });
+          await setDoc(doc(db, 'profiles', targetId), payload, { merge: true }).catch((err) => {
+            console.warn('Firestore profile update warning:', err);
+          });
+          const mergedProfile = { ...(metadata?.fullProfile || {}), id: targetId, ...payload };
+          await syncProfileToSupabase(mergedProfile);
+          await cacheUserInDexie(mergedProfile);
         }
       }
 
@@ -477,7 +490,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       idb.del(`file_${id}`); // Clean up IndexedDB
 
       if (metadata?.onSuccess) {
-        await metadata.onSuccess();
+        await metadata.onSuccess(mediaUrl);
       }
 
       setTimeout(() => {
@@ -493,6 +506,9 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         toast.error(`Upload Failed: ${errorMessage}`);
         setUploads(prev => prev.map(u => u.id === id ? { ...u, status: 'error' } : u));
+      }
+      if (metadata?.onError) {
+        metadata.onError(error);
       }
     }
   };

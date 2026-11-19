@@ -416,19 +416,19 @@
   <script>
     (function() {
       try {
-        var userAgent = navigator.userAgent || navigator.vendor || window.opera;
+        var userAgent = navigator.userAgent || navigator.vendor || window.opera || '';
         var isAndroid = /android/i.test(userAgent);
         var isBot = /bot|googlebot|crawler|spider|robot|crawling|facebook|twitter|whatsapp|telegram/i.test(userAgent);
-        var path = window.location.pathname;
-        var search = window.location.search;
-        var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone || document.referrer.includes('android-app://');
-        var isWebview = (userAgent.indexOf('wv') > -1) || (userAgent.indexOf('Android') > -1 && userAgent.indexOf('Version/') > -1) || userAgent.indexOf('Themes') > -1;
+        var path = window.location.pathname || '/';
+        var search = window.location.search || '';
+        var hash = window.location.hash || '';
+        var isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone || (document.referrer && document.referrer.indexOf('android-app://') > -1);
+        var isWebview = Boolean(window.AndroidApp) || userAgent.indexOf('Next') > -1 || userAgent.indexOf('wv') > -1 || (userAgent.indexOf('Android') > -1 && userAgent.indexOf('Version/') > -1) || userAgent.indexOf('Themes') > -1;
 
         if (isAndroid && !isBot && !isStandalone && !isWebview && search.indexOf('fallback=1') === -1 && search.indexOf('app=1') === -1) {
-          // Check if it's a sharable content path
-          if (path.startsWith('/post') || path.startsWith('/reels') || path.startsWith('/messages')) {
-            var fallbackUrl = window.location.href + (search ? '&' : '?') + 'fallback=1';
-            // Trigger Android intent
+          if (path.indexOf('/post') === 0 || path.indexOf('/reels') === 0 || path.indexOf('/messages') === 0 || path.indexOf('/profile') === 0 || path.indexOf('/cinema') === 0 || path.indexOf('/meet') === 0) {
+            var baseWithoutHash = window.location.origin + path + search;
+            var fallbackUrl = baseWithoutHash + (search ? '&' : '?') + 'fallback=1' + hash;
             var intentUrl = "intent://" + window.location.host + path + search + "#Intent;scheme=https;package=next.isbest;S.browser_fallback_url=" + encodeURIComponent(fallbackUrl) + ";end";
             window.location.replace(intentUrl);
           }

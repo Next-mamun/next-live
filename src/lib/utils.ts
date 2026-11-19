@@ -233,3 +233,35 @@ export function getSafeMessagePreview(msg: any): string {
   return 'Sent a message';
 }
 
+export function normalizeAppRoute(rawUrl?: string | null): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '/';
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '/';
+
+  try {
+    if (trimmed.startsWith('/')) {
+      const parsed = new URL(trimmed, 'https://next-nexto.vercel.app');
+      parsed.searchParams.delete('fallback');
+      parsed.searchParams.delete('_bust');
+      const qs = parsed.searchParams.toString();
+      return `${parsed.pathname}${qs ? `?${qs}` : ''}${parsed.hash || ''}` || '/';
+    }
+
+    // Handle https://, http://, or custom scheme like next://messages?user=123 or app://post/456
+    const parsed = new URL(trimmed);
+    const isCustomScheme = parsed.protocol !== 'http:' && parsed.protocol !== 'https:';
+    let pathname = parsed.pathname || '/';
+    if (isCustomScheme && parsed.host) {
+      // Custom scheme e.g. next://messages?user=123 -> host is "messages", pathname is "" or "/123"
+      pathname = `/${parsed.host}${pathname === '/' ? '' : pathname}`;
+    }
+    parsed.searchParams.delete('fallback');
+    parsed.searchParams.delete('_bust');
+    const qs = parsed.searchParams.toString();
+    return `${pathname}${qs ? `?${qs}` : ''}${parsed.hash || ''}` || '/';
+  } catch {
+    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+}
+
+

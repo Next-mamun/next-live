@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Lock, LogIn, Compass, ArrowLeft, UserPlus } from 'lucide-react';
 
 interface GuestLockedViewProps {
@@ -10,6 +10,9 @@ interface GuestLockedViewProps {
 
 export const GuestLockedView: React.FC<GuestLockedViewProps> = ({ title, description, icon }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const currentTarget = `${location.pathname}${location.search}${location.hash}`;
+  const returnParam = currentTarget && currentTarget !== '/' ? `?returnUrl=${encodeURIComponent(currentTarget)}` : '';
 
   return (
     <div className="flex-1 w-full flex flex-col items-center justify-center min-h-[70vh] px-6 text-center">
@@ -30,7 +33,7 @@ export const GuestLockedView: React.FC<GuestLockedViewProps> = ({ title, descrip
       <div className="flex flex-col gap-3 w-full max-w-xs">
         <button
           type="button"
-          onClick={() => navigate('/login')}
+          onClick={() => navigate(`/login${returnParam}`)}
           className="w-full flex items-center justify-center gap-2 py-3.5 px-6 bg-[#1877F2] hover:bg-[#166fe5] text-white rounded-2xl font-bold text-sm tracking-wide shadow-lg shadow-blue-500/25 transition-all active:scale-[0.98]"
         >
           <LogIn size={18} />
@@ -39,7 +42,7 @@ export const GuestLockedView: React.FC<GuestLockedViewProps> = ({ title, descrip
 
         <button
           type="button"
-          onClick={() => navigate('/register')}
+          onClick={() => navigate(`/register${returnParam}`)}
           className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750 text-gray-700 dark:text-gray-200 rounded-2xl font-bold text-sm transition-all active:scale-[0.98]"
         >
           <UserPlus size={18} />

@@ -10,6 +10,7 @@ import { generateBio } from '../services/geminiService';
 import { syncProfileToSupabase, ensureUniqueUsername, cacheUserInDexie, fetchProfileSmart } from '../lib/profileSync';
 import { User, Lock } from 'lucide-react';
 import { toast } from 'sonner';
+import { normalizeAppRoute } from '@/lib/utils';
 
 const Login: React.FC = () => {
   const [username, setUsername] = useState('');
@@ -22,11 +23,11 @@ const Login: React.FC = () => {
   const location = useLocation();
 
   const searchParams = new URLSearchParams(location.search);
-  const returnUrl = searchParams.get('returnUrl') || '/';
+  const returnUrl = normalizeAppRoute(searchParams.get('returnUrl') || '/');
 
   React.useEffect(() => {
     if (currentUser) {
-      navigate(returnUrl);
+      navigate(returnUrl, { replace: true });
     }
   }, [currentUser, navigate, returnUrl]);
 

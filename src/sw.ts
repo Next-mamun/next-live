@@ -72,12 +72,17 @@ try {
       return;
     }
 
-    const notificationTitle = payload.notification?.title || 'New Message';
-    const notificationOptions = {
-      body: payload.notification?.body || 'You have a new notification',
-      icon: '/favicon.ico',
+    const notificationTitle = payload.notification?.title || payload.data?.title || 'New Message';
+    const safeIcon = (payload.data?.sender_avatar && String(payload.data.sender_avatar).startsWith('https://'))
+      ? payload.data.sender_avatar
+      : '/favicon.ico';
+    const notificationOptions: NotificationOptions & { renotify?: boolean } = {
+      body: payload.notification?.body || payload.data?.body || 'You have a new notification',
+      icon: safeIcon,
       badge: '/favicon.ico',
-      data: payload.data
+      tag: payload.data?.chat_id || payload.data?.sender_id || 'next_notification',
+      renotify: true,
+      data: payload.data || {}
     };
 
     self.registration.showNotification(notificationTitle, notificationOptions);
@@ -94,7 +99,7 @@ self.addEventListener('notificationclick', (event: any) => {
   
   if (data) {
     if (data.type === 'message' && data.sender_id) {
-       urlToOpen = `/messages?user=${data.sender_id}`;
+      urlToOpen = `/messages?user=${encodeURIComponent(data.sender_id)}`;
     } else if (data.url) {
       urlToOpen = data.url;
     } else if (data.post_id) {
@@ -104,17 +109,24 @@ self.addEventListener('notificationclick', (event: any) => {
     }
   }
 
+  // Convert full same-origin HTTPS URL to relative route if needed
+  try {
+    if (typeof urlToOpen === 'string' && urlToOpen.startsWith('http')) {
+      const parsed = new URL(urlToOpen);
+      if (parsed.origin === self.location.origin) {
+        urlToOpen = parsed.pathname + parsed.search + parsed.hash;
+      }
+    }
+  } catch (_) {}
+
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients: any) => {
-      // If a window is already open, focus it and navigate
+      // If a window is already open, focus it and soft-navigate via postMessage (avoids destroying SPA state)
       if (windowClients && windowClients.length > 0) {
         const client = windowClients[0];
         try {
           client.postMessage({ type: 'NAVIGATE', url: urlToOpen });
         } catch (e) {}
-        if ('navigate' in client) {
-          client.navigate(urlToOpen);
-        }
         if ('focus' in client) {
           return client.focus();
         }

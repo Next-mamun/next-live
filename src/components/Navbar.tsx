@@ -10,6 +10,7 @@ import { fetchProfilesBatchSmart } from '@/lib/profileSync';
 import { VerifiedBadge } from './VerifiedBadge';
 import { ProfileAvatar } from './ProfileAvatar';
 import { useGlobalStore } from '@/store/useGlobalStore';
+import { getSafeMessagePreview } from '@/lib/utils';
 
 const Navbar: React.FC = () => {
   const { currentUser, logout } = useAuth();
@@ -33,7 +34,7 @@ const Navbar: React.FC = () => {
       return true;
     });
 
-    const msgSenders = new Set();
+    const msgSenders = new Set<string>();
     const msgNotifs: any[] = [];
     
     validMsgs.forEach(msg => {
@@ -44,13 +45,23 @@ const Navbar: React.FC = () => {
           type: 'message',
           sender_id: msg.sender_id,
           created_at: msg.created_at,
+          content: getSafeMessagePreview(msg),
+          is_view_once: msg.is_view_once,
+          media_type: msg.media_type,
+          media_url: msg.media_url,
           is_read: false,
           real_msg_id: msg.id
         });
       }
     });
 
-    const combined = [...storeNotifications, ...msgNotifs]
+    // Avoid duplicating the same sender's message notification from both Firestore & Supabase
+    const unreadMessageSenderIds = new Set(msgNotifs.map(m => m.sender_id));
+    const filteredStoreNotifs = storeNotifications.filter(n =>
+      !(n.type === 'message' && !n.is_read && unreadMessageSenderIds.has(n.sender_id))
+    );
+
+    const combined = [...filteredStoreNotifs, ...msgNotifs]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 15);
 
@@ -71,7 +82,7 @@ const Navbar: React.FC = () => {
         text = `${displayName}${usernameTag} accepted your friend request.`;
         link = '/friends';
       } else if (n.type === 'message') {
-        text = `${displayName}${usernameTag}: ${n.content || 'Sent a message'}`;
+        text = `${displayName}${usernameTag}: ${getSafeMessagePreview(n)}`;
         link = `/messages?user=${n.sender_id}`;
       } else if (n.type === 'like') {
         text = `${displayName}${usernameTag} liked your post.`;

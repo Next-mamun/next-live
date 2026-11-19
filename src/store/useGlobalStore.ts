@@ -65,7 +65,8 @@ let messageUnsub: (() => void) | null = null;
 let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
 const notifiedMessageIds = new Set<string>();
-const FEED_PAGE_SIZE = 15;
+const INITIAL_FEED_POOL = 120;
+const FEED_PAGE_SIZE = 20;
 let lastFirebaseFeedDoc: any = null;
 let firebaseFeedOrderSupported = true;
 
@@ -148,7 +149,8 @@ const handleIncomingMessageNotification = async (
     avatar: senderAvatar,
     url: targetUrl,
     type: 'message',
-    senderId: msg.sender_id
+    senderId: msg.sender_id,
+    dedupeKey: `msg_${msg.id}`
   });
 };
 
@@ -261,6 +263,8 @@ export const useGlobalStore = create<GlobalState>()(
              }
           };
 
+          const fetchLimit = loadMore ? FEED_PAGE_SIZE : INITIAL_FEED_POOL;
+
           const fetchFromFirebase = async () => {
              if (!loadMore) {
                lastFirebaseFeedDoc = null;
@@ -270,7 +274,7 @@ export const useGlobalStore = create<GlobalState>()(
              // Instant hydration from Dexie for fast UI on first paint
              if (!loadMore && !forceRefresh) {
                 try {
-                  const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(30).toArray();
+                  const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(INITIAL_FEED_POOL).toArray();
                   if (localPosts.length > 0) {
                      set({ feedPosts: localPosts as any, postsLoading: false, hasMorePosts: true });
                   }
@@ -279,9 +283,9 @@ export const useGlobalStore = create<GlobalState>()(
 
              let snap: any;
              try {
-               let q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(FEED_PAGE_SIZE));
+               let q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(fetchLimit));
                if (loadMore && lastFirebaseFeedDoc) {
-                 q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), startAfter(lastFirebaseFeedDoc), limit(FEED_PAGE_SIZE));
+                 q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), startAfter(lastFirebaseFeedDoc), limit(fetchLimit));
                }
                snap = await getDocs(q);
                if (snap.docs.length > 0) {
@@ -290,7 +294,7 @@ export const useGlobalStore = create<GlobalState>()(
              } catch (e: any) {
                console.warn("Error fetching paginated posts, falling back:", e);
                firebaseFeedOrderSupported = false;
-               const fallbackQ = query(collection(db, 'posts'), limit(40));
+               const fallbackQ = query(collection(db, 'posts'), limit(INITIAL_FEED_POOL));
                snap = await getDocs(fallbackQ);
              }
 
@@ -298,7 +302,7 @@ export const useGlobalStore = create<GlobalState>()(
           };
 
           const fetchFromSupabase = async () => {
-             let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(FEED_PAGE_SIZE);
+             let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(fetchLimit);
              if (loadMore && feedPosts.length > 0) {
                 const lastPost = feedPosts[feedPosts.length - 1];
                 let dateVal = new Date().toISOString();
@@ -385,37 +389,41 @@ export const useGlobalStore = create<GlobalState>()(
              };
           }).filter(v => v.videoType !== 'NONE');
 
-          if (feedVideos.length > 0) {
+          if (feedVideos.length > 0 || populatedPosts.length > 0) {
              try {
                await import('@/lib/dexie').then(async ({ localDB }) => {
-                 // Delta Sync: Don't clear, just bulk put and manage LRU cap (50)
-                 await localDB.feed_videos.bulkPut(feedVideos as any);
-                 const totalVideos = await localDB.feed_videos.count();
-                 if (totalVideos > 50) {
-                   const all = await localDB.feed_videos.orderBy('timestamp').toArray();
-                   const toRemove = all.slice(0, totalVideos - 50);
-                   const idsToRemove = toRemove.map(item => item.id).filter(Boolean);
-                   if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
+                 if (feedVideos.length > 0) {
+                   // Delta Sync: Don't clear, just bulk put and manage LRU cap (50)
+                   await localDB.feed_videos.bulkPut(feedVideos as any);
+                   const totalVideos = await localDB.feed_videos.count();
+                   if (totalVideos > 50) {
+                     const all = await localDB.feed_videos.orderBy('timestamp').toArray();
+                     const toRemove = all.slice(0, totalVideos - 50);
+                     const idsToRemove = toRemove.map(item => item.id).filter(Boolean);
+                     if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
+                   }
                  }
                  
-                 // Full content caching for main feed (keep incremental pages)
-                 const offlinePosts = populatedPosts.map(p => ({
-                   ...p,
-                   created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
-                 }));
-                 if (!loadMore) {
-                   await localDB.posts.clear();
+                 if (populatedPosts.length > 0) {
+                   // Full content caching for main feed (all media types: photo, video, text, YouTube)
+                   const offlinePosts = populatedPosts.map(p => ({
+                     ...p,
+                     created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
+                   }));
+                   if (!loadMore) {
+                     await localDB.posts.clear();
+                   }
+                   await localDB.posts.bulkPut(offlinePosts as any);
                  }
-                 await localDB.posts.bulkPut(offlinePosts as any);
                });
              } catch (e) {
-               console.warn("feed_videos bulkPut error", e);
+               console.warn("feed cache bulkPut error", e);
              }
           }
           
           const hasMore = activeDB === 'firebase'
-            ? (firebaseFeedOrderSupported && fetchedDocs.length >= FEED_PAGE_SIZE)
-            : fetchedDocs.length >= FEED_PAGE_SIZE;
+            ? (firebaseFeedOrderSupported && fetchedDocs.length >= fetchLimit)
+            : fetchedDocs.length >= fetchLimit;
 
           set((state) => {
             const combined = loadMore ? [...state.feedPosts, ...populatedPosts] : populatedPosts;
@@ -437,12 +445,24 @@ export const useGlobalStore = create<GlobalState>()(
         if (messageUnsub) return messageUnsub;
         initialMessageLoad = true;
         let cancelled = false;
+        let activeGlobalChannel: any = null;
+
+        const cleanup = () => {
+          cancelled = true;
+          if (activeGlobalChannel) {
+            supabase.removeChannel(activeGlobalChannel);
+            activeGlobalChannel = null;
+          }
+          messageUnsub = null;
+        };
+        messageUnsub = cleanup;
 
         // 1. Check local Dexie first for instant load
         localDB.messages.count().then(async count => {
           if (cancelled) return;
           if (count > 0) {
             const localMsgs = await localDB.messages.toArray();
+            if (cancelled) return;
             const unread = countUnreadMessages(localMsgs, userId);
             set({ messages: localMsgs, unreadMessagesCount: unread });
           }
@@ -484,7 +504,7 @@ export const useGlobalStore = create<GlobalState>()(
                 .filter((m: any) => !m.deleted_for_everyone && !(m.deleted_for || []).includes(userId))
                 .sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 
-              if (fetchedMsgs.length > 0) {
+              if (fetchedMsgs.length > 0 && !cancelled) {
                 const unread = countUnreadMessages(fetchedMsgs, userId);
                 set({ messages: fetchedMsgs, unreadMessagesCount: unread });
                 localDB.messages.bulkPut(fetchedMsgs as any[]).catch(() => {});
@@ -507,7 +527,7 @@ export const useGlobalStore = create<GlobalState>()(
             initialMessageLoad = false;
 
             // 3. Setup Listener: 100% Supabase Realtime (INSERT, UPDATE, DELETE)
-            const globalChannel = supabase.channel(`global-user-messages:${userId}`)
+            activeGlobalChannel = supabase.channel(`global-user-messages:${userId}`)
               .on(
                 'postgres_changes',
                 {
@@ -585,22 +605,10 @@ export const useGlobalStore = create<GlobalState>()(
                 }
               )
               .subscribe();
-
-            messageUnsub = () => {
-              cancelled = true;
-              supabase.removeChannel(globalChannel);
-              messageUnsub = null;
-            };
           });
         });
 
-        return () => {
-          cancelled = true;
-          if (messageUnsub) {
-            messageUnsub();
-            messageUnsub = null;
-          }
-        };
+        return cleanup;
       },
 
       initNotificationListener: (userId: string) => {
@@ -693,7 +701,8 @@ export const useGlobalStore = create<GlobalState>()(
                 avatar: senderAvatar,
                 url: targetUrl,
                 type: n.type,
-                senderId: n.sender_id
+                senderId: n.sender_id,
+                dedupeKey: n.notif_id ? `msg_${n.notif_id}` : `notif_${change.doc.id}`
               });
             }
           });

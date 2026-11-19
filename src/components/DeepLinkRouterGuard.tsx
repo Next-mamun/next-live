@@ -1,36 +1,81 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { normalizeAppRoute } from '@/lib/utils';
 
 interface DeepLinkRouterGuardProps {
   children: React.ReactNode;
 }
 
+const extractChatUserIdFromRoute = (route: string): string | null => {
+  try {
+    const parsed = new URL(route, 'https://next-nexto.vercel.app');
+    if (parsed.pathname.startsWith('/messages')) {
+      const qUser = parsed.searchParams.get('user') || parsed.searchParams.get('userId') || parsed.searchParams.get('chatId');
+      if (qUser) return qUser;
+      const parts = parsed.pathname.split('/').filter(Boolean);
+      if (parts.length >= 2 && parts[0] === 'messages') {
+        return parts[1];
+      }
+    }
+  } catch (_) {}
+  return null;
+};
+
 /**
  * DeepLinkRouterGuard
  * 
- * Prevents blank screens in Android WebView/App when opened via Deep Links:
- * 1. Reads initial window.location (pathname + search + hash) on startup.
- * 2. Forces React Router to navigate to the exact captured deep link path.
- * 3. Shows a smooth loading splash screen until the target route is mounted.
- * 4. Only activates if running inside the Android App / WebView to keep web behavior untouched.
+ * Ensures reliable cold-start & warm-start deep linking across Web, PWA, and Android WebView/App:
+ * 1. Captures initial window.location (pathname + search + hash) and syncs React Router cleanly.
+ * 2. Exposes global native-to-web deep link bridges (window.__handleDeepLink / window.handleDeepLink / next_deep_link).
+ * 3. Shows a brief resolving overlay inside the Android App WebView to prevent blank white flashes.
  */
 export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const hasResolvedRef = useRef(false);
 
-  // Android App / WebView identification
   const isAndroidApp = typeof navigator !== 'undefined' && (
+    Boolean((window as any).AndroidApp) ||
     navigator.userAgent.includes('Next') ||
     navigator.userAgent.includes('wv') ||
     /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
   );
 
-  // If on Android App, start in a resolving state to prevent blank white screen
   const [isResolving, setIsResolving] = useState<boolean>(() => isAndroidApp);
 
+  const routeDeepLink = useCallback((rawUrl: string) => {
+    const targetRoute = normalizeAppRoute(rawUrl);
+    if (!targetRoute) return;
+    const currentRoute = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (targetRoute !== currentRoute) {
+      navigate(targetRoute);
+    }
+    const chatUserId = extractChatUserIdFromRoute(targetRoute);
+    if (chatUserId) {
+      window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUserId } }));
+    }
+  }, [navigate]);
+
+  // Register global warm-start deep link handlers for Android WebView / native shell
   useEffect(() => {
-    // Keep normal web browser behavior untouched
+    const handleCustomEvent = (e: Event) => {
+      const custom = e as CustomEvent;
+      const url = typeof custom?.detail === 'string' ? custom.detail : custom?.detail?.url;
+      if (url) routeDeepLink(url);
+    };
+
+    (window as any).__handleDeepLink = routeDeepLink;
+    (window as any).handleDeepLink = routeDeepLink;
+    window.addEventListener('next_deep_link', handleCustomEvent);
+
+    return () => {
+      delete (window as any).__handleDeepLink;
+      delete (window as any).handleDeepLink;
+      window.removeEventListener('next_deep_link', handleCustomEvent);
+    };
+  }, [routeDeepLink]);
+
+  useEffect(() => {
     if (!isAndroidApp) {
       setIsResolving(false);
       return;
@@ -40,31 +85,26 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
     hasResolvedRef.current = true;
 
     try {
-      // 1. Initialization Fix: Capture exact initial path and query from window.location
       const rawPath = window.location.pathname || '/';
       const rawSearch = window.location.search || '';
       const rawHash = window.location.hash || '';
-      const fullTarget = `${rawPath}${rawSearch}${rawHash}`;
-
+      const fullTarget = normalizeAppRoute(`${rawPath}${rawSearch}${rawHash}`);
       const currentRouterTarget = `${location.pathname}${location.search}${location.hash}`;
 
-      // If a non-root deep link was targeted and router hasn't synced it yet
       if (fullTarget && fullTarget !== '/' && fullTarget !== currentRouterTarget) {
         navigate(fullTarget, { replace: true });
       }
     } catch (err) {
       console.warn('[DeepLinkRouterGuard] Error navigating to deep link:', err);
     } finally {
-      // Allow router to mount the destination route component smoothly
       const timer = setTimeout(() => {
         setIsResolving(false);
       }, 100);
 
       return () => clearTimeout(timer);
     }
-  }, [isAndroidApp, navigate]);
+  }, [isAndroidApp, navigate, location.pathname, location.search, location.hash]);
 
-  // 2. Blank Screen Prevention: Display dedicated splash/loading component during resolution
   if (isResolving) {
     return (
       <div 

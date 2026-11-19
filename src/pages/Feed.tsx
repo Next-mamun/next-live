@@ -23,7 +23,33 @@ import { formatReelDoc, populateReelsWithProfiles } from './Reels';
 import { useContentFilter } from '@/hooks/useContentFilter';
 import { toast } from 'sonner';
 
-let globalFeedSeed = Math.random();
+const mulberry32 = (seed: number) => {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const shuffleWithRng = <T,>(arr: T[], rand: () => number): T[] => {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
+const getPostKind = (p: any): 'image' | 'text' | 'nativeVideo' | 'youtube' => {
+  const url = String(p?.media_url || p?.video_url || '').toLowerCase();
+  if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
+  if (p?.media_type === 'video' || p?.video_url) return 'nativeVideo';
+  if (p?.media_type === 'image' || p?.image_url || (p?.media_url && p?.media_type !== 'text')) return 'image';
+  return 'text';
+};
 
 const Feed: React.FC = () => {
   const { id: sharedPostId } = useParams();
@@ -80,16 +106,8 @@ const Feed: React.FC = () => {
 
   // Use Global Store for state
   const { feedPosts, fetchHomeFeed, postsLoading, postsError, hasMorePosts, addPostOptimistic } = useGlobalStore();
-  const [friendIdsSet, setFriendIdsSet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    localDB.friends.where('status').equals('accepted').toArray()
-      .then((list) => setFriendIdsSet(new Set(list.map(f => f.id))))
-      .catch(() => {});
-  }, [currentUser?.id]);
-
-  useEffect(() => {
-    setFeedRandomSeed(Math.random());
     fetchHomeFeed(false, false);
   }, [fetchHomeFeed]);
 
@@ -246,23 +264,39 @@ const Feed: React.FC = () => {
     }
 
     if (flatPosts.length > 0) {
-      const nowMs = Date.now();
-      const scoreMap = new Map<string, number>();
-      flatPosts.forEach((p, idx) => {
-        const isFriend = p.user_id && friendIdsSet.has(p.user_id) ? 45 : 0;
-        const createdMs = parseDate(p.created_at).getTime();
-        const hoursOld = Math.max(0, (nowMs - createdMs) / 3600000);
-        const recencyScore = Math.max(0, 80 - hoursOld * 1.4);
-        const likes = Number(p.like_count ?? p.likes?.length ?? 0);
-        const comments = Number(p.comment_count ?? p.comments?.length ?? 0);
-        const views = Number(p.views ?? 0);
-        const engagementScore = Math.min(35, likes * 2 + comments * 3 + views * 0.1);
-        const idHash = String(p.id || idx).split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-        const tieBreaker = ((idHash + Math.floor(feedRandomSeed * 100)) % 9);
-        scoreMap.set(p.id, isFriend + recencyScore + engagementScore + tieBreaker);
+      const rand = mulberry32(Math.floor(feedRandomSeed * 1e9) || 1);
+
+      // Bucket posts by content type (photos, text, uploaded videos, YouTube videos)
+      // and shuffle every bucket randomly so YouTube posts never monopolize the top of the feed.
+      const buckets: Record<'image' | 'text' | 'nativeVideo' | 'youtube', any[]> = {
+        image: [],
+        text: [],
+        nativeVideo: [],
+        youtube: []
+      };
+
+      flatPosts.forEach((p) => {
+        buckets[getPostKind(p)].push(p);
       });
 
-      flatPosts.sort((a, b) => (scoreMap.get(b.id) || 0) - (scoreMap.get(a.id) || 0));
+      (['image', 'text', 'nativeVideo', 'youtube'] as const).forEach((k) => {
+        buckets[k] = shuffleWithRng(buckets[k], rand);
+      });
+
+      const activeKeys = (['image', 'text', 'nativeVideo', 'youtube'] as const).filter(k => buckets[k].length > 0);
+      const mixed: any[] = [];
+
+      // Weighted round-robin random draw across remaining buckets
+      while (activeKeys.some(k => buckets[k].length > 0)) {
+        const available = activeKeys.filter(k => buckets[k].length > 0);
+        const turnOrder = shuffleWithRng(available, rand);
+        for (const k of turnOrder) {
+          const item = buckets[k].pop();
+          if (item) mixed.push(item);
+        }
+      }
+
+      flatPosts = mixed;
     }
 
     if (sharedPost) {
@@ -270,7 +304,7 @@ const Feed: React.FC = () => {
     }
 
     return flatPosts;
-  }, [feedPosts, feedRandomSeed, sharedPost, friendIdsSet]);
+  }, [feedPosts, feedRandomSeed, sharedPost]);
 
   const handleObserve = useCallback((el: HTMLElement) => {
     observer.current?.observe(el);
