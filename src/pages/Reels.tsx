@@ -9,7 +9,7 @@ import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { Reel } from '@/types';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
-import { formatTime, getPosterUrl, playInteractionSound, triggerHaptic } from '@/lib/utils';
+import { formatTime, getPosterUrl, optimizeCloudinaryUrl, playInteractionSound, triggerHaptic } from '@/lib/utils';
 import { redis } from '@/lib/redis';
 import { localDB, getUserProfile } from '@/lib/dexie';
 
@@ -597,7 +597,8 @@ const Reels: React.FC = () => {
               <ReelItem 
                 reel={reel} 
                 isActive={activeReelId === reel.id} 
-                isNeighbor={Math.abs(index - activeIndex) <= 2}
+                isNextPreload={!activeReelId ? index <= 1 : index === activeIndex + 1}
+                isNeighbor={Math.abs(index - activeIndex) <= 1}
                 onDelete={() => triggerDelete(reel.id)} 
               />
             </div>
@@ -669,7 +670,7 @@ const Reels: React.FC = () => {
   );
 };
 
-const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, onDelete: () => void }> = ({ reel, isActive, isNeighbor, onDelete }) => {
+const ReelItem: React.FC<{ reel: any, isActive: boolean, isNextPreload: boolean, isNeighbor: boolean, onDelete: () => void }> = ({ reel, isActive, isNextPreload, isNeighbor, onDelete }) => {
   const { currentUser } = useAuth();
   const { soundEffects, hapticFeedback, saveDataMode } = useTheme();
 
@@ -1142,9 +1143,9 @@ const ReelItem: React.FC<{ reel: any, isActive: boolean, isNeighbor: boolean, on
           <>
             <video 
               ref={videoRef}
-              src={reel.media_url || undefined} 
-              poster={poster || reel.thumbnail_url || (reel.media_url && !isYouTube ? getPosterUrl(reel.media_url) : undefined)}
-              preload={isNeighbor || isActive ? "auto" : "metadata"}
+              src={reel.media_url ? optimizeCloudinaryUrl(reel.media_url, { type: 'video', eco: saveDataMode }) : undefined} 
+              poster={optimizeCloudinaryUrl(poster || reel.thumbnail_url || (reel.media_url && !isYouTube ? getPosterUrl(reel.media_url) : undefined), { width: 540, type: 'image' })}
+              preload={!saveDataMode && (isActive || isNextPreload) ? "auto" : isNeighbor ? "metadata" : "none"}
               loop 
               muted={isMuted}
               playsInline

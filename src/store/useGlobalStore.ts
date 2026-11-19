@@ -9,6 +9,7 @@ import { getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
 import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
 import { fetchProfileSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
+import { getSafeMessagePreview, isChatMuted } from '@/lib/utils';
 
 interface Post {
   id: string;
@@ -64,6 +65,9 @@ let messageUnsub: (() => void) | null = null;
 let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
 const notifiedMessageIds = new Set<string>();
+const FEED_PAGE_SIZE = 15;
+let lastFirebaseFeedDoc: any = null;
+let firebaseFeedOrderSupported = true;
 
 const countUnreadMessages = (msgs: any[], userId: string): number => {
   return msgs.filter(
@@ -85,6 +89,7 @@ const handleIncomingMessageNotification = async (
   if (!msg || !msg.id || notifiedMessageIds.has(msg.id)) return;
   if (msg.sender_id === currentUserId || msg.receiver_id !== currentUserId) return;
   if (msg.is_read) return;
+  if (isChatMuted(msg.sender_id)) return;
 
   const msgTime = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
   if (Math.abs(Date.now() - msgTime) > 15 * 60 * 1000) return;
@@ -126,7 +131,7 @@ const handleIncomingMessageNotification = async (
   senderName = senderName || 'User';
   const usernameTag = (senderUsername && senderUsername !== msg.sender_id) ? ` (@${senderUsername})` : '';
   const title = `${senderName}${usernameTag}`;
-  const body = msg.content || (msg.media_type ? `Sent a ${msg.media_type}` : 'Sent a message');
+  const body = getSafeMessagePreview(msg);
   const targetUrl = `/messages?user=${msg.sender_id}`;
 
   playNotificationSound();
@@ -257,46 +262,43 @@ export const useGlobalStore = create<GlobalState>()(
           };
 
           const fetchFromFirebase = async () => {
-             // Instant hydration from Dexie for fast UI
+             if (!loadMore) {
+               lastFirebaseFeedDoc = null;
+               firebaseFeedOrderSupported = true;
+             }
+
+             // Instant hydration from Dexie for fast UI on first paint
              if (!loadMore && !forceRefresh) {
                 try {
-                  const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(150).toArray();
+                  const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(30).toArray();
                   if (localPosts.length > 0) {
-                     // Shuffle local posts on first load
-                     for (let i = localPosts.length - 1; i > 0; i--) {
-                       const j = Math.floor(Math.random() * (i + 1));
-                       [localPosts[i], localPosts[j]] = [localPosts[j], localPosts[i]];
-                     }
-                     set({ feedPosts: localPosts as any, postsLoading: false });
+                     set({ feedPosts: localPosts as any, postsLoading: false, hasMorePosts: true });
                   }
                 } catch (dexErr) {}
              }
 
-             // We fetch a larger pool of posts to allow for good randomization
-             let q = query(collection(db, 'posts'), limit(150));
-                
-             let snap;
+             let snap: any;
              try {
+               let q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(FEED_PAGE_SIZE));
+               if (loadMore && lastFirebaseFeedDoc) {
+                 q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), startAfter(lastFirebaseFeedDoc), limit(FEED_PAGE_SIZE));
+               }
                snap = await getDocs(q);
+               if (snap.docs.length > 0) {
+                 lastFirebaseFeedDoc = snap.docs[snap.docs.length - 1];
+               }
              } catch (e: any) {
-               console.warn("Error fetching posts:", e);
-               const fallbackQ = query(collection(db, 'posts'), limit(150));
+               console.warn("Error fetching paginated posts, falling back:", e);
+               firebaseFeedOrderSupported = false;
+               const fallbackQ = query(collection(db, 'posts'), limit(40));
                snap = await getDocs(fallbackQ);
              }
 
-             const rawDocs = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-             // Shuffle the fetched posts array (Fisher-Yates shuffle)
-             for (let i = rawDocs.length - 1; i > 0; i--) {
-               const j = Math.floor(Math.random() * (i + 1));
-               [rawDocs[i], rawDocs[j]] = [rawDocs[j], rawDocs[i]];
-             }
-             
-             fetchedDocs = rawDocs;
+             fetchedDocs = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
           };
 
           const fetchFromSupabase = async () => {
-             let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(20);
+             let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(FEED_PAGE_SIZE);
              if (loadMore && feedPosts.length > 0) {
                 const lastPost = feedPosts[feedPosts.length - 1];
                 let dateVal = new Date().toISOString();
@@ -396,12 +398,14 @@ export const useGlobalStore = create<GlobalState>()(
                    if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
                  }
                  
-                 // Full content caching for main feed
+                 // Full content caching for main feed (keep incremental pages)
                  const offlinePosts = populatedPosts.map(p => ({
                    ...p,
                    created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
                  }));
-                 await localDB.posts.clear(); // Clear so random posts don't just grow forever
+                 if (!loadMore) {
+                   await localDB.posts.clear();
+                 }
                  await localDB.posts.bulkPut(offlinePosts as any);
                });
              } catch (e) {
@@ -409,12 +413,20 @@ export const useGlobalStore = create<GlobalState>()(
              }
           }
           
-          set((state) => ({ 
-            feedPosts: loadMore ? [...state.feedPosts, ...populatedPosts] : populatedPosts, 
-            lastFeedFetch: Date.now(), 
-            hasMorePosts: false,
-            postsLoading: false
-          }));
+          const hasMore = activeDB === 'firebase'
+            ? (firebaseFeedOrderSupported && fetchedDocs.length >= FEED_PAGE_SIZE)
+            : fetchedDocs.length >= FEED_PAGE_SIZE;
+
+          set((state) => {
+            const combined = loadMore ? [...state.feedPosts, ...populatedPosts] : populatedPosts;
+            const deduped = Array.from(new Map(combined.map(p => [p.id, p])).values());
+            return {
+              feedPosts: deduped,
+              lastFeedFetch: Date.now(),
+              hasMorePosts: hasMore,
+              postsLoading: false
+            };
+          });
         } catch (error: any) {
           console.error("Error fetching home feed:", error);
           set({ postsLoading: false, postsError: error });
@@ -643,7 +655,8 @@ export const useGlobalStore = create<GlobalState>()(
               let targetUrl = '/';
 
               if (n.type === 'message') {
-                body = n.content || (n.media_type ? `Sent a ${n.media_type}` : 'Sent you a message');
+                if (isChatMuted(n.sender_id)) return;
+                body = getSafeMessagePreview(n);
                 targetUrl = `/messages?user=${n.sender_id}`;
               } else if (n.type === 'like') {
                 body = 'liked your post';

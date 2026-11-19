@@ -9,7 +9,7 @@ import { useGlobalStore } from '@/store/useGlobalStore';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
-import { formatTime } from '@/lib/utils';
+import { formatTime, getSafeMessagePreview } from '@/lib/utils';
 
 const Notifications: React.FC = () => {
   const { currentUser } = useAuth();
@@ -87,7 +87,7 @@ const Notifications: React.FC = () => {
             created_at: msg.created_at,
             is_read: false,
             real_msg_id: msg.id,
-            content: msg.content || msg.text || 'sent you a message'
+            content: getSafeMessagePreview(msg)
           });
         }
       });
@@ -215,7 +215,7 @@ const Notifications: React.FC = () => {
       case 'friend_request': return <><span className="font-bold">{userLabel}</span> sent you a friend request.</>;
       case 'friend_accept': return <><span className="font-bold">{userLabel}</span> accepted your friend request.</>;
       case 'story_view': return <><span className="font-bold">{userLabel}</span> viewed your story.</>;
-      case 'message': return <><span className="font-bold">{userLabel}</span>: {n.content || 'sent you a message.'}</>;
+      case 'message': return <><span className="font-bold">{userLabel}</span>: {getSafeMessagePreview(n)}</>;
       default: return <><span className="font-bold">{userLabel}</span> interacted with you.</>;
     }
   };

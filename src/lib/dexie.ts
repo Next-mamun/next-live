@@ -211,6 +211,13 @@ export const saveLocalConversation = async (conv: Partial<LocalConversation> & {
   if (!conv.id) return null;
   try {
     const existing = await localDB.conversations.get(conv.id);
+    const resolvedLastMsg = conv.last_message || existing?.last_message;
+    const resolvedLastMsgTime =
+      conv.last_message_time ||
+      conv.last_message?.created_at ||
+      existing?.last_message_time ||
+      '';
+    const parsedTimeMs = resolvedLastMsgTime ? new Date(resolvedLastMsgTime).getTime() : 0;
     const updated: LocalConversation = {
       id: conv.id,
       partner_id: conv.partner_id || conv.id,
@@ -221,12 +228,12 @@ export const saveLocalConversation = async (conv: Partial<LocalConversation> & {
       avatar_url: conv.avatar_url || conv.avatar || existing?.avatar_url || '',
       is_verified: conv.is_verified ?? existing?.is_verified ?? false,
       is_group: conv.is_group ?? existing?.is_group ?? false,
-      last_message: conv.last_message || existing?.last_message,
-      last_message_text: conv.last_message_text || (typeof conv.last_message === 'string' ? conv.last_message : (conv.last_message?.text || conv.last_message?.content || existing?.last_message_text || '')),
-      last_message_time: conv.last_message_time || conv.last_message?.created_at || existing?.last_message_time || new Date().toISOString(),
+      last_message: resolvedLastMsg,
+      last_message_text: conv.last_message_text ?? (typeof resolvedLastMsg === 'string' ? resolvedLastMsg : (resolvedLastMsg?.text || resolvedLastMsg?.content || existing?.last_message_text || '')),
+      last_message_time: resolvedLastMsgTime,
       last_sender_id: conv.last_sender_id || conv.last_message?.sender_id || existing?.last_sender_id || '',
       unread_count: conv.unread_count ?? existing?.unread_count ?? 0,
-      updated_at: Date.now()
+      updated_at: !isNaN(parsedTimeMs) && parsedTimeMs > 0 ? parsedTimeMs : (existing?.updated_at || 0)
     };
     await localDB.conversations.put(updated);
     return updated;

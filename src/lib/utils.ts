@@ -139,3 +139,97 @@ export function triggerHaptic(enabled: boolean) {
     } catch (e) {}
   }
 }
+
+export function optimizeCloudinaryUrl(
+  url: string | undefined | null,
+  options: { width?: number; type?: 'image' | 'video' | 'auto'; eco?: boolean } = {}
+): string {
+  if (!url || typeof url !== 'string') return '';
+  if (!url.includes('res.cloudinary.com') || !url.includes('/upload/')) return url;
+
+  const { width, type = 'image', eco = false } = options;
+  const parts = url.split('/upload/');
+  if (parts.length !== 2) return url;
+
+  const [prefix, rest] = parts;
+  // Skip if already transformed
+  if (/^(f_auto|q_auto|w_\d+|c_limit)/.test(rest)) {
+    return url;
+  }
+
+  const transforms: string[] = ['f_auto', eco ? 'q_auto:eco' : 'q_auto'];
+  if (type === 'image' && width && width > 0) {
+    transforms.push(`w_${width}`, 'c_limit');
+  }
+
+  return `${prefix}/upload/${transforms.join(',')}/${rest}`;
+}
+
+export function parseMessageJsonMeta(raw: any): {
+  text: string;
+  is_view_once: boolean;
+  parent_message_id: string | null;
+  filename?: string;
+  file_size?: number;
+} {
+  if (!raw || typeof raw !== 'string') {
+    return { text: '', is_view_once: false, parent_message_id: null };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.includes('"JSON_PAYLOAD"') || trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === 'object') {
+        return {
+          text: typeof obj.text === 'string' ? obj.text : '',
+          is_view_once: Boolean(obj.is_view_once),
+          parent_message_id: obj.parent_message_id || null,
+          filename: obj.filename,
+          file_size: obj.file_size,
+        };
+      }
+    } catch (_) {}
+  }
+  return { text: raw, is_view_once: false, parent_message_id: null };
+}
+
+export function isChatMuted(partnerId?: string | null): boolean {
+  if (!partnerId || typeof window === 'undefined') return false;
+  try {
+    return localStorage.getItem(`muted_${partnerId}`) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function getSafeMessagePreview(msg: any): string {
+  if (!msg) return 'Sent a message';
+  const rawContent = msg.content ?? msg.text ?? '';
+  const meta = parseMessageJsonMeta(typeof rawContent === 'string' ? rawContent : '');
+  const isViewOnce = Boolean(msg.is_view_once || meta.is_view_once);
+  const mediaType = msg.media_type;
+
+  if (isViewOnce) {
+    if (mediaType === 'audio') return '🔒 Sent a View Once voice message';
+    if (mediaType === 'video') return '🔒 Sent a View Once video';
+    if (mediaType === 'document') return '🔒 Sent a View Once document';
+    if (mediaType === 'image' || msg.media_url) return '🔒 Sent a View Once photo';
+    return '🔒 Sent a View Once message';
+  }
+
+  try {
+    if (typeof window !== 'undefined' && localStorage.getItem('hide_notification_previews') === 'true') {
+      return 'New private message';
+    }
+  } catch (_) {}
+
+  const cleanText = meta.text || (typeof rawContent === 'string' && !rawContent.trim().startsWith('{') ? rawContent : '');
+  if (cleanText.trim()) return cleanText.trim();
+
+  if (mediaType === 'audio') return '🎤 Sent a voice message';
+  if (mediaType === 'video') return '🎥 Sent a video';
+  if (mediaType === 'document') return `📄 Sent ${meta.filename || msg.filename || 'a document'}`;
+  if (mediaType === 'image' || msg.media_url) return '📷 Sent a photo';
+  return 'Sent a message';
+}
+

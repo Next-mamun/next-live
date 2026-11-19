@@ -11,6 +11,7 @@ import * as idb from 'idb-keyval';
 import * as tus from 'tus-js-client';
 import { invalidatePostsCache, redis } from '@/lib/redis';
 import { triggerNotification } from '@/services/notificationService';
+import { getSafeMessagePreview, parseMessageJsonMeta } from '@/lib/utils';
 import { toast } from 'sonner';
 
 import imageCompression from 'browser-image-compression';
@@ -408,8 +409,9 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const senderName = metadata.sender_name || auth.currentUser?.displayName || senderUsername || 'User';
         const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
         const senderTitle = `${senderName}${usernameTag}`;
-        const mediaLabel = metadata.mediaType || payload.media_type || 'media';
-        const notifBody = `Sent a ${mediaLabel}`;
+        const parsedMeta = parseMessageJsonMeta(payload.content);
+        const isViewOnce = Boolean(payload.is_view_once || parsedMeta.is_view_once);
+        const notifBody = getSafeMessagePreview({ ...payload, is_view_once: isViewOnce });
         const senderId = metadata.payload.sender_id || auth.currentUser?.uid;
         const receiverId = metadata.payload.receiver_id;
         const senderAvatar = metadata.sender_avatar || auth.currentUser?.photoURL || '';
@@ -426,6 +428,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               sender_username: senderUsername,
               sender_avatar: senderAvatar,
               url: `/messages?user=${senderId}`,
+              is_view_once: isViewOnce,
               content: notifBody
             }
           );

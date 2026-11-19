@@ -2,7 +2,7 @@ import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/d
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock } from 'lucide-react';
+import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink } from 'lucide-react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
@@ -32,7 +32,7 @@ import { MediaEditor, CameraCapture } from '../components/MediaTools';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useUpload } from '@/contexts/UploadContext';
 import ConfirmDialog from '@/components/ConfirmDialog';
-import { formatTime } from '@/lib/utils';
+import { formatTime, getSafeMessagePreview } from '@/lib/utils';
 import { triggerNotification } from '@/services/notificationService';
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { toast } from 'sonner';
@@ -49,13 +49,33 @@ const safeFormatChatTime = (val: any) => {
   }
 };
 
-const getChatTimestamp = (c: any): number => {
-  if (!c) return 0;
-  const raw = c.lastMessage?.created_at || c.last_message_time || c.updated_at || c.lastMessageTime;
-  if (!raw) return 0;
-  if (typeof raw === 'number') {
-    return isNaN(raw) ? 0 : raw;
+const parseMessagePayload = (m: any) => {
+  if (!m) return m;
+  const parsed: any = { ...m };
+  if (m.text && !parsed.content) {
+    parsed.content = m.text;
   }
+  const rawContent = parsed.content;
+  if (typeof rawContent === 'string') {
+    if (rawContent.includes('"JSON_PAYLOAD"') || rawContent.trim().startsWith('{')) {
+      try {
+        const obj = JSON.parse(rawContent);
+        if (obj && typeof obj === 'object') {
+          if (obj.text !== undefined) parsed.content = obj.text;
+          if (obj.is_view_once !== undefined) parsed.is_view_once = obj.is_view_once;
+          if (obj.parent_message_id !== undefined) parsed.parent_message_id = obj.parent_message_id;
+          if (obj.filename !== undefined) parsed.filename = obj.filename;
+          if (obj.file_size !== undefined) parsed.file_size = obj.file_size;
+        }
+      } catch (e) {}
+    }
+  }
+  return parsed;
+};
+
+const toMillisSafe = (raw: any): number => {
+  if (!raw) return 0;
+  if (typeof raw === 'number') return isNaN(raw) ? 0 : raw;
   if (raw?.toMillis && typeof raw.toMillis === 'function') {
     try { const t = raw.toMillis(); return isNaN(t) ? 0 : t; } catch (_) { return 0; }
   }
@@ -73,6 +93,53 @@ const getChatTimestamp = (c: any): number => {
   }
   return 0;
 };
+
+const getChatTimestamp = (c: any): number => {
+  if (!c) return 0;
+  const raw =
+    c.lastMessage?.created_at ||
+    c.lastMessage?.local_created_at ||
+    c.last_message_time ||
+    c.lastMessageTime;
+  return toMillisSafe(raw);
+};
+
+const sortContactsWhatsApp = (list: any[], unreadMap?: Record<string, number>, pinnedIds?: string[]) => {
+  const pinnedSet = pinnedIds ? new Set(pinnedIds) : null;
+  return [...list].sort((a, b) => {
+    if (pinnedSet) {
+      const pinA = pinnedSet.has(a.id);
+      const pinB = pinnedSet.has(b.id);
+      if (pinA !== pinB) return pinB ? 1 : -1;
+    }
+
+    const timeA = getChatTimestamp(a);
+    const timeB = getChatTimestamp(b);
+    const unreadA = (unreadMap?.[a.id] ?? a.unreadCount ?? 0) > 0;
+    const unreadB = (unreadMap?.[b.id] ?? b.unreadCount ?? 0) > 0;
+    const hasActivityA = timeA > 0 || unreadA;
+    const hasActivityB = timeB > 0 || unreadB;
+
+    if (hasActivityA !== hasActivityB) {
+      return hasActivityB ? 1 : -1;
+    }
+    if (timeA !== timeB) {
+      return timeB - timeA;
+    }
+    if (unreadA !== unreadB) {
+      return unreadB ? 1 : -1;
+    }
+    return (a.display_name || a.name || '').localeCompare(b.display_name || b.name || '');
+  });
+};
+
+const extractFirstUrl = (text?: string): string | null => {
+  if (!text || typeof text !== 'string') return null;
+  const match = text.match(/https?:\/\/[^\s<>"']+/i);
+  return match ? match[0] : null;
+};
+
+const QUICK_REACTIONS = ['❤️', '😂', '😮', '😢', '👍'];
 
 const CustomAudioPlayer = ({ src, isSender }: { src: string; isSender?: boolean }) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -135,32 +202,59 @@ const CustomAudioPlayer = ({ src, isSender }: { src: string; isSender?: boolean 
     return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
   };
 
+  const waveformBars = React.useMemo(() => {
+    const seedStr = src || 'voice';
+    let h = 2166136261;
+    for (let i = 0; i < seedStr.length; i++) {
+      h ^= seedStr.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return Array.from({ length: 24 }, (_, idx) => {
+      const val = Math.abs(Math.sin((h + idx * 97) * 0.13));
+      return 24 + Math.round(val * 72);
+    });
+  }, [src]);
+
+  const handleBarSeek = (idx: number) => {
+    const pct = ((idx + 0.5) / waveformBars.length) * 100;
+    if (audioRef.current && duration > 0) {
+      audioRef.current.currentTime = (pct / 100) * duration;
+      setProgress(pct);
+    }
+  };
+
   return (
-    <div className={`flex items-center gap-3 w-full min-w-[200px] sm:min-w-[240px] max-w-[280px] px-1 py-0.5`}>
+    <div className="flex items-center gap-3 w-full min-w-[210px] sm:min-w-[250px] max-w-[290px] px-1 py-0.5">
       <audio ref={audioRef} src={src} preload="metadata" />
       
       <button 
+        type="button"
         onClick={togglePlay}
         className={`w-10 h-10 rounded-full shrink-0 flex items-center justify-center transition-transform hover:scale-105 active:scale-95 ${isSender ? 'bg-white text-[#1877F2] shadow-sm' : 'bg-[#1877F2] text-white shadow-md'}`}
       >
-        {isPlaying ? <Pause fill="currentColor" size={18} /> : <Play fill="currentColor" size={20} className="ml-1" />}
+        {isPlaying ? <Pause fill="currentColor" size={18} /> : <Play fill="currentColor" size={20} className="ml-0.5" />}
       </button>
 
       <div className="flex-1 flex flex-col justify-center">
-        <div className="relative w-full flex items-center h-6 group">
-           <input
-             type="range"
-             min="0"
-             max="100"
-             value={progress || 0}
-             onChange={handleSeek}
-             className={`w-full h-1.5 rounded-full appearance-none cursor-pointer transition-all ${isSender ? 'bg-black/10 accent-white' : 'bg-gray-200 dark:bg-gray-700 accent-[#1877F2]'}`}
-             style={{ 
-               background: `linear-gradient(to right, ${isSender ? 'white' : '#1877F2'} ${progress}%, ${isSender ? 'rgba(0,0,0,0.1)' : 'var(--tw-colors-gray-200)'} ${progress}%)` 
-             }}
-           />
+        <div className="flex items-end gap-[2px] h-7 w-full cursor-pointer select-none" aria-label="Voice waveform">
+          {waveformBars.map((heightPct, idx) => {
+            const barPct = ((idx + 1) / waveformBars.length) * 100;
+            const active = progress >= barPct - 2;
+            return (
+              <div
+                key={idx}
+                onClick={(e) => { e.stopPropagation(); handleBarSeek(idx); }}
+                className={`flex-1 rounded-full transition-colors duration-150 ${
+                  active
+                    ? (isSender ? 'bg-white' : 'bg-[#1877F2]')
+                    : (isSender ? 'bg-white/35' : 'bg-gray-300 dark:bg-gray-600')
+                }`}
+                style={{ height: `${heightPct}%` }}
+              />
+            );
+          })}
         </div>
-        <div className={`text-[11px] font-medium leading-none mt-0.5 flex justify-between tracking-wide ${isSender ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+        <div className={`text-[11px] font-medium leading-none mt-1 flex justify-between tracking-wide tabular-nums ${isSender ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
           <span>{formatAudioTime(audioRef.current?.currentTime || 0)}</span>
           <span>{formatAudioTime(duration)}</span>
         </div>
@@ -188,7 +282,7 @@ const Messages: React.FC = () => {
   const [groupName, setGroupName] = useState('');
   const [groupAvatarFile, setGroupAvatarFile] = useState<File | null>(null);
   const [groupAvatarPreview, setGroupAvatarPreview] = useState('');
-  const [chatViewMode, setChatViewMode] = useState<'active' | 'archived' | 'groups'>('active');
+  const [chatViewMode, setChatViewMode] = useState<'active' | 'unread' | 'archived' | 'groups'>('active');
   const [groupMembers, setGroupMembers] = useState<any[]>([]);
 
   // 100% Client-Side Unread Counter Map (WhatsApp-style instant UI)
@@ -200,6 +294,40 @@ const Messages: React.FC = () => {
       return {};
     }
   });
+
+  // Pinned Chats (local persisted + instant top placement)
+  const [pinnedChats, setPinnedChats] = useState<string[]>(() => {
+    if (!currentUser?.id) return [];
+    try {
+      return JSON.parse(localStorage.getItem('pinned_chats_' + currentUser.id) || '[]');
+    } catch (_) {
+      return [];
+    }
+  });
+
+  // Message Reactions & Starred Messages
+  const [reactionsMap, setReactionsMap] = useState<Record<string, Record<string, string[]>>>(() => {
+    if (!currentUser?.id) return {};
+    try {
+      return JSON.parse(localStorage.getItem('msg_reactions_' + currentUser.id) || '{}');
+    } catch (_) {
+      return {};
+    }
+  });
+  const [activeReactionMsgId, setActiveReactionMsgId] = useState<string | null>(null);
+
+  const [starredItems, setStarredItems] = useState<any[]>(() => {
+    if (!currentUser?.id) return [];
+    try {
+      return JSON.parse(localStorage.getItem('starred_msgs_' + currentUser.id) || '[]');
+    } catch (_) {
+      return [];
+    }
+  });
+  const [showStarredModal, setShowStarredModal] = useState(false);
+
+  const [hasOlderRemote, setHasOlderRemote] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
   const setActiveChatId = useGlobalStore(state => state.setActiveChatId);
@@ -273,7 +401,7 @@ const Messages: React.FC = () => {
       return;
     }
     
-    // Instant unread badge clear (WhatsApp style - 100% Client-Side)
+    // Instant unread badge clear (WhatsApp style)
     setUnreadCounts(prev => {
       if (!prev[contact.id]) return prev;
       const next = { ...prev };
@@ -283,12 +411,37 @@ const Messages: React.FC = () => {
       }
       return next;
     });
-    if (currentUser?.id && contact.lastMessage?.id) {
+    if (currentUser?.id) {
       const readKey = 'read_msg_ids_' + currentUser.id;
       const existingRead: string[] = JSON.parse(localStorage.getItem(readKey) || '[]');
-      if (!existingRead.includes(contact.lastMessage.id)) {
+      if (contact.lastMessage?.id && !existingRead.includes(contact.lastMessage.id)) {
         existingRead.push(contact.lastMessage.id);
-        localStorage.setItem(readKey, JSON.stringify(existingRead.slice(-100)));
+        localStorage.setItem(readKey, JSON.stringify(existingRead.slice(-200)));
+      }
+      const store = useGlobalStore.getState();
+      const updatedStoreMsgs = store.messages.map(m =>
+        m.sender_id === contact.id && m.receiver_id === currentUser.id && m.is_read === false
+          ? { ...m, is_read: true }
+          : m
+      );
+      const newUnreadTotal = updatedStoreMsgs.filter(
+        m =>
+          m.is_read === false &&
+          m.receiver_id === currentUser.id &&
+          m.sender_id !== currentUser.id &&
+          !m.deleted_for_everyone &&
+          !(m.deleted_for || []).includes(currentUser.id)
+      ).length;
+      useGlobalStore.setState({ messages: updatedStoreMsgs, unreadMessagesCount: newUnreadTotal });
+      if (!contact.is_group) {
+        Promise.resolve(
+          supabase
+            .from('messages')
+            .update({ is_read: true })
+            .eq('sender_id', contact.id)
+            .eq('receiver_id', currentUser.id)
+            .eq('is_read', false)
+        ).catch(() => {});
       }
     }
 
@@ -464,16 +617,6 @@ const Messages: React.FC = () => {
     if (inputRef.current) inputRef.current.blur();
     setIsInputFocused(false);
     if (e.cancelable) e.preventDefault();
-  };
-
-  const handleScroll = (e: any) => {
-    if (e.target.scrollTop === 0 && messages.length > visibleLimit) {
-      const oldHeight = e.target.scrollHeight;
-      setVisibleLimit(prev => prev + 50);
-      setTimeout(() => {
-        e.target.scrollTop = e.target.scrollHeight - oldHeight;
-      }, 0);
-    }
   };
 
   useEffect(() => {
@@ -872,11 +1015,7 @@ const Messages: React.FC = () => {
         messages = messages.filter(m => !m.deleted_for_everyone && !(m.deleted_for || []).includes(currentUser.id));
 
         // Sort in memory newest first
-        messages.sort((a, b) => {
-          const timeA = typeof a.created_at === 'string' ? new Date(a.created_at).getTime() : a.created_at?.toMillis ? a.created_at.toMillis() : (typeof a.created_at === 'number' ? a.created_at : Date.now());
-          const timeB = typeof b.created_at === 'string' ? new Date(b.created_at).getTime() : b.created_at?.toMillis ? b.created_at.toMillis() : (typeof b.created_at === 'number' ? b.created_at : Date.now());
-          return timeB - timeA;
-        });
+        messages.sort((a, b) => toMillisSafe(b.created_at || b.local_created_at) - toMillisSafe(a.created_at || a.local_created_at));
 
         // 5. Build partnerMap from messages
         const partnerMap = new Map<string, any>();
@@ -887,45 +1026,23 @@ const Messages: React.FC = () => {
             : (m.sender_id === currentUser.id ? m.receiver_id : m.sender_id);
           if (!partnerId) return;
 
-          let parsedM: any = { ...m };
-          if (m.text && !parsedM.content) {
-            parsedM.content = m.text;
-          }
-          if (typeof m.content === 'string') {
-            if (m.content.includes('"JSON_PAYLOAD"')) {
-              try {
-                const obj = JSON.parse(m.content);
-                parsedM.content = obj.text;
-                parsedM.is_view_once = obj.is_view_once;
-                parsedM.parent_message_id = obj.parent_message_id;
-                parsedM.filename = obj.filename;
-                parsedM.file_size = obj.file_size;
-              } catch (e) {}
-            } else if (m.content.startsWith('{')) {
-              try {
-                const obj = JSON.parse(m.content);
-                if (obj.text !== undefined) parsedM.content = obj.text;
-                if (obj.filename) parsedM.filename = obj.filename;
-                if (obj.file_size) parsedM.file_size = obj.file_size;
-              } catch (e) {}
-            }
-          }
+          const parsedM = parseMessagePayload(m);
           if (!partnerMap.has(partnerId)) {
             partnerMap.set(partnerId, parsedM);
           }
         });
 
-        // If any local conversation had a last_message and partnerMap doesn't have it, fill it in
+        // If any local conversation has a real saved last_message + timestamp and partnerMap doesn't have it, fill it in
         localConvsMap.forEach((conv, cid) => {
           if (!partnerMap.has(cid)) {
-            if (conv.last_message) {
-              partnerMap.set(cid, conv.last_message);
-            } else if (conv.last_message_text) {
-              partnerMap.set(cid, {
+            if (conv.last_message && (conv.last_message.created_at || conv.last_message_time)) {
+              partnerMap.set(cid, parseMessagePayload(conv.last_message));
+            } else if (conv.last_message_text && conv.last_message_time) {
+              partnerMap.set(cid, parseMessagePayload({
                 content: conv.last_message_text,
                 sender_id: conv.last_sender_id || cid,
-                created_at: conv.last_message_time || conv.updated_at || Date.now()
-              });
+                created_at: conv.last_message_time
+              }));
             }
           }
         });
@@ -1020,6 +1137,34 @@ const Messages: React.FC = () => {
 
         const blocks = friendships.filter(f => f.status === 'blocked');
 
+        // Compute live unread map before assembling & sorting contacts
+        let readMsgIdsSet = new Set<string>();
+        try {
+          readMsgIdsSet = new Set(JSON.parse(localStorage.getItem('read_msg_ids_' + currentUser.id) || '[]'));
+        } catch (_) {}
+
+        const unreadFromMsgs: Record<string, number> = {};
+        messages.forEach(m => {
+          if (
+            m.receiver_id === currentUser.id &&
+            m.is_read === false &&
+            m.sender_id &&
+            m.sender_id !== currentUser.id &&
+            !readMsgIdsSet.has(m.id) &&
+            selectedChat?.id !== m.sender_id
+          ) {
+            unreadFromMsgs[m.sender_id] = (unreadFromMsgs[m.sender_id] || 0) + 1;
+          }
+        });
+
+        // Sync unreadCounts cleanly so already-read chats clear automatically
+        setUnreadCounts(() => {
+          if (currentUser?.id) {
+            localStorage.setItem('unread_counts_' + currentUser.id, JSON.stringify(unreadFromMsgs));
+          }
+          return unreadFromMsgs;
+        });
+
         // 10. Construct full contact objects and update local conversation storage
         const contactsWithMessages = allContactIds.map((cid: string) => {
           const profile = profilesMap.get(cid) || {
@@ -1038,8 +1183,9 @@ const Messages: React.FC = () => {
             (f.sender_id === currentUser.id && f.receiver_id === cid) ||
             (f.sender_id === cid && f.receiver_id === currentUser.id)
           );
+          const convUnread = unreadFromMsgs[cid] || 0;
 
-          // WhatsApp permanent save: Guarantee that every contacted user stays in IndexedDB
+          // WhatsApp permanent save: Guarantee that every contacted user stays in IndexedDB without fabricating empty timestamps
           saveLocalConversation({
             id: cid,
             partner_id: cid,
@@ -1050,14 +1196,19 @@ const Messages: React.FC = () => {
             avatar_url: profile.avatar_url || profile.avatar || '',
             is_verified: !!profile.is_verified,
             is_group: !!profile.is_group,
-            last_message: lastMsg,
-            last_message_text: lastMsg?.content || lastMsg?.text || '',
-            last_message_time: lastMsg?.created_at
+            ...(lastMsg ? {
+              last_message: lastMsg,
+              last_message_text: lastMsg.content || lastMsg.text || '',
+              last_message_time: lastMsg.created_at || ''
+            } : {}),
+            unread_count: convUnread
           }).catch(() => {});
           
           return {
             ...profile,
             lastMessage: lastMsg,
+            last_message_time: lastMsg?.created_at || '',
+            unreadCount: convUnread,
             isNewFriend: !lastMsg && friendship?.status === 'pending',
             isFriend: friendship?.status === 'accepted',
             blockStatus: block ? {
@@ -1067,42 +1218,19 @@ const Messages: React.FC = () => {
           };
         });
 
-        // 11. Filter for deleted or archived chats
+        // 11. Filter for deleted, unread, groups, or archived chats
         const deletedIds = JSON.parse(localStorage.getItem('deleted_chats_' + currentUser?.id) || '[]');
         const archivedIds = JSON.parse(localStorage.getItem('archived_chats') || '[]');
         const filteredForDeletion = contactsWithMessages.filter(c => {
           if (deletedIds.includes(c.id)) return false;
           if (chatViewMode === 'archived') return archivedIds.includes(c.id);
           if (chatViewMode === 'groups') return c.is_group && !archivedIds.includes(c.id);
+          if (chatViewMode === 'unread') return (c.unreadCount || 0) > 0 && !archivedIds.includes(c.id);
           return !archivedIds.includes(c.id);
         });
 
-        // 12. Sort: Most recent message/activity strictly on top (WhatsApp order)
-        const sortedContacts = filteredForDeletion.sort((a, b) => {
-          const timeA = getChatTimestamp(a);
-          const timeB = getChatTimestamp(b);
-          if (timeA !== timeB) {
-            return timeB - timeA;
-          }
-          return (a.display_name || a.name || '').localeCompare(b.display_name || b.name || '');
-        });
-
-        // 13. Sync unread messages from incoming messages
-        const unreadFromMsgs: Record<string, number> = {};
-        messages.forEach(m => {
-          if (m.receiver_id === currentUser.id && m.is_read === false && m.sender_id) {
-            unreadFromMsgs[m.sender_id] = (unreadFromMsgs[m.sender_id] || 0) + 1;
-          }
-        });
-        if (Object.keys(unreadFromMsgs).length > 0) {
-          setUnreadCounts(prev => {
-            const merged = { ...unreadFromMsgs, ...prev };
-            if (currentUser?.id) {
-              localStorage.setItem('unread_counts_' + currentUser.id, JSON.stringify(merged));
-            }
-            return merged;
-          });
-        }
+        // 12. Sort strictly WhatsApp-style: Pinned -> Active/recent/unread chats strictly on top, newest first
+        const sortedContacts = sortContactsWhatsApp(filteredForDeletion, unreadFromMsgs, pinnedChats);
 
         return sortedContacts;
       } catch (err) {
@@ -1117,6 +1245,71 @@ const Messages: React.FC = () => {
 
   const [messages, setMessages] = useState<any[]>([]);
 
+  const loadOlderRemoteMessages = useCallback(async (scrollContainer: HTMLElement | null) => {
+    if (!selectedChat || !currentUser || loadingOlder || !hasOlderRemote || messages.length === 0) return;
+    setLoadingOlder(true);
+    const oldHeight = scrollContainer?.scrollHeight || 0;
+    try {
+      const oldestMsg = messages[0];
+      const oldestTime = oldestMsg?.created_at || new Date().toISOString();
+      let supaQuery = supabase.from('messages').select('*');
+      if (selectedChat.is_group) {
+        supaQuery = supaQuery.eq('receiver_id', selectedChat.id);
+      } else {
+        supaQuery = supaQuery.or(`and(sender_id.eq.${currentUser.id},receiver_id.eq.${selectedChat.id}),and(sender_id.eq.${selectedChat.id},receiver_id.eq.${currentUser.id})`);
+      }
+      const { data: olderRaw, error } = await supaQuery
+        .lt('created_at', oldestTime)
+        .order('created_at', { ascending: false })
+        .limit(40);
+
+      if (!error && olderRaw) {
+        if (olderRaw.length < 40) setHasOlderRemote(false);
+        if (olderRaw.length > 0) {
+          const chatId = selectedChat.is_group
+            ? selectedChat.id
+            : [currentUser.id, selectedChat.id].sort().join('_');
+          const parsedOlder = olderRaw.reverse().map((m: any) => ({
+            ...parseMessagePayload({ ...m, content: m.content || m.text }),
+            chat_id: chatId,
+            chatId: chatId,
+          })).filter((m: any) => !m.deleted_for_everyone && !(m.deleted_for || []).includes(currentUser.id));
+
+          setMessages(prev => {
+            const existingIds = new Set(prev.map(x => x.id));
+            const uniqueOlder = parsedOlder.filter(x => !existingIds.has(x.id));
+            if (uniqueOlder.length === 0) return prev;
+            setVisibleLimit(v => v + uniqueOlder.length);
+            return [...uniqueOlder, ...prev];
+          });
+          localDB.messages.bulkPut(parsedOlder).catch(() => {});
+          setTimeout(() => {
+            if (scrollContainer) {
+              scrollContainer.scrollTop = scrollContainer.scrollHeight - oldHeight;
+            }
+          }, 0);
+        }
+      }
+    } catch (_) {
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [selectedChat, currentUser, loadingOlder, hasOlderRemote, messages]);
+
+  const handleScroll = (e: any) => {
+    if (e.target.scrollTop <= 20) {
+      if (messages.length > visibleLimit) {
+        const oldHeight = e.target.scrollHeight;
+        setVisibleLimit(prev => prev + 50);
+        setTimeout(() => {
+          e.target.scrollTop = e.target.scrollHeight - oldHeight;
+        }, 0);
+      } else if (hasOlderRemote && !loadingOlder && messages.length > 0) {
+        loadOlderRemoteMessages(e.target);
+      }
+    }
+  };
+
   useEffect(() => {
     let unsub1: any;
     let unsub2: any;
@@ -1129,6 +1322,8 @@ const Messages: React.FC = () => {
     }
     
     setVisibleLimit(50);
+    setHasOlderRemote(true);
+    setActiveReactionMsgId(null);
     setIsMuted(localStorage.getItem(`muted_${selectedChat.id}`) === 'true');
 
     const mergeIncomingMessages = (incomingMsgs: any[]) => {
@@ -1485,6 +1680,18 @@ const Messages: React.FC = () => {
             setLiveText('');
           } else if (data.type === 'LIVE_TEXT_STREAM') {
             setLiveText(data.text);
+          } else if (data.type === 'MESSAGE_REACTION' && data.msgId && data.emoji && data.userId) {
+            setReactionsMap(prev => {
+              const msgReacts = { ...(prev[data.msgId] || {}) };
+              const users = new Set(msgReacts[data.emoji] || []);
+              if (data.removed) users.delete(data.userId);
+              else users.add(data.userId);
+              if (users.size === 0) delete msgReacts[data.emoji];
+              else msgReacts[data.emoji] = Array.from(users);
+              const next = { ...prev, [data.msgId]: msgReacts };
+              if (currentUser?.id) localStorage.setItem('msg_reactions_' + currentUser.id, JSON.stringify(next));
+              return next;
+            });
           }
         })
         .subscribe((status: string, err: any) => {
@@ -1534,46 +1741,178 @@ const Messages: React.FC = () => {
 
   const isBlockedByMe = iBlockedThem;
 
+  // Keep Inbox contacts & unread counts strictly synced with global store messages
+  const storeMessages = useGlobalStore((state) => state.messages);
+  useEffect(() => {
+    if (!currentUser?.id || !Array.isArray(storeMessages) || storeMessages.length === 0) return;
+
+    let readSet = new Set<string>();
+    try {
+      readSet = new Set(JSON.parse(localStorage.getItem('read_msg_ids_' + currentUser.id) || '[]'));
+    } catch (_) {}
+
+    const latestByPartner = new Map<string, any>();
+    const unreadByPartner: Record<string, number> = {};
+
+    storeMessages.forEach((rawMsg: any) => {
+      if (!rawMsg || rawMsg.deleted_for_everyone || (Array.isArray(rawMsg.deleted_for) && rawMsg.deleted_for.includes(currentUser.id))) {
+        return;
+      }
+      const isGrp = String(rawMsg.receiver_id || '').startsWith('group_');
+      const partnerId = isGrp
+        ? rawMsg.receiver_id
+        : (rawMsg.sender_id === currentUser.id ? rawMsg.receiver_id : rawMsg.sender_id);
+      if (!partnerId) return;
+
+      const parsed = parseMessagePayload(rawMsg);
+      const prevLatest = latestByPartner.get(partnerId);
+      if (!prevLatest || toMillisSafe(parsed.created_at) > toMillisSafe(prevLatest.created_at)) {
+        latestByPartner.set(partnerId, parsed);
+      }
+
+      if (
+        rawMsg.receiver_id === currentUser.id &&
+        rawMsg.is_read === false &&
+        rawMsg.sender_id &&
+        rawMsg.sender_id !== currentUser.id &&
+        !readSet.has(rawMsg.id) &&
+        selectedChat?.id !== rawMsg.sender_id
+      ) {
+        unreadByPartner[rawMsg.sender_id] = (unreadByPartner[rawMsg.sender_id] || 0) + 1;
+      }
+    });
+
+    setUnreadCounts(prev => {
+      const next = { ...unreadByPartner };
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      const changed = prevKeys.length !== nextKeys.length || nextKeys.some(k => prev[k] !== next[k]);
+      if (!changed) return prev;
+      localStorage.setItem('unread_counts_' + currentUser.id, JSON.stringify(next));
+      return next;
+    });
+
+    const modesToSync: Array<'active' | 'unread' | 'archived' | 'groups'> = Array.from(new Set(['active', chatViewMode]));
+    modesToSync.forEach(mode => {
+      queryClient.setQueryData(['contacts', mode], (old: any) => {
+        if (!Array.isArray(old)) return old;
+        const updated = old.map((c: any) => {
+          const storeLast = latestByPartner.get(c.id);
+          const currentLastTime = getChatTimestamp(c);
+          const storeLastTime = storeLast ? toMillisSafe(storeLast.created_at) : 0;
+          const nextLast = storeLastTime > currentLastTime ? storeLast : c.lastMessage;
+          return {
+            ...c,
+            lastMessage: nextLast,
+            last_message_time: nextLast?.created_at || c.last_message_time || '',
+            unreadCount: unreadByPartner[c.id] || 0
+          };
+        });
+        return sortContactsWhatsApp(updated, unreadByPartner, pinnedChats);
+      });
+    });
+  }, [storeMessages, currentUser?.id, selectedChat?.id, chatViewMode, queryClient, pinnedChats]);
+
   // Realtime Listeners (100% Supabase)
   useEffect(() => {
     if (!currentUser) return;
+
+    const promoteContact = (partnerId: string, rawMsg: any) => {
+      const parsedMsg = parseMessagePayload(rawMsg);
+      const msgTime = parsedMsg.created_at || new Date().toISOString();
+      const modes: Array<'active' | 'unread' | 'archived' | 'groups'> = Array.from(new Set(['active', chatViewMode]));
+
+      let foundInActive = false;
+      modes.forEach((mode) => {
+        queryClient.setQueryData(['contacts', mode], (old: any) => {
+          if (!Array.isArray(old)) return old;
+          const idx = old.findIndex((c: any) => c.id === partnerId);
+          if (idx > -1) {
+            if (mode === 'active') foundInActive = true;
+            const nextList = [...old];
+            const updatedChat = {
+              ...nextList[idx],
+              isNewFriend: false,
+              lastMessage: parsedMsg,
+              last_message_time: msgTime,
+              lastMessageTime: msgTime,
+            };
+            nextList[idx] = updatedChat;
+            return sortContactsWhatsApp(nextList, unreadCounts, pinnedChats);
+          }
+          return old;
+        });
+      });
+
+      saveLocalConversation({
+        id: partnerId,
+        partner_id: partnerId,
+        last_message: parsedMsg,
+        last_message_text: parsedMsg.content || parsedMsg.text || '',
+        last_message_time: msgTime,
+        last_sender_id: parsedMsg.sender_id
+      }).catch(() => {});
+
+      if (!foundInActive) {
+        queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      }
+    };
 
     const globalMessagesChannel = supabase
       .channel(`global-messages:${currentUser.id}`)
       .on(
         'postgres_changes',
         {
-          event: 'INSERT',
+          event: '*',
           schema: 'public',
           table: 'messages',
         },
         (payload: any) => {
-          const newMsg = payload.new;
+          const newMsg = payload.new || payload.old;
           if (!newMsg) return;
           const isGroup = String(newMsg.receiver_id || '').startsWith('group_');
-          if (newMsg.sender_id === currentUser.id || newMsg.receiver_id === currentUser.id || isGroup) {
-            queryClient.setQueryData(['contacts', chatViewMode], (old: any) => {
-              if (!old) return old;
-              const newContacts = [...old];
-              const partnerId = isGroup
-                ? newMsg.receiver_id
-                : (newMsg.sender_id === currentUser.id ? newMsg.receiver_id : newMsg.sender_id);
-              const chatIdx = newContacts.findIndex((c: any) => c.id === partnerId);
-              if (chatIdx > -1) {
-                const chat = { ...newContacts[chatIdx] };
-                chat.lastMessage = { ...newMsg, content: newMsg.content || newMsg.text };
-                chat.last_message_time = Date.now();
-                chat.lastMessageTime = Date.now();
-                chat.updated_at = Date.now();
-                newContacts.splice(chatIdx, 1);
-                newContacts.unshift(chat);
-              } else {
-                queryClient.invalidateQueries({ queryKey: ['contacts'] });
+          const involvesMe = newMsg.sender_id === currentUser.id || newMsg.receiver_id === currentUser.id || isGroup;
+          if (!involvesMe) return;
+
+          const partnerId = isGroup
+            ? newMsg.receiver_id
+            : (newMsg.sender_id === currentUser.id ? newMsg.receiver_id : newMsg.sender_id);
+
+          if (payload.eventType === 'INSERT') {
+            // Auto-restore deleted chat if incoming message arrives
+            if (partnerId) {
+              try {
+                const deletedKey = 'deleted_chats_' + currentUser.id;
+                const deletedIds: string[] = JSON.parse(localStorage.getItem(deletedKey) || '[]');
+                if (deletedIds.includes(partnerId)) {
+                  localStorage.setItem(deletedKey, JSON.stringify(deletedIds.filter(id => id !== partnerId)));
+                }
+              } catch (_) {}
+            }
+
+            // Increment live unread count if message is for me & chat is not open
+            if (newMsg.receiver_id === currentUser.id && newMsg.sender_id !== currentUser.id && newMsg.is_read === false) {
+              const isOpenNow = selectedChat?.id === newMsg.sender_id;
+              if (!isOpenNow) {
+                setUnreadCounts(prev => {
+                  const next = { ...prev, [newMsg.sender_id]: (prev[newMsg.sender_id] || 0) + 1 };
+                  localStorage.setItem('unread_counts_' + currentUser.id, JSON.stringify(next));
+                  return next;
+                });
               }
-              return newContacts;
-            });
+            }
+
+            if (partnerId) {
+              promoteContact(partnerId, newMsg);
+            }
             queryClient.invalidateQueries({ queryKey: ['unreadCounts'] });
             queryClient.invalidateQueries({ queryKey: ['notifications', currentUser.id] });
+          } else if (payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
+            if (payload.eventType === 'UPDATE' && newMsg.is_read === true && newMsg.receiver_id === currentUser.id && newMsg.sender_id) {
+              queryClient.invalidateQueries({ queryKey: ['contacts'] });
+            } else if (newMsg.deleted_for_everyone || (Array.isArray(newMsg.deleted_for) && newMsg.deleted_for.includes(currentUser.id)) || payload.eventType === 'DELETE') {
+              queryClient.invalidateQueries({ queryKey: ['contacts'] });
+            }
           }
         }
       )
@@ -1603,7 +1942,7 @@ const Messages: React.FC = () => {
     return () => {
       supabase.removeChannel(globalMessagesChannel);
     };
-  }, [currentUser?.id, chatViewMode, queryClient]);
+  }, [currentUser?.id, chatViewMode, selectedChat?.id, queryClient]);
 
   const startRecording = async () => {
     try {
@@ -1717,27 +2056,27 @@ const Messages: React.FC = () => {
     setMessages((prev: any[]) => [...prev, optimisticMsg]);
     queryClient.setQueryData(['messages', selectedChat.id], (old: any) => [...(old || []), optimisticMsg]);
 
-    queryClient.setQueryData(['contacts', chatViewMode], (old: any) => {
-      if (!old) return old;
-      const newContacts = [...old];
-      const chatIdx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
-      if (chatIdx > -1) {
-        const chat = newContacts[chatIdx];
-        chat.lastMessage = { ...newMessage, created_at: Date.now() };
-        chat.last_message_time = Date.now();
-        chat.lastMessageTime = Date.now();
-        chat.updated_at = Date.now();
-        newContacts.splice(chatIdx, 1);
-        newContacts.unshift(chat);
-      } else {
-        const chat = { ...selectedChat };
-        chat.lastMessage = { ...newMessage, created_at: Date.now() };
-        chat.last_message_time = Date.now();
-        chat.lastMessageTime = Date.now();
-        chat.updated_at = Date.now();
-        newContacts.unshift(chat);
-      }
-      return newContacts;
+    ['active', chatViewMode].forEach((mode) => {
+      queryClient.setQueryData(['contacts', mode], (old: any) => {
+        if (!Array.isArray(old)) return old;
+        const newContacts = [...old];
+        const chatIdx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
+        const parsedLast = { ...optimisticMsg, content: '', media_type: 'audio' };
+        if (chatIdx > -1) {
+          const chat = { ...newContacts[chatIdx], isNewFriend: false };
+          chat.lastMessage = parsedLast;
+          chat.last_message_time = nowIso;
+          chat.lastMessageTime = nowIso;
+          newContacts[chatIdx] = chat;
+        } else if (mode === 'active') {
+          const chat = { ...selectedChat, isNewFriend: false };
+          chat.lastMessage = parsedLast;
+          chat.last_message_time = nowIso;
+          chat.lastMessageTime = nowIso;
+          newContacts.unshift(chat);
+        }
+        return sortContactsWhatsApp(newContacts);
+      });
     });
 
     addUpload(uploadData, 'message', {
@@ -1957,49 +2296,52 @@ const Messages: React.FC = () => {
       return [...filtered, optimisticMsg];
     });
 
-    queryClient.setQueryData(['contacts', chatViewMode], (old: any) => {
-      if (!old) return old;
-      const newContacts = [...old];
-      const chatIdx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
-      if (chatIdx > -1) {
-        const chat = {...newContacts[chatIdx]};
-        chat.lastMessage = { ...optimisticMsg, created_at: Date.now() };
-        chat.last_message_time = Date.now();
-        chat.lastMessageTime = Date.now();
-        chat.updated_at = Date.now();
-        newContacts.splice(chatIdx, 1);
-        newContacts.unshift(chat);
-      } else {
-        const chat = { ...selectedChat };
-        chat.lastMessage = { ...optimisticMsg, created_at: Date.now() };
-        chat.last_message_time = Date.now();
-        chat.lastMessageTime = Date.now();
-        chat.updated_at = Date.now();
-        newContacts.unshift(chat);
-      }
-      return newContacts;
+    Array.from(new Set(['active', chatViewMode])).forEach((mode) => {
+      queryClient.setQueryData(['contacts', mode], (old: any) => {
+        if (!Array.isArray(old)) return old;
+        const newContacts = [...old];
+        const chatIdx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
+        if (chatIdx > -1) {
+          const chat = { ...newContacts[chatIdx], isNewFriend: false };
+          chat.lastMessage = optimisticMsg;
+          chat.last_message_time = localCreatedAt;
+          chat.lastMessageTime = localCreatedAt;
+          newContacts[chatIdx] = chat;
+        } else if (mode === 'active') {
+          const chat = { ...selectedChat, isNewFriend: false };
+          chat.lastMessage = optimisticMsg;
+          chat.last_message_time = localCreatedAt;
+          chat.lastMessageTime = localCreatedAt;
+          newContacts.unshift(chat);
+        }
+        return sortContactsWhatsApp(newContacts);
+      });
     });
 
     handleMessageTextChange('');
     setReplyingTo(null);
     setShowEmojiPicker(false);
     setIsTextViewOnce(false);
-    
+
     try {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        throw new Error('OFFLINE_QUEUED');
+      }
       // Pass the fully formed message (with real ID) to dual write
-      const res = await dualWriteMessage(newMessage);
+      await dualWriteMessage(newMessage);
       
       setMessages(prev => prev.map(m => m.id === msgRefId ? { ...m, is_pending: false } : m));
       
       // Instant peer-to-peer delivery over Supabase Broadcast
       sendP2PSignal({ type: 'NEW_MESSAGE_BROADCAST', message: optimisticMsg });
       
-      // Trigger Push & In-App Notification with username & deep link
+      // Trigger Push & In-App Notification with strict View-Once privacy masking
       try {
         const senderName = currentUser?.display_name || currentUser?.username || 'User';
         const senderUsername = currentUser?.username || '';
         const usernameTag = senderUsername ? ` (@${senderUsername})` : '';
         const senderTitle = `${senderName}${usernameTag}`;
+        const safeNotifBody = getSafeMessagePreview({ content: messageText, is_view_once: isViewOnceMsg });
         const notifPayload = {
           type: 'message',
           sender_id: currentUser?.id,
@@ -2008,7 +2350,8 @@ const Messages: React.FC = () => {
           sender_avatar: currentUser?.avatar_url || '',
           chat_id: selectedChat.id,
           url: `/messages?user=${currentUser?.id}`,
-          content: messageText
+          is_view_once: isViewOnceMsg,
+          content: safeNotifBody
         };
 
         if (!selectedChat.is_group) {
@@ -2019,7 +2362,8 @@ const Messages: React.FC = () => {
             sender_username: senderUsername,
             sender_avatar: currentUser?.avatar_url || '',
             type: 'message',
-            content: messageText,
+            is_view_once: isViewOnceMsg,
+            content: safeNotifBody,
             is_read: false,
             created_at: new Date().toISOString()
           }).catch((err) => console.warn('Notification doc write warning:', err));
@@ -2027,7 +2371,7 @@ const Messages: React.FC = () => {
           triggerNotification(
             selectedChat.id,
             senderTitle,
-            messageText,
+            safeNotifBody,
             notifPayload
           );
         } else if (selectedChat.members && Array.isArray(selectedChat.members)) {
@@ -2040,7 +2384,8 @@ const Messages: React.FC = () => {
                 sender_username: senderUsername,
                 sender_avatar: currentUser?.avatar_url || '',
                 type: 'message',
-                content: `[${selectedChat.name || 'Group'}]: ${messageText}`,
+                is_view_once: isViewOnceMsg,
+                content: `[${selectedChat.name || 'Group'}]: ${safeNotifBody}`,
                 group_id: selectedChat.id,
                 is_read: false,
                 created_at: new Date().toISOString()
@@ -2049,7 +2394,7 @@ const Messages: React.FC = () => {
               triggerNotification(
                 memberId,
                 `${senderTitle} in ${selectedChat.name || 'Group'}`,
-                messageText,
+                safeNotifBody,
                 { ...notifPayload, url: `/messages?user=${selectedChat.id}`, group_id: selectedChat.id }
               );
             }
@@ -2066,9 +2411,92 @@ const Messages: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['notifications', selectedChat.id] });
 
     } catch(e: any) {
-      console.error(e);
-      toast.error('Failed to send message: ' + e.message);
+      // Queue in offline outbox for automatic retry when connectivity returns
+      try {
+        const outboxKey = 'offline_outbox_' + currentUser!.id;
+        const queued = JSON.parse(localStorage.getItem(outboxKey) || '[]');
+        queued.push({ newMessage, optimisticMsg });
+        localStorage.setItem(outboxKey, JSON.stringify(queued.slice(-50)));
+        toast.info('Offline — message queued to send automatically');
+      } catch (_) {
+        toast.error('Failed to send message: ' + e.message);
+      }
     }
+  };
+
+  // Auto-flush Offline Message Outbox when online
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const flushOutbox = async () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      const outboxKey = 'offline_outbox_' + currentUser.id;
+      let queued: any[] = [];
+      try {
+        queued = JSON.parse(localStorage.getItem(outboxKey) || '[]');
+      } catch (_) {}
+      if (!Array.isArray(queued) || queued.length === 0) return;
+
+      const remaining: any[] = [];
+      for (const item of queued) {
+        try {
+          await dualWriteMessage(item.newMessage);
+          setMessages(prev => prev.map(m => m.id === item.newMessage.id ? { ...m, is_pending: false } : m));
+        } catch (_) {
+          remaining.push(item);
+        }
+      }
+      localStorage.setItem(outboxKey, JSON.stringify(remaining));
+      if (remaining.length < queued.length) {
+        queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      }
+    };
+    flushOutbox();
+    window.addEventListener('online', flushOutbox);
+    return () => window.removeEventListener('online', flushOutbox);
+  }, [currentUser?.id, queryClient]);
+
+  const toggleReaction = (msgId: string, emoji: string) => {
+    if (!currentUser?.id) return;
+    let removed = false;
+    setReactionsMap(prev => {
+      const msgReacts = { ...(prev[msgId] || {}) };
+      const users = new Set(msgReacts[emoji] || []);
+      if (users.has(currentUser.id)) {
+        users.delete(currentUser.id);
+        removed = true;
+      } else {
+        users.add(currentUser.id);
+      }
+      if (users.size === 0) delete msgReacts[emoji];
+      else msgReacts[emoji] = Array.from(users);
+      const next = { ...prev, [msgId]: msgReacts };
+      localStorage.setItem('msg_reactions_' + currentUser.id, JSON.stringify(next));
+      return next;
+    });
+    setActiveReactionMsgId(null);
+    sendP2PSignal({ type: 'MESSAGE_REACTION', msgId, emoji, userId: currentUser.id, removed });
+  };
+
+  const toggleStarMessage = (msg: any) => {
+    if (!currentUser?.id || !msg?.id) return;
+    setStarredItems(prev => {
+      const exists = prev.some(s => s.id === msg.id);
+      const next = exists
+        ? prev.filter(s => s.id !== msg.id)
+        : [
+            {
+              id: msg.id,
+              chatName: selectedChat?.display_name || 'Chat',
+              chatId: selectedChat?.id || '',
+              preview: getSafeMessagePreview(msg),
+              created_at: msg.created_at || new Date().toISOString()
+            },
+            ...prev
+          ];
+      localStorage.setItem('starred_msgs_' + currentUser.id, JSON.stringify(next.slice(0, 100)));
+      toast.success(exists ? 'Removed from Starred' : 'Message starred');
+      return next;
+    });
   };
 
   const handleEmojiClick = (emojiData: any) => {
@@ -2164,6 +2592,20 @@ const Messages: React.FC = () => {
     setMessages((prev: any[]) => [...prev, optimisticMsg]);
     queryClient.setQueryData(['messages', selectedChat.id], (old: any) => [...(old || []), optimisticMsg]);
 
+    Array.from(new Set(['active', chatViewMode])).forEach((mode) => {
+      queryClient.setQueryData(['contacts', mode], (old: any) => {
+        if (!Array.isArray(old)) return old;
+        const newContacts = [...old];
+        const idx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
+        if (idx > -1) {
+          newContacts[idx] = { ...newContacts[idx], isNewFriend: false, lastMessage: optimisticMsg, last_message_time: nowIso };
+        } else if (mode === 'active') {
+          newContacts.unshift({ ...selectedChat, isNewFriend: false, lastMessage: optimisticMsg, last_message_time: nowIso });
+        }
+        return sortContactsWhatsApp(newContacts);
+      });
+    });
+
     addUpload(fileToSend, 'message', {
       payload: newMessage,
       receiver_id: selectedChat.id,
@@ -2241,6 +2683,20 @@ const Messages: React.FC = () => {
     
     setMessages((prev: any[]) => [...prev, optimisticMsg]);
     queryClient.setQueryData(['messages', selectedChat.id], (old: any) => [...(old || []), optimisticMsg]);
+
+    Array.from(new Set(['active', chatViewMode])).forEach((mode) => {
+      queryClient.setQueryData(['contacts', mode], (old: any) => {
+        if (!Array.isArray(old)) return old;
+        const newContacts = [...old];
+        const idx = newContacts.findIndex((c: any) => c.id === selectedChat.id);
+        if (idx > -1) {
+          newContacts[idx] = { ...newContacts[idx], isNewFriend: false, lastMessage: optimisticMsg, last_message_time: nowIso };
+        } else if (mode === 'active') {
+          newContacts.unshift({ ...selectedChat, isNewFriend: false, lastMessage: optimisticMsg, last_message_time: nowIso });
+        }
+        return sortContactsWhatsApp(newContacts);
+      });
+    });
 
     addUpload(file, 'message', {
       payload: newMessage,
@@ -2445,6 +2901,23 @@ const Messages: React.FC = () => {
                   </button>
                 )}
                 <button onClick={() => {
+                  const targetIds = selectedChatsForAction.map(c => c.id);
+                  const allPinned = targetIds.every(id => pinnedChats.includes(id));
+                  const next = allPinned
+                    ? pinnedChats.filter(id => !targetIds.includes(id))
+                    : Array.from(new Set([...targetIds, ...pinnedChats]));
+                  setPinnedChats(next);
+                  if (currentUser?.id) {
+                    localStorage.setItem('pinned_chats_' + currentUser.id, JSON.stringify(next));
+                  }
+                  toast.success(allPinned ? 'Unpinned' : 'Pinned to top');
+                  setIsMultiSelectMode(false);
+                  setSelectedChatsForAction([]);
+                  queryClient.invalidateQueries({ queryKey: ['contacts'] });
+                }} className="p-2 text-[#1877F2] hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-full" title="Pin / Unpin">
+                  <Pin size={18} />
+                </button>
+                <button onClick={() => {
                   const toAction = selectedChatsForAction.map(c => c.id);
                   let archived = JSON.parse(localStorage.getItem('archived_chats') || '[]');
                   if (chatViewMode === 'active') {
@@ -2468,29 +2941,99 @@ const Messages: React.FC = () => {
               </div>
             </div>
           ) : (
-            <div className="flex justify-between items-center mb-4">
-              <h1 className="text-2xl font-black text-gray-900 dark:text-white flex items-center gap-2">                {chatViewMode === 'archived' ? 'Archived' : chatViewMode === 'groups' ? 'Groups' : 'Chats'}              </h1>
-              <div className="flex gap-2">                <button                   onClick={() => setChatViewMode(chatViewMode === 'groups' ? 'active' : 'groups')}                  className={`px-3 py-1.5 rounded-full text-xs font-black transition-all ${chatViewMode === 'groups' ? 'bg-[#1877F2] text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}                >                  {chatViewMode === 'groups' ? 'Back' : 'Groups'}                </button>                <button                   onClick={() => setChatViewMode(chatViewMode === 'archived' ? 'active' : 'archived')}                  className={`px-3 py-1.5 rounded-full text-xs font-black transition-all ${chatViewMode === 'archived' ? 'bg-[#1877F2] text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}                >                  {chatViewMode === 'archived' ? 'Back' : 'Archive'}                </button>                <button                   onClick={() => setShowNewFriends(!showNewFriends)}                  className={`px-3 py-1.5 rounded-full text-xs font-black transition-all ${showNewFriends ? 'bg-[#1877F2] text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}                >                  {showNewFriends ? 'Back' : 'New Friends'}                </button>              </div>
-            </div>
-          )}
+            <>
+              <div className="flex justify-between items-center mb-3">
+                <h1 className="text-2xl font-black text-gray-900 dark:text-white flex items-center gap-2">
+                  {showNewFriends ? 'New Friends' : chatViewMode === 'archived' ? 'Archived' : chatViewMode === 'groups' ? 'Groups' : chatViewMode === 'unread' ? 'Unread' : 'Chats'}
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => setShowStarredModal(true)}
+                  className="p-2 rounded-full text-gray-500 hover:text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                  title="Starred Messages"
+                >
+                  <Star size={18} className={starredItems.length > 0 ? 'fill-amber-400 text-amber-500' : ''} />
+                </button>
+              </div>
 
-          <div className="bg-[#f0f2f5] dark:bg-gray-900 rounded-full flex items-center px-4 py-2 border border-transparent focus-within:border-blue-300 transition-all">
-            <Search size={18} className="text-gray-400" />
-            <input 
-              placeholder="Search Messenger" 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-transparent border-none outline-none ml-2 text-sm w-full font-bold text-gray-700 dark:text-gray-200 placeholder-gray-500" 
-            />
-          </div>
+              <div className="bg-[#f0f2f5] dark:bg-gray-900 rounded-full flex items-center px-4 py-2 border border-transparent focus-within:border-blue-300 transition-all mb-3">
+                <Search size={18} className="text-gray-400" />
+                <input 
+                  placeholder="Search Messenger" 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="bg-transparent border-none outline-none ml-2 text-sm w-full font-bold text-gray-700 dark:text-gray-200 placeholder-gray-500" 
+                />
+              </div>
+
+              {(() => {
+                const totalUnreadChats = Object.values(unreadCounts).filter(n => n > 0).length;
+                return (
+                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewFriends(false); setChatViewMode('active'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'active' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'unread' ? 'active' : 'unread'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${!showNewFriends && chatViewMode === 'unread' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      <span>Unread</span>
+                      {totalUnreadChats > 0 && (
+                        <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${!showNewFriends && chatViewMode === 'unread' ? 'bg-white text-[#1877F2]' : 'bg-[#1877F2] text-white'}`}>
+                          {totalUnreadChats}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'groups' ? 'active' : 'groups'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'groups' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      Groups
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'archived' ? 'active' : 'archived'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'archived' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      Archived
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewFriends(!showNewFriends)}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${showNewFriends ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      New Friends
+                    </button>
+                  </div>
+                );
+              })()}
+            </>
+          )}
         </div>
         {(() => {
-          const filteredContacts = contacts.filter((c: any) => {
-            const name = (c.display_name || c.name || '').toLowerCase();
-            const uname = (c.username || '').toLowerCase();
-            const q = (searchQuery || '').toLowerCase();
-            return name.includes(q) || uname.includes(q);
-          });
+          const filteredContacts = sortContactsWhatsApp(
+            contacts.filter((c: any) => {
+              const name = (c.display_name || c.name || '').toLowerCase();
+              const uname = (c.username || '').toLowerCase();
+              const q = (searchQuery || '').toLowerCase();
+              return name.includes(q) || uname.includes(q);
+            }),
+            unreadCounts,
+            pinnedChats
+          );
+          const visibleList = showNewFriends
+            ? filteredContacts.filter((c: any) => c.isNewFriend)
+            : filteredContacts.filter((c: any) => {
+                if (c.isNewFriend) return false;
+                if (chatViewMode === 'unread') return (unreadCounts[c.id] || c.unreadCount || 0) > 0;
+                return true;
+              });
           return (
         <div id="inbox-list" className="flex-1 overflow-y-auto overscroll-none p-2 space-y-1 min-h-0">
           {loadingContacts && contacts.length === 0 ? (
@@ -2508,10 +3051,23 @@ const Messages: React.FC = () => {
                 </div>
               ))}
             </div>
-          ) : (showNewFriends ? filteredContacts.filter((c: any) => c.isNewFriend) : filteredContacts.filter((c: any) => !c.isNewFriend)).map((c: any) => {
+          ) : visibleList.map((c: any) => {
             const isOnline = onlineUsers.has(c.id);
-            const lastMsg = c.lastMessage;
+            const lastMsg = parseMessagePayload(c.lastMessage);
             const unreadCount = unreadCounts[c.id] || 0;
+            const previewText = lastMsg
+              ? (lastMsg.is_view_once
+                  ? '🔒 View Once message'
+                  : lastMsg.media_type === 'video'
+                    ? '🎥 Video'
+                    : lastMsg.media_type === 'audio'
+                      ? '🎤 Voice message'
+                      : lastMsg.media_type === 'document'
+                        ? `📄 ${lastMsg.filename || 'Document'}`
+                        : lastMsg.media_url
+                          ? '📷 Photo'
+                          : (lastMsg.content || lastMsg.text || ''))
+              : '';
             
             return (
               <div 
@@ -2529,23 +3085,23 @@ const Messages: React.FC = () => {
                     : selectedChat?.id === c.id 
                       ? 'bg-[#e7f3ff] dark:bg-gray-800 text-[#1877F2] dark:text-blue-400 border-2 border-transparent shadow-sm' 
                       : unreadCount > 0
-                        ? 'bg-blue-50/60 dark:bg-blue-950/20 text-gray-900 dark:text-white border-2 border-blue-200 dark:border-blue-900/40 shadow-sm'
+                        ? 'bg-blue-50/70 dark:bg-blue-950/25 text-gray-900 dark:text-white border-2 border-blue-200 dark:border-blue-900/50 shadow-sm'
                         : 'hover:bg-white dark:hover:bg-gray-900 text-gray-700 dark:text-gray-300 border-2 border-transparent hover:shadow-sm'
                 }`}
               >
                 <div className="relative flex-shrink-0">
                   <ProfileAvatar userId={c.id} defaultAvatar={c.avatar_url || c.avatar} name={c.display_name || c.name} className="w-14 h-14 rounded-full object-cover border-2 border-white dark:border-gray-700 shadow-sm" />
                   {isOnline && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-green-500 border-2 border-white dark:border-black rounded-full"></div>}
-                  {unreadCount > 0 && !isOnline && <div className="absolute top-0 right-0 w-3.5 h-3.5 bg-red-500 border-2 border-white dark:border-black rounded-full animate-pulse"></div>}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-0.5">
                     <p className={`truncate flex items-center gap-1 text-[15px] ${unreadCount > 0 ? 'font-black text-gray-950 dark:text-white' : 'font-bold'}`}>
                       {c.display_name || c.name || 'User'}
                       {c.is_verified && <VerifiedBadge size={14} />}
+                      {pinnedChats.includes(c.id) && <Pin size={12} className="text-[#1877F2] shrink-0" />}
                     </p>
                     {lastMsg && (
-                      <span className={`text-[10px] font-medium ml-2 flex-shrink-0 ${unreadCount > 0 ? 'text-[#1877F2] font-bold' : 'text-gray-400'}`}>
+                      <span className={`text-[11px] ml-2 flex-shrink-0 tabular-nums ${unreadCount > 0 ? 'text-[#1877F2] font-bold' : 'text-gray-400 font-medium'}`}>
                         {safeFormatChatTime(lastMsg.created_at)}
                       </span>
                     )}
@@ -2557,19 +3113,19 @@ const Messages: React.FC = () => {
                           <Ban size={12} />
                           {c.blockStatus.iBlockedThem ? 'Blocked' : 'Blocked you'}
                         </span>
-                      ) : (
+                      ) : c.isNewFriend ? (
+                        <span className="text-blue-500 italic">Say hi to your new friend!</span>
+                      ) : lastMsg ? (
                         <>
-                          {c.isNewFriend ? <span className="text-blue-500 italic">Say hi to your new friend!</span> : (
-                            <>
-                              {lastMsg?.sender_id === currentUser?.id ? 'You: ' : ''}
-                              {lastMsg?.media_url ? (lastMsg.media_type === 'video' ? '🎥 Video' : '📷 Photo') : lastMsg?.content}
-                            </>
-                          )}
+                          {lastMsg.sender_id === currentUser?.id ? 'You: ' : ''}
+                          {previewText}
                         </>
+                      ) : (
+                        <span className="text-gray-400 italic text-xs">Tap to start chatting</span>
                       )}
                     </p>
                     {unreadCount > 0 && (
-                      <span className="min-w-[20px] h-[20px] px-1.5 bg-red-500 text-white text-[11px] font-black rounded-full flex items-center justify-center shrink-0 shadow-md animate-pulse">
+                      <span className="min-w-[20px] h-[20px] px-1.5 bg-[#1877F2] text-white text-[11px] font-black rounded-full flex items-center justify-center shrink-0 shadow-sm">
                         {unreadCount > 99 ? '99+' : unreadCount}
                       </span>
                     )}
@@ -2581,11 +3137,13 @@ const Messages: React.FC = () => {
               </div>
             );
           })}
-          {showNewFriends && filteredContacts.filter((c: any) => c.isNewFriend).length === 0 && (
+          {showNewFriends && visibleList.length === 0 && (
             <div className="text-center py-10 text-gray-400 text-xs font-bold uppercase tracking-widest">No new friends to show</div>
           )}
-          {!showNewFriends && filteredContacts.filter((c: any) => !c.isNewFriend).length === 0 && (
-            <div className="text-center py-10 text-gray-400 text-xs font-bold uppercase tracking-widest">No active chats</div>
+          {!showNewFriends && visibleList.length === 0 && (
+            <div className="text-center py-10 text-gray-400 text-xs font-bold uppercase tracking-widest">
+              {chatViewMode === 'unread' ? 'All caught up — no unread messages' : 'No active chats'}
+            </div>
           )}
         </div>
           );
@@ -2606,6 +3164,19 @@ const Messages: React.FC = () => {
                     <span className="font-bold">{selectedMessages.length} Selected</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    {selectedMessages.length === 1 && (
+                      <button
+                        onClick={() => {
+                          const target = messages.find((m: any) => m.id === selectedMessages[0]);
+                          if (target) toggleStarMessage(target);
+                          setSelectedMessages([]);
+                        }}
+                        className="p-2 rounded-full text-amber-500 bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20"
+                        title="Star Message"
+                      >
+                        <Star size={16} />
+                      </button>
+                    )}
                     <button onClick={handleDeleteForMe} className="px-3 py-1.5 rounded-full text-xs font-bold text-gray-700 bg-gray-100 hover:bg-gray-200 dark:text-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700">
                       Delete for Me
                     </button>
@@ -2801,8 +3372,16 @@ const Messages: React.FC = () => {
                     <p className="text-gray-500 font-bold bg-white dark:bg-black px-3 py-1 rounded-full border border-gray-100 dark:border-gray-800 shadow-sm mt-2 text-xs">@{selectedChat.username}</p>
                   </div>
 
+                  {loadingOlder && (
+                    <div className="text-center py-2 text-xs font-semibold text-gray-400">Loading older messages...</div>
+                  )}
+
                   {(messages.length > visibleLimit ? messages.slice(messages.length - visibleLimit) : messages).map((msg: any) => {
                     const parentMsg = msg.parent_message_id ? messages.find((m: any) => m.id === msg.parent_message_id) : null;
+                    const msgReactions = reactionsMap[msg.id] || {};
+                    const reactionEntries = Object.entries(msgReactions).filter(([, users]) => users.length > 0);
+                    const firstUrl = !msg.is_view_once ? extractFirstUrl(msg.content) : null;
+                    const isStarred = starredItems.some(s => s.id === msg.id);
                     return (
                     <motion.div 
                       key={msg.id} 
@@ -2823,92 +3402,177 @@ const Messages: React.FC = () => {
                         }
                       }}
                     >
-                      <button 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          triggerDeleteMessage(msg.id);
-                        }} 
-                        className={`opacity-0 group-hover:opacity-100 transition-all self-center text-red-300 hover:text-red-500 ${msg.sender_id === currentUser?.id ? 'mr-2' : 'ml-2 order-last'}`}
-                        title={msg.sender_id === currentUser?.id ? "Delete for Everyone" : "Delete for Me"}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                      
-                      <div className={`p-3.5 rounded-2xl max-w-[75%] shadow-sm text-[15px] font-medium leading-relaxed ${msg.sender_id === currentUser?.id ? 'bg-[#1877F2] text-white rounded-tr-none' : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-gray-800 dark:text-gray-200 rounded-tl-none'}`}>
-                        {parentMsg && (
-                          <div className={`mb-2 p-2 rounded-xl text-xs opacity-80 border-l-4 ${msg.sender_id === currentUser?.id ? 'bg-white/20 border-white/50 text-white' : 'bg-gray-100 dark:bg-gray-700 border-[#1877F2] text-gray-800 dark:text-gray-300'}`}>
-                            <p className="font-bold mb-0.5">{parentMsg.sender_id === currentUser?.id ? 'You' : selectedChat.display_name}</p>
-                            <p className="line-clamp-1">{parentMsg.content || (parentMsg.media_url ? 'Media' : '')}</p>
-                          </div>
-                        )}
-                        {msg.is_view_once ? (
-                          msg.sender_id === currentUser?.id ? (
-                            <div className="flex items-center gap-2 py-1 px-2.5 bg-black/15 dark:bg-white/15 rounded-xl text-xs font-semibold select-none">
-                              <div className="w-5 h-5 rounded-full border border-current flex items-center justify-center font-bold text-[10px]">1</div>
-                              <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
-                            </div>
-                          ) : (
-                            <button 
-                              onClick={() => handleViewOnce(msg)} 
-                              className="flex items-center gap-2.5 px-3.5 py-2.5 bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 rounded-xl transition-all font-bold text-sm select-none active:scale-95 shadow-sm"
+                      <div className={`opacity-0 group-hover:opacity-100 transition-all self-center flex items-center gap-1 ${msg.sender_id === currentUser?.id ? 'mr-1.5' : 'ml-1.5 order-last'}`}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveReactionMsgId(activeReactionMsgId === msg.id ? null : msg.id);
+                          }}
+                          className="p-1 text-gray-400 hover:text-[#1877F2] rounded-full"
+                          title="React"
+                        >
+                          <Smile size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStarMessage(msg);
+                          }}
+                          className={`p-1 rounded-full ${isStarred ? 'text-amber-500' : 'text-gray-400 hover:text-amber-500'}`}
+                          title="Star message"
+                        >
+                          <Star size={15} className={isStarred ? 'fill-amber-400' : ''} />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            triggerDeleteMessage(msg.id);
+                          }} 
+                          className="p-1 text-red-300 hover:text-red-500 rounded-full"
+                          title={msg.sender_id === currentUser?.id ? "Delete for Everyone" : "Delete for Me"}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+
+                      {activeReactionMsgId === msg.id && (
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className={`absolute -top-10 z-30 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-full px-2 py-1 shadow-lg flex items-center gap-1 ${msg.sender_id === currentUser?.id ? 'right-2' : 'left-2'}`}
+                        >
+                          {QUICK_REACTIONS.map(emoji => (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => toggleReaction(msg.id, emoji)}
+                              className="text-base hover:scale-125 transition-transform px-1"
                             >
-                              <div className="w-6 h-6 rounded-full border-2 border-current flex items-center justify-center font-black text-xs animate-pulse">1</div>
-                              {msg.media_type === 'audio' ? <Mic size={18} /> : <Eye size={18} />}
-                              <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
-                              <span className="text-[11px] font-normal opacity-75">(Tap to open)</span>
+                              {emoji}
                             </button>
-                          )
-                        ) : msg.media_url ? (
-                          <div className={`mb-2 rounded-lg overflow-hidden relative ${msg.media_type === 'audio' ? 'bg-transparent overflow-visible' : 'bg-black/5 dark:bg-white/5'}`}>
-                            {msg.media_type === 'image' ? (
-                              <ZoomableImage src={msg.media_url} className="max-w-full h-auto rounded-lg" referrerPolicy="no-referrer" />
-                            ) : msg.media_type === 'audio' ? (
-                              <CustomAudioPlayer src={msg.media_url} isSender={msg.sender_id === currentUser?.id} />
-                            ) : msg.media_type === 'video' ? (
-                              <VideoPlayer src={msg.media_url} className="max-w-full h-auto rounded-lg" />
-                            ) : (
-                              <div className="p-3 bg-black/10 dark:bg-white/10 rounded-xl flex items-center gap-3 border border-black/10 dark:border-white/10">
-                                <div className="p-2.5 rounded-lg bg-blue-500/20 text-blue-500 shrink-0">
-                                  <FileText size={24} />
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                  <p className="text-xs font-bold truncate text-gray-900 dark:text-white">
-                                    {msg.filename || msg.media_url.split('/').pop()?.split('?')[0] || 'Attachment'}
-                                  </p>
-                                  {msg.file_size && (
-                                    <p className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold">{(msg.file_size / (1024 * 1024)).toFixed(2)} MB</p>
-                                  )}
-                                  <a 
-                                    href={msg.media_url} 
-                                    target="_blank" 
-                                    rel="noreferrer" 
-                                    download={msg.filename || 'download'} 
-                                    className="text-[11px] text-blue-500 hover:underline flex items-center gap-1 font-bold mt-1"
-                                  >
-                                    <Download size={12} /> Download File
-                                  </a>
-                                </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      <div className="flex flex-col max-w-[75%]">
+                        <div className={`p-3.5 rounded-2xl shadow-sm text-[15px] font-medium leading-relaxed ${msg.sender_id === currentUser?.id ? 'bg-[#1877F2] text-white rounded-tr-none' : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-gray-800 dark:text-gray-200 rounded-tl-none'}`}>
+                          {parentMsg && (
+                            <div className={`mb-2 p-2 rounded-xl text-xs opacity-80 border-l-4 ${msg.sender_id === currentUser?.id ? 'bg-white/20 border-white/50 text-white' : 'bg-gray-100 dark:bg-gray-700 border-[#1877F2] text-gray-800 dark:text-gray-300'}`}>
+                              <p className="font-bold mb-0.5">{parentMsg.sender_id === currentUser?.id ? 'You' : selectedChat.display_name}</p>
+                              <p className="line-clamp-1">{parentMsg.is_view_once ? '🔒 View Once message' : (parentMsg.content || (parentMsg.media_url ? 'Media' : ''))}</p>
+                            </div>
+                          )}
+                          {msg.is_view_once ? (
+                            msg.sender_id === currentUser?.id ? (
+                              <div className="flex items-center gap-2 py-1 px-2.5 bg-black/15 dark:bg-white/15 rounded-xl text-xs font-semibold select-none">
+                                <div className="w-5 h-5 rounded-full border border-current flex items-center justify-center font-bold text-[10px]">1</div>
+                                <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
                               </div>
+                            ) : (
+                              <button 
+                                onClick={() => handleViewOnce(msg)} 
+                                className="flex items-center gap-2.5 px-3.5 py-2.5 bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 rounded-xl transition-all font-bold text-sm select-none active:scale-95 shadow-sm"
+                              >
+                                <div className="w-6 h-6 rounded-full border-2 border-current flex items-center justify-center font-black text-xs animate-pulse">1</div>
+                                {msg.media_type === 'audio' ? <Mic size={18} /> : <Eye size={18} />}
+                                <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
+                                <span className="text-[11px] font-normal opacity-75">(Tap to open)</span>
+                              </button>
+                            )
+                          ) : msg.media_url ? (
+                            <div className={`mb-2 rounded-lg overflow-hidden relative ${msg.media_type === 'audio' ? 'bg-transparent overflow-visible' : 'bg-black/5 dark:bg-white/5'}`}>
+                              {msg.media_type === 'image' ? (
+                                <ZoomableImage src={msg.media_url} className="max-w-full h-auto rounded-lg" referrerPolicy="no-referrer" />
+                              ) : msg.media_type === 'audio' ? (
+                                <CustomAudioPlayer src={msg.media_url} isSender={msg.sender_id === currentUser?.id} />
+                              ) : msg.media_type === 'video' ? (
+                                <VideoPlayer src={msg.media_url} className="max-w-full h-auto rounded-lg" />
+                              ) : (
+                                <div className="p-3 bg-black/10 dark:bg-white/10 rounded-xl flex items-center gap-3 border border-black/10 dark:border-white/10">
+                                  <div className="p-2.5 rounded-lg bg-blue-500/20 text-blue-500 shrink-0">
+                                    <FileText size={24} />
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-xs font-bold truncate text-gray-900 dark:text-white">
+                                      {msg.filename || msg.media_url.split('/').pop()?.split('?')[0] || 'Attachment'}
+                                    </p>
+                                    {msg.file_size && (
+                                      <p className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold">{(msg.file_size / (1024 * 1024)).toFixed(2)} MB</p>
+                                    )}
+                                    <a 
+                                      href={msg.media_url} 
+                                      target="_blank" 
+                                      rel="noreferrer" 
+                                      download={msg.filename || 'download'} 
+                                      className="text-[11px] text-blue-500 hover:underline flex items-center gap-1 font-bold mt-1"
+                                    >
+                                      <Download size={12} /> Download File
+                                    </a>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : null}
+                          {!msg.is_view_once && msg.content && <span>{msg.content}</span>}
+                          {firstUrl && (() => {
+                            let host = firstUrl;
+                            try { host = new URL(firstUrl).hostname.replace(/^www\./, ''); } catch (_) {}
+                            return (
+                              <a
+                                href={firstUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className={`mt-2 flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs border transition-opacity hover:opacity-90 ${
+                                  msg.sender_id === currentUser?.id
+                                    ? 'bg-white/15 border-white/25 text-white'
+                                    : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200'
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <p className="font-bold truncate">{host}</p>
+                                  <p className="text-[10px] opacity-75 truncate">{firstUrl}</p>
+                                </div>
+                                <ExternalLink size={14} className="shrink-0" />
+                              </a>
+                            );
+                          })()}
+                          <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_id === currentUser?.id ? 'text-blue-200' : 'text-gray-400'}`}>
+                            {isStarred && <Star size={10} className="fill-amber-400 text-amber-400" />}
+                            <p className="text-[10px] text-right opacity-80">
+                               {formatTime(msg.created_at)}
+                            </p>
+                            {msg.sender_id === currentUser?.id && (
+                              msg.is_pending ? (
+                                <Clock size={12} className="opacity-70" />
+                              ) : msg.is_read || msg.p2p_seen ? (
+                                <CheckCheck size={12} className="text-red-500" />
+                              ) : onlineUsers.has(selectedChat.id) || liveStatus === 'active' ? (
+                                <CheckCheck size={12} className="text-blue-200 opacity-60" />
+                              ) : (
+                                <Check size={12} className="text-blue-200 opacity-60" />
+                              )
                             )}
                           </div>
-                        ) : null}
-                        {!msg.is_view_once && msg.content && <span>{msg.content}</span>}
-                        <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_id === currentUser?.id ? 'text-blue-200' : 'text-gray-400'}`}>
-                          <p className="text-[10px] text-right opacity-80">
-                             {formatTime(msg.created_at)}
-                          </p>
-                          {msg.sender_id === currentUser?.id && (
-                            msg.is_pending ? (
-                              <Clock size={12} className="opacity-50" />
-                            ) : msg.is_read || msg.p2p_seen ? (
-                              <CheckCheck size={12} className="text-red-500" />
-                            ) : onlineUsers.has(selectedChat.id) || liveStatus === 'active' ? (
-                              <CheckCheck size={12} className="text-blue-200 opacity-60" />
-                            ) : (
-                              <Check size={12} className="text-blue-200 opacity-60" />
-                            )
-                          )}
                         </div>
+
+                        {reactionEntries.length > 0 && (
+                          <div className={`flex flex-wrap gap-1 mt-1 ${msg.sender_id === currentUser?.id ? 'justify-end' : 'justify-start'}`}>
+                            {reactionEntries.map(([emoji, users]) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); toggleReaction(msg.id, emoji); }}
+                                className="px-1.5 py-0.5 rounded-full text-xs bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm flex items-center gap-1"
+                              >
+                                <span>{emoji}</span>
+                                {users.length > 1 && <span className="text-[10px] font-bold text-gray-600 dark:text-gray-300">{users.length}</span>}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   )})}
@@ -3700,6 +4364,53 @@ const Messages: React.FC = () => {
         onConfirm={executeDeleteMessage}
         onCancel={() => setDeleteConfirmId(null)}
       />
+
+      {showStarredModal && (
+        <div
+          onClick={() => setShowStarredModal(false)}
+          className="fixed inset-0 bg-black/60 z-[75] flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#1a1a1b] rounded-2xl w-full max-w-md p-5 shadow-xl max-h-[80vh] flex flex-col"
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                <Star size={18} className="fill-amber-400 text-amber-500" />
+                Starred Messages
+              </h3>
+              <button
+                type="button"
+                aria-label="Close starred messages"
+                onClick={() => setShowStarredModal(false)}
+                className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2.5">
+              {starredItems.length === 0 ? (
+                <p className="text-center text-sm text-gray-500 py-8">No starred messages yet.</p>
+              ) : starredItems.map((item: any) => (
+                <div
+                  key={item.id}
+                  onClick={() => {
+                    setShowStarredModal(false);
+                    if (item.chatId) openChatWithUserId(item.chatId);
+                  }}
+                  className="p-3 rounded-xl bg-gray-50 dark:bg-black border border-gray-100 dark:border-gray-800 cursor-pointer hover:border-blue-400 transition-colors"
+                >
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="text-xs font-bold text-[#1877F2]">{item.chatName}</span>
+                    <span className="text-[10px] text-gray-400">{formatTime(item.created_at)}</span>
+                  </div>
+                  <p className="text-sm text-gray-800 dark:text-gray-200 line-clamp-2">{item.preview}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <ConfirmDialog
         isOpen={showDeleteConfirm}

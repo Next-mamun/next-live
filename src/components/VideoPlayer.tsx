@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { getPosterUrl } from '@/lib/utils';
+import { getPosterUrl, optimizeCloudinaryUrl } from '@/lib/utils';
 import { useTheme } from '@/contexts/AuthContext';
 
 interface VideoPlayerProps {
@@ -12,7 +12,8 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, className }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const { autoplayVideos, saveDataMode } = useTheme();
 
-  const poster = getPosterUrl(src);
+  const optimizedSrc = optimizeCloudinaryUrl(src, { type: 'video', eco: saveDataMode });
+  const poster = optimizeCloudinaryUrl(getPosterUrl(src), { width: 720, type: 'image' });
 
   useEffect(() => {
     const handleOtherVideoPlaying = (e: CustomEvent) => {
@@ -60,7 +61,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, className }) => {
     <div className={`relative w-full ${className}`}>
        <video
          ref={videoRef}
-         src={src}
+         src={optimizedSrc}
          poster={poster}
          controls
          playsInline

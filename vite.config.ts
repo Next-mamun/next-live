@@ -6,6 +6,9 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+    const buildTime = Date.now().toString();
+    const autoVersion = `1.0.${buildTime.slice(-6)}`;
+
     return {
       server: {
         port: 3000,
@@ -14,6 +17,16 @@ export default defineConfig(({ mode }) => {
       plugins: [
         react(),
         tailwindcss(),
+        {
+          name: 'auto-version-manifest',
+          generateBundle() {
+            this.emitFile({
+              type: 'asset',
+              fileName: 'version.json',
+              source: JSON.stringify({ version: autoVersion, buildTime }, null, 2),
+            });
+          },
+        },
         VitePWA({
           strategies: 'injectManifest',
           srcDir: 'src',
@@ -48,7 +61,8 @@ export default defineConfig(({ mode }) => {
         })
       ],
       define: {
-        'import.meta.env.VITE_BUILD_TIME': JSON.stringify(Date.now().toString())
+        'import.meta.env.VITE_BUILD_TIME': JSON.stringify(buildTime),
+        'import.meta.env.VITE_APP_VERSION': JSON.stringify(autoVersion)
       },
       resolve: {
         alias: {

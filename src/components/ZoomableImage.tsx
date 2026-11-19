@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, ZoomIn, ArrowLeft } from 'lucide-react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import { optimizeCloudinaryUrl } from '@/lib/utils';
 
 interface ZoomableImageProps {
   src: string;
@@ -53,8 +54,9 @@ const ZoomableImage: React.FC<ZoomableImageProps> = ({ src, alt, className, refe
         }}
       >
         <img 
-          src={src} 
+          src={optimizeCloudinaryUrl(src, { width: 1080, type: 'image' })} 
           alt={alt} 
+          loading="lazy"
           className={`${className} transition-transform duration-300 group-hover:scale-[1.02]`} 
           referrerPolicy={referrerPolicy} 
         />

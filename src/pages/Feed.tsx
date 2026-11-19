@@ -14,7 +14,7 @@ import { CameraCapture, MediaEditor } from '@/components/MediaTools';
 
 import PostCard from '@/components/PostCard';
 import AdSenseAd from '@/components/AdSenseAd';
-import { getPosterUrl } from '@/lib/utils';
+import { getPosterUrl, optimizeCloudinaryUrl, parseDate } from '@/lib/utils';
 
 import { useUpload } from '@/contexts/UploadContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
@@ -80,10 +80,17 @@ const Feed: React.FC = () => {
 
   // Use Global Store for state
   const { feedPosts, fetchHomeFeed, postsLoading, postsError, hasMorePosts, addPostOptimistic } = useGlobalStore();
+  const [friendIdsSet, setFriendIdsSet] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    localDB.friends.where('status').equals('accepted').toArray()
+      .then((list) => setFriendIdsSet(new Set(list.map(f => f.id))))
+      .catch(() => {});
+  }, [currentUser?.id]);
 
   useEffect(() => {
     setFeedRandomSeed(Math.random());
-    fetchHomeFeed(false, true);
+    fetchHomeFeed(false, false);
   }, [fetchHomeFeed]);
 
   const handleLoadMore = () => {
@@ -233,66 +240,37 @@ const Feed: React.FC = () => {
 
   const posts = useMemo(() => {
     let flatPosts = [...feedPosts];
-    
+
     if (sharedPost) {
       flatPosts = flatPosts.filter(p => p.id !== sharedPost.id);
     }
 
     if (flatPosts.length > 0) {
-      // Partition by content type
-      const textPosts: any[] = [];
-      const imagePosts: any[] = [];
-      const videoPosts: any[] = [];
-      
-      flatPosts.forEach(p => {
-        const isVid = p.media_type === 'video' || (p.media_url && (p.media_url.includes('.mp4') || p.media_url.includes('youtube') || p.media_url.includes('youtu.be') || p.media_url.includes('facebook') || p.media_url.includes('/embed/')));
-        if (isVid) {
-          videoPosts.push(p);
-        } else if (p.media_type === 'image' || p.media_url) {
-          imagePosts.push(p);
-        } else {
-          textPosts.push(p);
-        }
+      const nowMs = Date.now();
+      const scoreMap = new Map<string, number>();
+      flatPosts.forEach((p, idx) => {
+        const isFriend = p.user_id && friendIdsSet.has(p.user_id) ? 45 : 0;
+        const createdMs = parseDate(p.created_at).getTime();
+        const hoursOld = Math.max(0, (nowMs - createdMs) / 3600000);
+        const recencyScore = Math.max(0, 80 - hoursOld * 1.4);
+        const likes = Number(p.like_count ?? p.likes?.length ?? 0);
+        const comments = Number(p.comment_count ?? p.comments?.length ?? 0);
+        const views = Number(p.views ?? 0);
+        const engagementScore = Math.min(35, likes * 2 + comments * 3 + views * 0.1);
+        const idHash = String(p.id || idx).split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+        const tieBreaker = ((idHash + Math.floor(feedRandomSeed * 100)) % 9);
+        scoreMap.set(p.id, isFriend + recencyScore + engagementScore + tieBreaker);
       });
 
-      // Seeded shuffle helper
-      const shuffleBucket = (arr: any[], offset: number) => {
-        const copy = [...arr];
-        for (let i = copy.length - 1; i > 0; i--) {
-          const pseudoRand = Math.abs(Math.sin(feedRandomSeed * 9999 + offset + i * 37) * 10000);
-          const j = Math.floor((pseudoRand - Math.floor(pseudoRand)) * (i + 1));
-          [copy[i], copy[j]] = [copy[j], copy[i]];
-        }
-        return copy;
-      };
-
-      const sText = shuffleBucket(textPosts, 11);
-      const sImages = shuffleBucket(imagePosts, 22);
-      const sVideos = shuffleBucket(videoPosts, 33);
-
-      // Interleave buckets to ensure a completely blended, mixed feed
-      const mixed: any[] = [];
-      const buckets = [sImages, sText, sVideos].filter(b => b.length > 0);
-      
-      let step = 0;
-      while (buckets.some(b => b.length > 0)) {
-        const activeBuckets = buckets.filter(b => b.length > 0);
-        if (activeBuckets.length === 0) break;
-        const bucket = activeBuckets[step % activeBuckets.length];
-        const item = bucket.shift();
-        if (item) mixed.push(item);
-        step++;
-      }
-
-      flatPosts = mixed;
+      flatPosts.sort((a, b) => (scoreMap.get(b.id) || 0) - (scoreMap.get(a.id) || 0));
     }
-    
+
     if (sharedPost) {
       flatPosts.unshift(sharedPost);
     }
 
     return flatPosts;
-  }, [feedPosts, feedRandomSeed, sharedPost]);
+  }, [feedPosts, feedRandomSeed, sharedPost, friendIdsSet]);
 
   const handleObserve = useCallback((el: HTMLElement) => {
     observer.current?.observe(el);
@@ -379,25 +357,21 @@ const Feed: React.FC = () => {
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // If hasMorePosts is false because we don't paginate the randomized pool, 
-    // we don't need to observe for load more unless we want to trigger a refresh.
-    // For now we just skip the observer if no more posts are available.
     if (!hasMorePosts) return;
 
     const observer = new IntersectionObserver((entries) => {
       if (entries[0].isIntersecting && hasMorePosts && !postsLoading) {
         handleLoadMore();
       }
-    }, { threshold: 0.1 });
+    }, { rootMargin: '400px 0px', threshold: 0.05 });
 
-    if (loadMoreRef.current) {
-      observer.observe(loadMoreRef.current);
+    const el = loadMoreRef.current;
+    if (el) {
+      observer.observe(el);
     }
 
     return () => {
-      if (loadMoreRef.current) {
-        observer.unobserve(loadMoreRef.current);
-      }
+      observer.disconnect();
     };
   }, [hasMorePosts, postsLoading]);
 
@@ -786,7 +760,10 @@ const Feed: React.FC = () => {
             {reels.slice(0, 10).map(reel => {
               const ytId = reel.source_type === 'youtube' ? reel.youtube_id : (reel.media_url?.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/) || [])[1];
               const isYoutube = !!ytId;
-              const posterImage = reel.thumbnail_url || (ytId ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg` : getPosterUrl(reel.media_url));
+              const posterImage = optimizeCloudinaryUrl(
+                reel.thumbnail_url || (ytId ? `https://img.youtube.com/vi/${ytId}/hqdefault.jpg` : getPosterUrl(reel.media_url)),
+                { width: 320, type: 'image' }
+              );
 
               return (
                 <Link to={`/reels/${reel.id}`} key={reel.id} className="group relative flex-shrink-0 w-32 h-56 rounded-xl overflow-hidden bg-zinc-900 border border-gray-200 dark:border-gray-800 shadow-sm hover:scale-[1.02] transition-transform">
@@ -794,6 +771,7 @@ const Feed: React.FC = () => {
                     <img 
                       src={posterImage} 
                       alt={reel.content || 'Reel'} 
+                      loading="lazy"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
                       referrerPolicy="no-referrer"
                     />
@@ -846,20 +824,20 @@ const Feed: React.FC = () => {
       ) : postsLoading && posts.length === 0 ? (
         <div className="flex flex-col gap-4">
            {[...Array(3)].map((_, i) => (
-             <div key={i} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-4 animate-pulse">
+             <div key={i} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-4">
                <div className="flex items-center gap-3 mb-4">
-                 <div className="w-10 h-10 bg-gray-200 dark:bg-gray-800 rounded-full"></div>
+                 <div className="w-10 h-10 rounded-full shimmer-box shrink-0"></div>
                  <div className="flex-1">
-                   <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-1/3 mb-2"></div>
-                   <div className="h-3 bg-gray-200 dark:bg-gray-800 rounded w-1/4"></div>
+                   <div className="h-4 rounded w-1/3 mb-2 shimmer-box"></div>
+                   <div className="h-3 rounded w-1/4 shimmer-box"></div>
                  </div>
                </div>
                <div className="space-y-2 mb-4">
-                 <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-full"></div>
-                 <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-5/6"></div>
-                 <div className="h-4 bg-gray-200 dark:bg-gray-800 rounded w-4/6"></div>
+                 <div className="h-4 rounded w-full shimmer-box"></div>
+                 <div className="h-4 rounded w-5/6 shimmer-box"></div>
+                 <div className="h-4 rounded w-4/6 shimmer-box"></div>
                </div>
-               <div className="w-full h-48 bg-gray-200 dark:bg-gray-800 rounded-lg"></div>
+               <div className="w-full h-52 rounded-lg shimmer-box"></div>
              </div>
            ))}
         </div>
@@ -906,8 +884,21 @@ const Feed: React.FC = () => {
             )}
           </div>
           {hasMorePosts && (
-            <div ref={loadMoreRef} className="py-4 text-center font-bold text-gray-500">
-              {postsLoading ? 'Loading more...' : 'Loading...'}
+            <div ref={loadMoreRef} className="py-4">
+              {postsLoading ? (
+                <div className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 p-4">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-full shimmer-box shrink-0"></div>
+                    <div className="flex-1">
+                      <div className="h-3.5 rounded w-1/3 mb-2 shimmer-box"></div>
+                      <div className="h-3 rounded w-1/5 shimmer-box"></div>
+                    </div>
+                  </div>
+                  <div className="w-full h-36 rounded-lg shimmer-box"></div>
+                </div>
+              ) : (
+                <p className="text-center font-bold text-gray-500 text-xs">Scroll for more posts</p>
+              )}
             </div>
           )}
           {!hasMorePosts && posts.length > 0 && (

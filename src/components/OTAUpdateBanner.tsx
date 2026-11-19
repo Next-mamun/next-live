@@ -47,13 +47,13 @@ export const OTAUpdateBanner: React.FC = () => {
         return;
       }
 
-      const localVersion = localStorage.getItem('app_version');
+      const localVersion = localStorage.getItem('app_version') || (import.meta as any).env?.VITE_APP_VERSION;
 
-      if (!localVersion) {
-        // Initial setup: Seed localStorage with current remote version
+      if (!localStorage.getItem('app_version') && remoteVersion) {
+        // Initial setup: Seed localStorage with current version
         localStorage.setItem('app_version', remoteVersion);
-      } else if (localVersion !== remoteVersion) {
-        // New OTA version detected!
+      } else if (localVersion && remoteVersion !== localVersion && import.meta.env.PROD) {
+        // New OTA version detected in production build!
         setNewVersion(remoteVersion);
         setDismissed(false);
       }
@@ -164,14 +164,14 @@ export const OTAUpdateBanner: React.FC = () => {
       <div className="bg-white/95 dark:bg-gray-900/95 backdrop-blur-md text-gray-900 dark:text-white rounded-2xl shadow-2xl border border-blue-500/30 p-3.5 sm:p-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800/60 flex items-center justify-center shrink-0 text-[#1877F2]">
-            <Sparkles className="w-5 h-5 animate-pulse" />
+            <Sparkles className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-semibold truncate flex items-center gap-1.5">
-              <span>🚀 A new update for Next is available!</span>
+            <p className="text-sm font-semibold truncate">
+              A new update is available
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-              Version {newVersion} is ready to apply.
+              Version {newVersion} is ready to install.
             </p>
           </div>
         </div>
@@ -181,7 +181,7 @@ export const OTAUpdateBanner: React.FC = () => {
             id="ota-update-now-btn"
             onClick={handleUpdate}
             disabled={isUpdating}
-            className="bg-[#1877F2] hover:bg-blue-600 active:scale-95 text-white text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-70 cursor-pointer"
+            className="bg-[#1877F2] hover:bg-blue-600 active:scale-95 text-white text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-70 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
             <span>{isUpdating ? 'Updating...' : 'Update Now'}</span>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { localDB } from '@/lib/dexie';
 import { fetchProfileSmart } from '@/lib/profileSync';
+import { optimizeCloudinaryUrl } from '@/lib/utils';
 
 interface ProfileAvatarProps {
   userId?: string;
@@ -119,7 +120,7 @@ export const ProfileAvatar: React.FC<ProfileAvatarProps> = ({ userId, defaultAva
 
   return (
     <img 
-      src={avatar} 
+      src={optimizeCloudinaryUrl(avatar, { width: 200, type: 'image' })} 
       alt={`${displayName} avatar`} 
       className={className || "w-10 h-10 rounded-full object-cover border border-gray-200 dark:border-gray-800 shrink-0"} 
       onError={() => setHasError(true)}
