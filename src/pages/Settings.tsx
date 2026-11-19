@@ -212,7 +212,8 @@ const Settings: React.FC = () => {
     incognitoMode, setIncognitoMode,
     soundEffects, setSoundEffects,
     compactFeed, setCompactFeed,
-    showAllReels, setShowAllReels
+    showAllReels, setShowAllReels,
+    autoLoginOnReinstall, setAutoLoginOnReinstall
   } = useTheme();
   const { addUpload } = useUpload();
   const { scanFile } = useContentFilter();
@@ -330,6 +331,8 @@ const Settings: React.FC = () => {
         const savedDesktop = localStorage.getItem('next_media_desktop');
         const savedNexto = localStorage.getItem('next_media_nexto');
         const savedKeyboard = localStorage.getItem('saved_keyboard_height');
+        const savedAutoLoginReinstall = localStorage.getItem('next_auto_login_reinstall');
+        const savedPwaInstalled = localStorage.getItem('next_pwa_installed');
 
         // Wipe local storage clean
         localStorage.clear();
@@ -341,6 +344,8 @@ const Settings: React.FC = () => {
         if (savedDesktop) localStorage.setItem('next_media_desktop', savedDesktop);
         if (savedNexto) localStorage.setItem('next_media_nexto', savedNexto);
         if (savedKeyboard) localStorage.setItem('saved_keyboard_height', savedKeyboard);
+        if (savedAutoLoginReinstall !== null) localStorage.setItem('next_auto_login_reinstall', savedAutoLoginReinstall);
+        if (savedPwaInstalled !== null) localStorage.setItem('next_pwa_installed', savedPwaInstalled);
         
         localStorage.setItem('next_media_user', JSON.stringify(freshUser));
         setCurrentUser(freshUser as any);
@@ -438,6 +443,8 @@ const Settings: React.FC = () => {
       const savedDesktop = localStorage.getItem('next_media_desktop');
       const savedNexto = localStorage.getItem('next_media_nexto');
       const savedKeyboard = localStorage.getItem('saved_keyboard_height');
+      const savedAutoLoginReinstall = localStorage.getItem('next_auto_login_reinstall');
+      const savedPwaInstalled = localStorage.getItem('next_pwa_installed');
 
       // Wipe local storage clean
       localStorage.clear();
@@ -449,6 +456,8 @@ const Settings: React.FC = () => {
       if (savedDesktop) localStorage.setItem('next_media_desktop', savedDesktop);
       if (savedNexto) localStorage.setItem('next_media_nexto', savedNexto);
       if (savedKeyboard) localStorage.setItem('saved_keyboard_height', savedKeyboard);
+      if (savedAutoLoginReinstall !== null) localStorage.setItem('next_auto_login_reinstall', savedAutoLoginReinstall);
+      if (savedPwaInstalled !== null) localStorage.setItem('next_pwa_installed', savedPwaInstalled);
       
       localStorage.setItem('next_media_user', JSON.stringify(freshUser));
       setCurrentUser(freshUser as any);
@@ -554,7 +563,7 @@ const Settings: React.FC = () => {
     { id: 'display', icon: <Monitor size={20} />, label: 'Display & Accessibility', keywords: ['dark mode', 'light mode', 'font', 'size', 'nexto', 'robot'] },
     { id: 'privacy', icon: <Shield size={20} />, label: 'Privacy & Safety', keywords: ['blocked', 'privacy', 'security', 'visibility'] },
     { id: 'notifications', icon: <Bell size={20} />, label: 'Notifications', keywords: ['alerts', 'push', 'messages', 'mentions'] },
-    { id: 'account', icon: <User size={20} />, label: 'Account Center', keywords: ['password', 'security', 'logout'] },
+    { id: 'account', icon: <User size={20} />, label: 'Account Center', keywords: ['password', 'security', 'logout', 'auto login', 'reinstall', 'install', 'uninstall', 'session'] },
     { id: 'legal', icon: <FileText size={20} />, label: 'Legal & Support', keywords: ['privacy policy', 'terms', 'conditions', 'contact us', 'help'] },
     { id: 'saved', icon: <Download size={20} />, label: 'Saved Content', keywords: ['saved', 'bookmarks', 'favorites', 'offline'] },
   ];
@@ -940,7 +949,30 @@ const Settings: React.FC = () => {
               </Section>
 
               <Section title="Security">
-                <Row icon={<Lock size={20}/>} title="Password" description="Change your password" action={renderAction('password', '', true)} border={false} />
+                <Row icon={<Lock size={20}/>} title="Password" description="Change your password" action={renderAction('password', '', true)} border={true} />
+                <Row
+                  icon={<Smartphone size={20} />}
+                  title="Auto-Login After App Reinstall"
+                  description="Keep your previous account logged in automatically if you uninstall and reinstall the web app (off by default)."
+                  action={
+                    <Toggle
+                      checked={autoLoginOnReinstall}
+                      onChange={() => {
+                        const nextVal = !autoLoginOnReinstall;
+                        setAutoLoginOnReinstall(nextVal);
+                        if (currentUser?.id) {
+                          updateDoc(doc(db, 'profiles', currentUser.id), { auto_login_reinstall: nextVal }).catch(() => {});
+                        }
+                        toast.success(
+                          nextVal
+                            ? 'Auto-login after reinstall enabled.'
+                            : 'Auto-login after reinstall disabled (default).'
+                        );
+                      }}
+                    />
+                  }
+                  border={false}
+                />
               </Section>
 
               <Section title="Saved Accounts">

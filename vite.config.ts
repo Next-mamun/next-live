@@ -32,31 +32,12 @@ export default defineConfig(({ mode }) => {
           srcDir: 'src',
           filename: 'sw.ts',
           registerType: 'autoUpdate',
+          manifest: false,
           injectManifest: {
-            maximumFileSizeToCacheInBytes: 6000000,
-            globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2,ttf}']
-          },
-          manifest: {
-            name: 'Next',
-            short_name: 'Next',
-            theme_color: '#ffffff',
-            background_color: '#f0f2f5',
-            display: 'standalone',
-            start_url: '/',
-            share_target: {
-              action: "/create-post",
-              method: "GET",
-              params: {
-                title: "title",
-                text: "text",
-                url: "url"
-              }
-            },
-            icons: [
-              { "src": "pwa-192x192.png", "sizes": "192x192", "type": "image/png" },
-              { "src": "pwa-512x512.png", "sizes": "512x512", "type": "image/png" },
-              { "src": "maskable-icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-            ]
+            // Keep precache ultra-lightweight (< 150 KB) so old PWAs update in < 0.3s instead of stalling on 44 MB AI shards
+            maximumFileSizeToCacheInBytes: 500000,
+            globPatterns: ['favicon.ico', 'pwa-*.png', 'maskable-icon-512x512.png', 'apple-touch-icon.png', 'manifest.json'],
+            globIgnores: ['**/index.html', '**/group1-shard*', '**/model.min-*']
           }
         })
       ],

@@ -10,6 +10,21 @@
   "scope": "/",
   "id": "/",
   "orientation": "portrait",
+  "share_target": {
+    "action": "/create-post",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "https://next-nexto.vercel.app/manifest.json"
+    }
+  ],
   "icons": [
     {
       "src": "pwa-192x192.png",

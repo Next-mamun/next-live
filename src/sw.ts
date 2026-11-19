@@ -1,24 +1,131 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
-
-import { clientsClaim } from "workbox-core";
+import { clientsClaim } from 'workbox-core';
+import { registerRoute } from 'workbox-routing';
+import { NetworkFirst, NetworkOnly, CacheFirst } from 'workbox-strategies';
+import { ExpirationPlugin } from 'workbox-expiration';
+import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
 declare let self: ServiceWorkerGlobalScope;
+
+const SW_VERSION = (import.meta as any).env?.VITE_BUILD_TIME || 'v2';
+const HTML_SHELL_CACHE = 'next-html-shell-v2';
+const ASSETS_CACHE = 'next-assets-v2';
+const SW_META_CACHE = 'next-sw-meta';
 
 self.skipWaiting();
 clientsClaim();
 
-// Automatically clean up outdated precaches from prior versions
+// Clean up any outdated Workbox precaches from prior versions
 cleanupOutdatedCaches();
 
-// Precache static assets built by Vite
+// Precache lightweight PWA assets (icons & manifest)
 precacheAndRoute((self as any).__WB_MANIFEST || []);
 
-// We don't skip waiting here automatically, but it's okay for PWA plugin's autoUpdate to manage it
+// Seed offline HTML shell on install so offline launches still work
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(HTML_SHELL_CACHE).then((cache) =>
+      fetch('/', { cache: 'no-store' })
+        .then((resp) => (resp && resp.ok ? cache.put('/', resp) : undefined))
+        .catch(() => {})
+    )
+  );
+});
+
+// Purge stale precaches from legacy versions and rescue stuck white-screen clients once
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    try {
+      const metaCache = await caches.open(SW_META_CACHE);
+      const prevVerResp = await metaCache.match('/__sw_version');
+      const prevVer = prevVerResp ? await prevVerResp.text() : null;
+
+      const allKeys = await caches.keys();
+      let hadLegacyPrecache = false;
+      await Promise.all(
+        allKeys.map((key) => {
+          if (key.includes('workbox-precache') || key.includes('precache-v')) {
+            hadLegacyPrecache = true;
+            return caches.delete(key);
+          }
+          if (
+            key !== HTML_SHELL_CACHE &&
+            key !== ASSETS_CACHE &&
+            key !== SW_META_CACHE &&
+            !key.startsWith('workbox-')
+          ) {
+            return caches.delete(key);
+          }
+          return Promise.resolve(false);
+        })
+      );
+
+      await metaCache.put('/__sw_version', new Response(SW_VERSION));
+      await self.clients.claim();
+
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of clients) {
+        try {
+          // One-time rescue navigation ONLY when upgrading from a legacy pre-v2 SW that trapped clients on old HTML
+          if (!prevVer && hadLegacyPrecache && 'navigate' in client) {
+            await (client as WindowClient).navigate(client.url).catch(() => {});
+          } else {
+            client.postMessage({ type: 'SW_UPDATED', version: SW_VERSION });
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  })());
+});
+
+// Never cache version.json or API routes in the service worker
+registerRoute(
+  ({ url }) => url.pathname === '/version.json' || url.pathname.startsWith('/api/'),
+  new NetworkOnly()
+);
+
+// Always use NetworkFirst for page navigations so Web/PWA users immediately get the latest index.html when online
+registerRoute(
+  ({ request }) => request.mode === 'navigate',
+  new NetworkFirst({
+    cacheName: HTML_SHELL_CACHE,
+    networkTimeoutSeconds: 3,
+    plugins: [
+      new CacheableResponsePlugin({ statuses: [200] }),
+    ],
+  })
+);
+
+// Cache content-hashed JS/CSS assets ONLY when response is genuine JS/CSS (never cache HTML 404 fallback pages!)
+registerRoute(
+  ({ url, request }) =>
+    url.pathname.startsWith('/assets/') &&
+    (request.destination === 'script' || request.destination === 'style' || /\.(js|css)$/i.test(url.pathname)) &&
+    !url.pathname.includes('group1-shard'),
+  new CacheFirst({
+    cacheName: ASSETS_CACHE,
+    plugins: [
+      {
+        cacheWillUpdate: async ({ response }) => {
+          if (!response || response.status !== 200) return null;
+          const ct = String(response.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('text/html')) return null;
+          return response;
+        },
+      },
+      new ExpirationPlugin({
+        maxEntries: 60,
+        maxAgeSeconds: 14 * 24 * 60 * 60,
+      }),
+    ],
+  })
+);
 
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING')
+  if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
 });
 
 declare const importScripts: (...urls: string[]) => void;

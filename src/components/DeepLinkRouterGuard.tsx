@@ -81,28 +81,28 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
       return;
     }
 
-    if (hasResolvedRef.current) return;
-    hasResolvedRef.current = true;
+    if (!hasResolvedRef.current) {
+      hasResolvedRef.current = true;
+      try {
+        const rawPath = window.location.pathname || '/';
+        const rawSearch = window.location.search || '';
+        const rawHash = window.location.hash || '';
+        const fullTarget = normalizeAppRoute(`${rawPath}${rawSearch}${rawHash}`);
+        const currentRouterTarget = `${location.pathname}${location.search}${location.hash}`;
 
-    try {
-      const rawPath = window.location.pathname || '/';
-      const rawSearch = window.location.search || '';
-      const rawHash = window.location.hash || '';
-      const fullTarget = normalizeAppRoute(`${rawPath}${rawSearch}${rawHash}`);
-      const currentRouterTarget = `${location.pathname}${location.search}${location.hash}`;
-
-      if (fullTarget && fullTarget !== '/' && fullTarget !== currentRouterTarget) {
-        navigate(fullTarget, { replace: true });
+        if (fullTarget && fullTarget !== '/' && fullTarget !== currentRouterTarget) {
+          navigate(fullTarget, { replace: true });
+        }
+      } catch (err) {
+        console.warn('[DeepLinkRouterGuard] Error navigating to deep link:', err);
       }
-    } catch (err) {
-      console.warn('[DeepLinkRouterGuard] Error navigating to deep link:', err);
-    } finally {
-      const timer = setTimeout(() => {
-        setIsResolving(false);
-      }, 100);
-
-      return () => clearTimeout(timer);
     }
+
+    const timer = setTimeout(() => {
+      setIsResolving(false);
+    }, 100);
+
+    return () => clearTimeout(timer);
   }, [isAndroidApp, navigate, location.pathname, location.search, location.hash]);
 
   if (isResolving) {

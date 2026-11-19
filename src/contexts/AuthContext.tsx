@@ -47,6 +47,8 @@ export interface ThemeContextType {
   setCompactFeed: (val: boolean) => void;
   showAllReels: boolean;
   setShowAllReels: (val: boolean) => void;
+  autoLoginOnReinstall: boolean;
+  setAutoLoginOnReinstall: (val: boolean) => void;
 }
 
 export const ThemeContext = createContext<ThemeContextType>({ 
@@ -80,6 +82,8 @@ export const ThemeContext = createContext<ThemeContextType>({
   setCompactFeed: () => {},
   showAllReels: false,
   setShowAllReels: () => {},
+  autoLoginOnReinstall: false,
+  setAutoLoginOnReinstall: () => {},
 });
 
 export const useTheme = () => useContext(ThemeContext);

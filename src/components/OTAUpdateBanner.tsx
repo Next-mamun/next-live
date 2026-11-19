@@ -25,6 +25,19 @@ export const OTAUpdateBanner: React.FC = () => {
     isCheckingRef.current = true;
 
     try {
+      // Trigger Service Worker update check if available
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          regs.forEach((reg) => {
+            reg.update().catch(() => {});
+            if (reg.waiting && import.meta.env.PROD) {
+              setNewVersion((prev) => prev || 'latest');
+              setDismissed(false);
+            }
+          });
+        }).catch(() => {});
+      }
+
       // Non-blocking fetch with no-cache to bypass browser memory & disk cache
       const response = await fetch(`/version.json?_t=${now}`, {
         cache: 'no-store',
@@ -35,7 +48,6 @@ export const OTAUpdateBanner: React.FC = () => {
       });
 
       if (!response.ok) {
-        isCheckingRef.current = false;
         return;
       }
 
@@ -43,19 +55,18 @@ export const OTAUpdateBanner: React.FC = () => {
       const remoteVersion = data?.version ? String(data.version).trim() : null;
 
       if (!remoteVersion) {
-        isCheckingRef.current = false;
         return;
       }
 
-      const localVersion = localStorage.getItem('app_version') || (import.meta as any).env?.VITE_APP_VERSION;
+      // Always compare against the compiled bundle's own version (never overwrite localStorage with remoteVersion!)
+      const runningVersion = ((import.meta as any).env?.VITE_APP_VERSION || '').trim();
+      const localVersion = runningVersion || localStorage.getItem('app_version') || '';
 
-      if (!localStorage.getItem('app_version') && remoteVersion) {
-        // Initial setup: Seed localStorage with current version
-        localStorage.setItem('app_version', remoteVersion);
-      } else if (localVersion && remoteVersion !== localVersion && import.meta.env.PROD) {
-        // New OTA version detected in production build!
+      if (localVersion && remoteVersion !== localVersion && import.meta.env.PROD) {
         setNewVersion(remoteVersion);
         setDismissed(false);
+      } else if (runningVersion) {
+        localStorage.setItem('app_version', runningVersion);
       }
     } catch (err) {
       // Silently ignore network failures to ensure zero impact on app usage
@@ -74,9 +85,18 @@ export const OTAUpdateBanner: React.FC = () => {
       } else {
         checkForUpdate();
       }
-    }, 2000);
+    }, 1500);
 
-    // 2. Check on window focus and visibility change
+    // 2. Listen for Service Worker update broadcasts & focus/visibility
+    const handleSwUpdateEvent = () => {
+      lastCheckRef.current = 0;
+      checkForUpdate();
+      if (import.meta.env.PROD) {
+        setNewVersion((prev) => prev || 'latest');
+        setDismissed(false);
+      }
+    };
+
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkForUpdate();
@@ -87,6 +107,7 @@ export const OTAUpdateBanner: React.FC = () => {
       checkForUpdate();
     };
 
+    window.addEventListener('next_sw_updated', handleSwUpdateEvent);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleFocus);
 
@@ -100,6 +121,7 @@ export const OTAUpdateBanner: React.FC = () => {
     return () => {
       clearTimeout(timer);
       clearInterval(interval);
+      window.removeEventListener('next_sw_updated', handleSwUpdateEvent);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleFocus);
     };
@@ -110,11 +132,16 @@ export const OTAUpdateBanner: React.FC = () => {
     setIsUpdating(true);
 
     try {
-      // a. Unregister Service Workers if present
+      // a. Activate any waiting SW & unregister old Service Workers
       if ('serviceWorker' in navigator) {
         try {
           const registrations = await navigator.serviceWorker.getRegistrations();
           for (const registration of registrations) {
+            if (registration.waiting) {
+              try {
+                registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+              } catch (_) {}
+            }
             await registration.unregister();
           }
         } catch (swErr) {
@@ -122,7 +149,7 @@ export const OTAUpdateBanner: React.FC = () => {
         }
       }
 
-      // b. Clear static Cache Storage (IndexedDB/Dexie data remains 100% UNTOUCHED and SAFE)
+      // b. Clear static Cache Storage (IndexedDB/Dexie/Auth data remains UNTOUCHED)
       if ('caches' in window && window.caches) {
         try {
           const cacheKeys = await window.caches.keys();
@@ -132,15 +159,18 @@ export const OTAUpdateBanner: React.FC = () => {
         }
       }
 
-      // c. Save the new version string to localStorage
-      localStorage.setItem('app_version', newVersion);
+      // c. Save the new version string if known
+      if (newVersion !== 'latest') {
+        localStorage.setItem('app_version', newVersion);
+      }
 
-      // d. Perform a hard reload to fresh origin with cache-busting parameter
-      window.location.href = window.location.origin + '?v=' + Date.now();
+      // d. Perform a hard reload preserving current path with cache-busting parameter
+      const bustUrl = new URL(window.location.href);
+      bustUrl.searchParams.set('_v', String(Date.now()));
+      window.location.replace(bustUrl.toString());
     } catch (err) {
       console.error('Error during OTA update:', err);
-      // Fallback reload
-      window.location.href = window.location.origin + '?v=' + Date.now();
+      window.location.replace(window.location.origin + '?_v=' + Date.now());
     }
   };
 

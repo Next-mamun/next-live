@@ -502,7 +502,7 @@ self.addEventListener('notificationclick', function(event) {
     app.use(express.static(distPath, {
       dotfiles: 'allow',
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html') || filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js') || filePath.endsWith('version.json')) {
+        if (filePath.endsWith('.html') || filePath.endsWith('sw.js') || filePath.endsWith('registerSW.js') || filePath.endsWith('version.json') || filePath.endsWith('manifest.json')) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         } else if (filePath.includes('/assets/')) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');

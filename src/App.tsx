@@ -19,6 +19,27 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { normalizeAppRoute, isChatMuted } from '@/lib/utils';
+import {
+  AUTO_LOGIN_REINSTALL_KEY,
+  consumePendingReinstallLogout,
+  enforceFreshLoginAfterReinstall,
+  isAutoLoginOnReinstallEnabled,
+  isStandaloneMode,
+  markPwaInstalled,
+  setAutoLoginOnReinstallEnabled,
+} from '@/lib/pwaInstallAuth';
+
+const safeGetStoredUser = (): User | null => {
+  try {
+    const saved = localStorage.getItem('next_media_user');
+    if (!saved || saved === 'undefined' || saved === 'null') return null;
+    const parsed = JSON.parse(saved);
+    return parsed && typeof parsed === 'object' && parsed.id ? parsed : null;
+  } catch (_) {
+    try { localStorage.removeItem('next_media_user'); } catch {}
+    return null;
+  }
+};
 
 const extractChatUserIdFromTarget = (route: string): string | null => {
   try {
@@ -546,36 +567,38 @@ const App: React.FC = () => {
   useWakeLock();
 
   useEffect(() => {
-    // 1. STATIC BUILD VERSION TRACKING & CACHE INVALIDATION (Production only to prevent dev preview reload bursts)
+    // 1. STATIC BUILD VERSION TRACKING & SILENT STALE CACHE CLEANUP (already on fresh bundle, no extra reload needed)
     const isProd = Boolean((import.meta as any).env?.PROD);
     const currentVersion = (import.meta as any).env?.VITE_BUILD_TIME;
     if (isProd && typeof window !== 'undefined' && currentVersion) {
       const storedVersion = localStorage.getItem('app_build_version');
-      if (storedVersion && storedVersion !== currentVersion) {
-        console.log('New build detected, purging caches and reloading...');
+      if (storedVersion !== currentVersion) {
         localStorage.setItem('app_build_version', currentVersion);
         if ('caches' in window && (window as any).caches) {
           (window as any).caches.keys().then((names: string[]) => {
-            Promise.all(names.map(name => (window as any).caches.delete(name)))
-              .then(() => {
-                window.location.reload();
-              });
-          });
-        } else {
-          window.location.reload();
+            names.forEach((name) => {
+              if (name.includes('precache') || name.includes('workbox')) {
+                (window as any).caches.delete(name).catch(() => {});
+              }
+            });
+          }).catch(() => {});
         }
-      } else if (!storedVersion) {
-        localStorage.setItem('app_build_version', currentVersion);
       }
+    }
+    if (isStandaloneMode()) {
+      markPwaInstalled();
     }
   }, []);
 
+  const reinstallLogoutPendingRef = useRef<boolean>(consumePendingReinstallLogout());
+
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('next_media_user');
-    return saved ? JSON.parse(saved) : null;
+    if (reinstallLogoutPendingRef.current) return null;
+    return safeGetStoredUser();
   });
   const [loadingAuth, setLoadingAuth] = useState(() => {
-    return localStorage.getItem('next_media_user') ? false : true;
+    if (reinstallLogoutPendingRef.current) return false;
+    return safeGetStoredUser() ? false : true;
   });
 
   const [darkMode, setDarkMode] = useState(() => {
@@ -698,6 +721,14 @@ const App: React.FC = () => {
     localStorage.setItem('next_media_showallreels', String(val));
   };
 
+  const [autoLoginOnReinstall, setAutoLoginOnReinstallState] = useState<boolean>(() => {
+    return isAutoLoginOnReinstallEnabled(); // Default is false (OFF)
+  });
+  const setAutoLoginOnReinstall = (val: boolean) => {
+    setAutoLoginOnReinstallState(val);
+    setAutoLoginOnReinstallEnabled(val);
+  };
+
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
@@ -792,6 +823,8 @@ const App: React.FC = () => {
     const desktop = localStorage.getItem('next_media_desktop');
     const nexto = localStorage.getItem('next_media_nexto');
     const keyboardHeight = localStorage.getItem('saved_keyboard_height');
+    const autoLoginReinstall = localStorage.getItem(AUTO_LOGIN_REINSTALL_KEY);
+    const pwaInstalled = localStorage.getItem('next_pwa_installed');
 
     // Clear local storage and session storage
     localStorage.clear();
@@ -803,6 +836,8 @@ const App: React.FC = () => {
     if (desktop) localStorage.setItem('next_media_desktop', desktop);
     if (nexto) localStorage.setItem('next_media_nexto', nexto);
     if (keyboardHeight) localStorage.setItem('saved_keyboard_height', keyboardHeight);
+    if (autoLoginReinstall !== null) localStorage.setItem(AUTO_LOGIN_REINSTALL_KEY, autoLoginReinstall);
+    if (pwaInstalled !== null) localStorage.setItem('next_pwa_installed', pwaInstalled);
 
     setCurrentUser(null);
     window.location.href = '/login';
@@ -905,13 +940,34 @@ const App: React.FC = () => {
     
     handleRedirectResult();
 
+    const handleReinstallForceLogout = () => {
+      reinstallLogoutPendingRef.current = false;
+      setCurrentUser(null);
+      setLoadingAuth(false);
+    };
+    window.addEventListener('next_force_logout_reinstall', handleReinstallForceLogout);
+
+    if (reinstallLogoutPendingRef.current && !isAutoLoginOnReinstallEnabled()) {
+      enforceFreshLoginAfterReinstall().catch(() => {});
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (reinstallLogoutPendingRef.current && !isAutoLoginOnReinstallEnabled()) {
+         reinstallLogoutPendingRef.current = false;
+         await enforceFreshLoginAfterReinstall();
+         if (!unmounted) {
+           setCurrentUser(null);
+           setLoadingAuth(false);
+         }
+         return;
+      }
+
       if (user) {
          fetchUserProfile(user.uid);
       } else {
-         const saved = localStorage.getItem('next_media_user');
-         if (saved) {
-           setCurrentUser(JSON.parse(saved));
+         const savedUser = safeGetStoredUser();
+         if (savedUser) {
+           setCurrentUser(savedUser);
          } else {
            setCurrentUser(null);
          }
@@ -921,6 +977,7 @@ const App: React.FC = () => {
 
     return () => {
       unmounted = true;
+      window.removeEventListener('next_force_logout_reinstall', handleReinstallForceLogout);
       unsubscribe();
     };
   }, []);
@@ -978,14 +1035,11 @@ const App: React.FC = () => {
         localStorage.setItem('next_media_user', JSON.stringify(cachedCopy));
       } else {
         console.warn("Profile not found or DB unreachable. Falling back to local/auth data.");
-        const saved = localStorage.getItem('next_media_user');
-        if (saved) {
-          const parsedSaved = JSON.parse(saved);
-          if (parsedSaved.id === userId) {
-            syncProfileToSupabase(parsedSaved).catch(() => {});
-            setCurrentUser(parsedSaved);
-            return;
-          }
+        const parsedSaved = safeGetStoredUser();
+        if (parsedSaved && parsedSaved.id === userId) {
+          syncProfileToSupabase(parsedSaved).catch(() => {});
+          setCurrentUser(parsedSaved);
+          return;
         }
         // If no local storage matches, create user from Firebase Auth and sync to Supabase
         if (auth.currentUser) {
@@ -1006,8 +1060,8 @@ const App: React.FC = () => {
       }
     } catch (err) {
       console.error("Failed to fetch user profile:", err);
-      const saved = localStorage.getItem('next_media_user');
-      if (saved) setCurrentUser(JSON.parse(saved));
+      const savedUser = safeGetStoredUser();
+      if (savedUser) setCurrentUser(savedUser);
     } finally {
       setLoadingAuth(false);
     }
@@ -1041,7 +1095,8 @@ const App: React.FC = () => {
         incognitoMode, setIncognitoMode,
         soundEffects, setSoundEffects,
         compactFeed, setCompactFeed,
-        showAllReels, setShowAllReels
+        showAllReels, setShowAllReels,
+        autoLoginOnReinstall, setAutoLoginOnReinstall
       }}>
         <BrowserRouter>
           <DeepLinkRouterGuard>

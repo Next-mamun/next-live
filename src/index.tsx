@@ -89,26 +89,58 @@ if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.p
   navigator.storage.persist().catch(() => {});
 }
 
-// Global listener for PWA install prompt
+import {
+  checkRelatedAppsForUninstall,
+  handleAppInstalledForReinstallCheck,
+  handleBeforeInstallPromptForReinstallCheck,
+  isStandaloneMode,
+  markPwaInstalled,
+} from './lib/pwaInstallAuth';
+
+// Global listener for PWA install prompt & uninstall/reinstall detection
 (window as any).deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   (window as any).deferredInstallPrompt = e;
+  handleBeforeInstallPromptForReinstallCheck().catch(() => {});
 });
+
+window.addEventListener('appinstalled', () => {
+  (window as any).deferredInstallPrompt = null;
+  handleAppInstalledForReinstallCheck().catch(() => {});
+});
+
+if (isStandaloneMode()) {
+  markPwaInstalled();
+} else {
+  checkRelatedAppsForUninstall().catch(() => {});
+}
 
 // Expose queryClient globally
 (window as any).queryClient = queryClient;
 
-// 3. Register PWA service worker with auto-update
+// 3. Register PWA service worker with update notifications
 const updateSW = registerSW({
   onNeedRefresh() {
-    console.log("New version available, auto updating Service Worker...");
+    console.log("New version available, activating updated Service Worker...");
     updateSW(true);
+    window.dispatchEvent(new CustomEvent('next_sw_updated'));
   },
   onOfflineReady() {
     console.log('App is ready to work offline');
   },
 });
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.dispatchEvent(new CustomEvent('next_sw_updated'));
+  });
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'SW_UPDATED') {
+      window.dispatchEvent(new CustomEvent('next_sw_updated'));
+    }
+  });
+}
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
