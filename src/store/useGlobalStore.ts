@@ -8,7 +8,7 @@ import { toast } from 'sonner';
 import { getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
 import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
-import { fetchProfileSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
+import { fetchProfileSmart, fetchProfilesBatchSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
 import { getSafeMessagePreview, isChatMuted } from '@/lib/utils';
 
 interface Post {
@@ -65,7 +65,7 @@ let messageUnsub: (() => void) | null = null;
 let notifUnsub: (() => void) | null = null;
 let initialMessageLoad = true;
 const notifiedMessageIds = new Set<string>();
-const INITIAL_FEED_POOL = 120;
+const INITIAL_FEED_POOL = 25;
 const FEED_PAGE_SIZE = 20;
 let lastFirebaseFeedDoc: any = null;
 let firebaseFeedOrderSupported = true;
@@ -345,13 +345,32 @@ export const useGlobalStore = create<GlobalState>()(
              return;
           }
 
-          const populatedPosts = await Promise.all(fetchedDocs.map(async (data) => {
-            // Read embedded like_count, comment_count, author_name, and author_photo directly from each post doc
-            let profiles = await getProfile(data.user_id);
+          // Batch fetch author profiles in 1 single network query (or Dexie cache) instead of 120 individual reads
+          const missingUserIds = Array.from(new Set(
+            fetchedDocs
+              .map(d => d.user_id)
+              .filter(id => id && !profileCache.has(id))
+          ));
+
+          if (missingUserIds.length > 0) {
+            try {
+              const batchProfiles = await fetchProfilesBatchSmart(missingUserIds);
+              batchProfiles.forEach((prof, uid) => {
+                profileCache.set(uid, prof);
+              });
+            } catch (err) {
+              console.warn("Batch profile fetch error in feed:", err);
+            }
+          }
+
+          const populatedPosts = fetchedDocs.map((data) => {
+            let profiles = profileCache.get(data.user_id) || null;
             if (!profiles && data.author_name) {
               profiles = {
+                id: data.user_id,
                 display_name: data.author_name,
-                avatar_url: data.author_photo,
+                name: data.author_name,
+                avatar_url: data.author_photo || '',
                 username: data.author_username || 'user'
               };
             }
@@ -361,7 +380,7 @@ export const useGlobalStore = create<GlobalState>()(
               comments: [], // Comments are lazy loaded on demand 
               likes: []     // Likes are lazy loaded on demand
             };
-          })) as Post[];
+          }) as Post[];
           
           // Batch Fetch Data Normalization: Dual Video Source
           const feedVideos = populatedPosts.map(p => {

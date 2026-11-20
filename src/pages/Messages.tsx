@@ -2,7 +2,7 @@ import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/d
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink } from 'lucide-react';
+import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink, Loader2 } from 'lucide-react';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
@@ -360,6 +360,69 @@ const Messages: React.FC = () => {
   const isLongPressRef = useRef<boolean>(false);
   const activeChannelRef = useRef<any>(null);
 
+  const [liveStatus, setLiveStatus] = useState<'inactive' | 'proposing' | 'receiving_proposal' | 'active' | 'failed'>('inactive');
+  const [liveText, setLiveText] = useState('');
+  const liveProposalTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastInputLengthRef = useRef<number>(0);
+  const activeLiveStreamTextRef = useRef<string>('');
+
+  const startLiveProposal = () => {
+    if (!selectedChat || !currentUser) return;
+    setLiveStatus('proposing');
+    
+    const signalPayload = {
+      type: 'LIVE_PROPOSAL_REQUEST',
+      sender_id: currentUser.id,
+      sender_name: currentUser.display_name || currentUser.username || 'User',
+      sender_avatar: currentUser.avatar_url || '',
+      chat_id: selectedChat.id,
+      timestamp: Date.now()
+    };
+    
+    // 1. Broadcast over chat room channel
+    sendP2PSignal(signalPayload);
+    
+    // 2. Broadcast over receiver's dedicated notification channel for 100% reach
+    try {
+      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
+      receiverChannel.send({
+        type: 'broadcast',
+        event: 'LIVE_PROPOSAL_SIGNAL',
+        payload: signalPayload
+      }).catch(() => {});
+    } catch (_) {}
+    
+    // 3. Clear existing proposal timer
+    if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
+    
+    // 4. Set 10-second timeout to transition to 'failed' (Retry) state
+    liveProposalTimerRef.current = setTimeout(() => {
+      setLiveStatus(prev => {
+        if (prev === 'proposing') {
+          toast.error('Live typing proposal timed out. Click to retry.');
+          return 'failed';
+        }
+        return prev;
+      });
+    }, 10000);
+  };
+
+  const cancelLiveProposal = () => {
+    if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
+    setLiveStatus('inactive');
+    sendP2PSignal({ type: 'LIVE_PROPOSAL_CANCEL', sender_id: currentUser?.id });
+    try {
+      if (selectedChat) {
+        const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
+        receiverChannel.send({
+          type: 'broadcast',
+          event: 'LIVE_PROPOSAL_SIGNAL',
+          payload: { type: 'LIVE_PROPOSAL_CANCEL', sender_id: currentUser?.id }
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  };
+
   useEffect(() => {
     if (currentUser?.id) {
       syncProfileToSupabase(currentUser).catch(() => {});
@@ -667,16 +730,39 @@ const Messages: React.FC = () => {
       }
       
       if (liveStatus === 'active') {
+        const prevLen = lastInputLengthRef.current;
+        const currLen = text.length;
+        lastInputLengthRef.current = currLen;
+
+        let streamToSend = text;
+        if (currLen < prevLen) {
+          // Deletion occurred (e.g. Backspace pressed):
+          // Delete characters from the FRONT (index 0) so the reader finishes reading the end!
+          const deletedCount = prevLen - currLen;
+          if (text.trim() === '') {
+            activeLiveStreamTextRef.current = '';
+            streamToSend = '';
+          } else {
+            const currentStream = activeLiveStreamTextRef.current || text;
+            streamToSend = currentStream.slice(deletedCount);
+            activeLiveStreamTextRef.current = streamToSend;
+          }
+        } else {
+          // Forward typing or paste
+          activeLiveStreamTextRef.current = text;
+          streamToSend = text;
+        }
+
         const now = Date.now();
-        if (now - lastLiveTextSendTimeRef.current > 200) {
-          sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text });
+        if (now - lastLiveTextSendTimeRef.current > 150) {
+          sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text: streamToSend, sender_id: currentUser.id });
           lastLiveTextSendTimeRef.current = now;
         } else {
           if (liveTextTimeoutRef.current) clearTimeout(liveTextTimeoutRef.current);
           liveTextTimeoutRef.current = setTimeout(() => {
-            sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text });
+            sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text: streamToSend, sender_id: currentUser.id });
             lastLiveTextSendTimeRef.current = Date.now();
-          }, 200);
+          }, 150);
         }
       }
 
@@ -713,14 +799,28 @@ const Messages: React.FC = () => {
           setMessages(prev => prev.map(m => m.id === data.msgId ? { ...m, p2p_seen: true } : m));
         } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {
           setLiveStatus('receiving_proposal');
+          sendP2PSignal({ type: 'LIVE_PROPOSAL_ACK', sender_id: currentUser?.id });
+        } else if (data.type === 'LIVE_PROPOSAL_ACK') {
+          // Packet acknowledged by recipient
+        } else if (data.type === 'LIVE_PROPOSAL_CANCEL') {
+          setLiveStatus(prev => prev === 'receiving_proposal' ? 'inactive' : prev);
         } else if (data.type === 'LIVE_PROPOSAL_ACCEPTED') {
+          if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
           setLiveStatus('active');
           setLiveText('');
+          activeLiveStreamTextRef.current = '';
+          lastInputLengthRef.current = 0;
+          toast.success('⚡ Live Typing Connected!');
         } else if (data.type === 'LIVE_PROPOSAL_REJECTED' || data.type === 'LIVE_STOP') {
+          if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
           setLiveStatus('inactive');
           setLiveText('');
+          activeLiveStreamTextRef.current = '';
+          lastInputLengthRef.current = 0;
         } else if (data.type === 'LIVE_TEXT_STREAM') {
-          setLiveText(data.text);
+          if (!data.sender_id || data.sender_id === selectedChat.id) {
+            setLiveText(data.text);
+          }
         }
       }
     };
@@ -735,11 +835,14 @@ const Messages: React.FC = () => {
   // Clean up live typing when selectedChat changes
   useEffect(() => {
     return () => {
+      if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
       if (liveStatus !== 'inactive') {
-        sendP2PSignal({ type: 'LIVE_STOP' });
+        sendP2PSignal({ type: 'LIVE_STOP', sender_id: currentUser?.id });
       }
       setLiveStatus('inactive');
       setLiveText('');
+      activeLiveStreamTextRef.current = '';
+      lastInputLengthRef.current = 0;
     };
   }, [selectedChat]);
 
@@ -767,8 +870,6 @@ const Messages: React.FC = () => {
   
   const [isTyping, setIsTyping] = useState(false);
   const [otherUserTyping, setOtherUserTyping] = useState(false);
-  const [liveStatus, setLiveStatus] = useState<'inactive' | 'proposing' | 'receiving_proposal' | 'active'>('inactive');
-  const [liveText, setLiveText] = useState('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -1707,14 +1808,28 @@ const Messages: React.FC = () => {
             }
           } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {
             setLiveStatus('receiving_proposal');
+            sendP2PSignal({ type: 'LIVE_PROPOSAL_ACK', sender_id: currentUser?.id });
+          } else if (data.type === 'LIVE_PROPOSAL_ACK') {
+            // ACK
+          } else if (data.type === 'LIVE_PROPOSAL_CANCEL') {
+            setLiveStatus(prev => prev === 'receiving_proposal' ? 'inactive' : prev);
           } else if (data.type === 'LIVE_PROPOSAL_ACCEPTED') {
+            if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
             setLiveStatus('active');
             setLiveText('');
+            activeLiveStreamTextRef.current = '';
+            lastInputLengthRef.current = 0;
+            toast.success('⚡ Live Typing Connected!');
           } else if (data.type === 'LIVE_PROPOSAL_REJECTED' || data.type === 'LIVE_STOP') {
+            if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
             setLiveStatus('inactive');
             setLiveText('');
+            activeLiveStreamTextRef.current = '';
+            lastInputLengthRef.current = 0;
           } else if (data.type === 'LIVE_TEXT_STREAM') {
-            setLiveText(data.text);
+            if (!data.sender_id || data.sender_id === selectedChat.id) {
+              setLiveText(data.text);
+            }
           } else if (data.type === 'MESSAGE_REACTION' && data.msgId && data.emoji && data.userId) {
             setReactionsMap(prev => {
               const msgReacts = { ...(prev[data.msgId] || {}) };
@@ -3242,8 +3357,8 @@ const Messages: React.FC = () => {
                           {selectedChat.display_name}
                           {selectedChat.is_verified && <VerifiedBadge />}
                         </p>
-                        <p className={`text-[10px] mt-1 font-black tracking-widest ${liveStatus === 'active' ? 'text-green-500' : onlineUsers.has(selectedChat.id) ? 'text-green-500' : 'text-gray-400'}`}>
-                          {liveStatus === 'active' ? 'LIVE MODE ACTIVE' : onlineUsers.has(selectedChat.id) ? 'REALTIME ACTIVE' : 'OFFLINE'}
+                        <p className={`text-[10px] mt-1 font-black tracking-widest ${liveStatus === 'active' ? 'text-green-500' : liveStatus === 'proposing' ? 'text-yellow-500' : liveStatus === 'failed' ? 'text-red-500' : onlineUsers.has(selectedChat.id) ? 'text-green-500' : 'text-gray-400'}`}>
+                          {liveStatus === 'active' ? 'LIVE MODE ACTIVE' : liveStatus === 'proposing' ? 'CONNECTING...' : liveStatus === 'failed' ? 'FAILED (RETRY)' : onlineUsers.has(selectedChat.id) ? 'REALTIME ACTIVE' : 'OFFLINE'}
                         </p>
                       </div>
                     </div>
@@ -3254,17 +3369,51 @@ const Messages: React.FC = () => {
                         onClick={() => {
                           if (liveStatus === 'active') {
                             sendP2PSignal({ type: 'LIVE_STOP' });
+                            try {
+                              const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
+                              receiverChannel.send({
+                                type: 'broadcast',
+                                event: 'LIVE_PROPOSAL_SIGNAL',
+                                payload: { type: 'LIVE_STOP', sender_id: currentUser?.id }
+                              }).catch(() => {});
+                            } catch (_) {}
                             setLiveStatus('inactive');
                             setLiveText('');
+                            activeLiveStreamTextRef.current = '';
+                          } else if (liveStatus === 'proposing') {
+                            cancelLiveProposal();
+                          } else if (liveStatus === 'failed') {
+                            startLiveProposal();
                           } else if (liveStatus === 'inactive') {
-                            setLiveStatus('proposing');
-                            sendP2PSignal({ type: 'LIVE_PROPOSAL_REQUEST' });
+                            startLiveProposal();
                           }
                         }}
-                        className={`p-2 rounded-full transition-all ${liveStatus === 'active' ? 'bg-green-500 text-white shadow-lg' : liveStatus === 'proposing' ? 'bg-yellow-500 text-white animate-pulse' : 'hover:bg-green-50 dark:hover:bg-green-900/20 text-gray-400 hover:text-green-500'}`} 
-                        title={liveStatus === 'active' ? "Stop Live Typing" : liveStatus === 'proposing' ? "Proposal Sent..." : "Start Live Typing"}
+                        className={`p-2 rounded-full transition-all flex items-center justify-center relative ${
+                          liveStatus === 'active' 
+                            ? 'bg-green-500 text-white shadow-lg ring-2 ring-green-300' 
+                            : liveStatus === 'proposing' 
+                            ? 'bg-yellow-500 text-white shadow-md ring-2 ring-yellow-300' 
+                            : liveStatus === 'failed'
+                            ? 'bg-red-500 text-white hover:bg-red-600 shadow-md ring-2 ring-red-300 animate-pulse'
+                            : 'hover:bg-green-50 dark:hover:bg-green-900/20 text-gray-400 hover:text-green-500'
+                        }`} 
+                        title={
+                          liveStatus === 'active' 
+                            ? "Stop Live Typing" 
+                            : liveStatus === 'proposing' 
+                            ? "Connecting... Click to cancel" 
+                            : liveStatus === 'failed'
+                            ? "Connection failed. Click to Retry"
+                            : "Start Live Typing"
+                        }
                       >
-                        <Zap size={20} />
+                        {liveStatus === 'proposing' ? (
+                          <Loader2 size={20} className="animate-spin text-white" />
+                        ) : liveStatus === 'failed' ? (
+                          <RefreshCw size={20} className="text-white" />
+                        ) : (
+                          <Zap size={20} />
+                        )}
                       </button>
                     )}
                     <button 
@@ -3349,13 +3498,32 @@ const Messages: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <button onClick={() => {
                     setLiveStatus('inactive');
-                    sendP2PSignal({ type: 'LIVE_PROPOSAL_REJECTED' });
+                    sendP2PSignal({ type: 'LIVE_PROPOSAL_REJECTED', sender_id: currentUser?.id });
+                    try {
+                      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
+                      receiverChannel.send({
+                        type: 'broadcast',
+                        event: 'LIVE_PROPOSAL_SIGNAL',
+                        payload: { type: 'LIVE_PROPOSAL_REJECTED', sender_id: currentUser?.id }
+                      }).catch(() => {});
+                    } catch (_) {}
                   }} className="px-3 py-1.5 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors">
                     Decline
                   </button>
                   <button onClick={() => {
                     setLiveStatus('active');
-                    sendP2PSignal({ type: 'LIVE_PROPOSAL_ACCEPTED' });
+                    setLiveText('');
+                    activeLiveStreamTextRef.current = '';
+                    lastInputLengthRef.current = 0;
+                    sendP2PSignal({ type: 'LIVE_PROPOSAL_ACCEPTED', sender_id: currentUser?.id });
+                    try {
+                      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
+                      receiverChannel.send({
+                        type: 'broadcast',
+                        event: 'LIVE_PROPOSAL_SIGNAL',
+                        payload: { type: 'LIVE_PROPOSAL_ACCEPTED', sender_id: currentUser?.id }
+                      }).catch(() => {});
+                    } catch (_) {}
                   }} className="px-3 py-1.5 rounded-full text-xs font-bold bg-blue-500 hover:bg-blue-600 text-white shadow-sm transition-colors">
                     Accept
                   </button>

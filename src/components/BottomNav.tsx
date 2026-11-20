@@ -48,17 +48,33 @@ const BottomNav: React.FC = () => {
   const activeColor = iconColor;
   const inactiveColor = darkMode ? '#9CA3AF' : '#6B7280'; // gray-400 : gray-500
 
+  const handlePreload = (route: string) => {
+    if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) {
+      (window as any).__preloadAppRoute(route);
+    }
+  };
+
   return (
     <div 
       className={`w-full ${barHeightClass} bg-white/80 dark:bg-black/80 backdrop-blur-md border-t border-gray-200 dark:border-gray-800 flex items-center justify-around z-50 transition-all px-1`}
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      <Link to="/" className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive('/') ? activeColor : inactiveColor }}>
+      <Link 
+        to="/" 
+        className="flex flex-col items-center justify-center w-full h-full" 
+        style={{ color: isActive('/') ? activeColor : inactiveColor }}
+      >
         <Home size={iconSize} strokeWidth={isActive('/') ? 2.5 : 2} />
         <span className="text-[10px] font-medium mt-1">Home</span>
       </Link>
       
-      <Link to="/friends" className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive('/friends') ? activeColor : inactiveColor }}>
+      <Link 
+        to="/friends" 
+        onPointerDown={() => handlePreload('friends')}
+        onMouseEnter={() => handlePreload('friends')}
+        className="flex flex-col items-center justify-center w-full h-full" 
+        style={{ color: isActive('/friends') ? activeColor : inactiveColor }}
+      >
         <Users size={iconSize} strokeWidth={isActive('/friends') ? 2.5 : 2} />
         <span className="text-[10px] font-medium mt-1">Friends</span>
       </Link>
@@ -67,6 +83,7 @@ const BottomNav: React.FC = () => {
         <button
           type="button"
           onClick={() => navigate('/login')}
+          onPointerDown={() => handlePreload('login')}
           className="flex flex-col items-center justify-center w-full h-full"
           style={{ color: darkMode ? '#ffffff' : '#1A2933' }}
         >
@@ -75,7 +92,13 @@ const BottomNav: React.FC = () => {
           </div>
         </button>
       ) : (
-        <Link to="/create-post" className="flex flex-col items-center justify-center w-full h-full" style={{ color: darkMode ? '#ffffff' : '#1A2933' }}>
+        <Link 
+          to="/create-post" 
+          onPointerDown={() => handlePreload('create-post')}
+          onMouseEnter={() => handlePreload('create-post')}
+          className="flex flex-col items-center justify-center w-full h-full" 
+          style={{ color: darkMode ? '#ffffff' : '#1A2933' }}
+        >
           <div className="p-2 rounded-xl shadow-lg hover:scale-105 transition-transform" style={{ backgroundColor: activeColor, color: 'white' }}>
             <PlusSquare size={iconSize} />
           </div>
@@ -84,6 +107,8 @@ const BottomNav: React.FC = () => {
 
       <Link 
         to="/messages" 
+        onPointerDown={() => handlePreload('messages')}
+        onMouseEnter={() => handlePreload('messages')}
         className="flex flex-col items-center justify-center w-full h-full relative" 
         style={{ color: isActive('/messages') ? activeColor : inactiveColor }}
         onClick={() => {
@@ -105,6 +130,7 @@ const BottomNav: React.FC = () => {
         <button
           type="button"
           onClick={() => navigate('/login')}
+          onPointerDown={() => handlePreload('login')}
           className="flex flex-col items-center justify-center w-full h-full"
           style={{ color: inactiveColor }}
         >
@@ -112,7 +138,13 @@ const BottomNav: React.FC = () => {
           <span className="text-[10px] font-bold mt-1 text-[#1877F2]">Log In</span>
         </button>
       ) : (
-        <Link to={`/profile/${currentUser?.username || currentUser?.id}`} className="flex flex-col items-center justify-center w-full h-full" style={{ color: isActive(`/profile/${currentUser?.username || currentUser?.id}`) ? activeColor : inactiveColor }}>
+        <Link 
+          to={`/profile/${currentUser?.username || currentUser?.id}`} 
+          onPointerDown={() => handlePreload('profile')}
+          onMouseEnter={() => handlePreload('profile')}
+          className="flex flex-col items-center justify-center w-full h-full" 
+          style={{ color: isActive(`/profile/${currentUser?.username || currentUser?.id}`) ? activeColor : inactiveColor }}
+        >
           <User size={iconSize} strokeWidth={isActive(`/profile/${currentUser?.username || currentUser?.id}`) ? 2.5 : 2} />
           <span className="text-[10px] font-medium mt-1">Profile</span>
         </Link>

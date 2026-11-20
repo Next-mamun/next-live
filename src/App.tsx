@@ -138,6 +138,27 @@ const Settings = safeLazy(() => import('@/pages/Settings'));
 const ChildSafety = safeLazy(() => import('@/pages/ChildSafety'));
 const Features = safeLazy(() => import('@/pages/Features'));
 
+// Export preloadAppRoute and attach to window for 0ms instant page navigation
+export const preloadAppRoute = (route: string) => {
+  const clean = route.replace(/^\//, '').split('/')[0];
+  switch (clean) {
+    case 'messages': import('@/pages/Messages'); break;
+    case 'friends': import('@/pages/Friends'); break;
+    case 'profile': import('@/pages/Profile'); break;
+    case 'create-post': import('@/pages/CreatePost'); break;
+    case 'cinema': import('@/pages/Cinema'); break;
+    case 'lab': import('@/pages/Lab'); break;
+    case 'reels': import('@/pages/Reels'); break;
+    case 'notifications': import('@/pages/Notifications'); break;
+    case 'settings': import('@/pages/Settings'); break;
+    case 'meet': import('@/pages/Meet'); break;
+    case 'features': import('@/pages/Features'); break;
+  }
+};
+if (typeof window !== 'undefined') {
+  (window as any).__preloadAppRoute = preloadAppRoute;
+}
+
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { AuthContext, AuthContextType, ThemeContext, ThemeContextType, useAuth, useTheme } from '@/contexts/AuthContext';
 
@@ -263,6 +284,30 @@ const AppLayout: React.FC = () => {
             dedupeKey
           });
         })
+        .on('broadcast', { event: 'LIVE_PROPOSAL_SIGNAL' }, (event) => {
+          const payload = event.payload;
+          if (!payload || !payload.sender_id) return;
+
+          // Dispatch locally so Messages.tsx immediately catches the proposal / cancel / accept / reject
+          window.dispatchEvent(new CustomEvent('P2P_SIGNAL', {
+            detail: { peerId: payload.sender_id, data: payload }
+          }));
+
+          if (payload.type === 'LIVE_PROPOSAL_REQUEST') {
+            const { isChatOpen, activeChatId } = useGlobalStore.getState();
+            if (!isChatOpen || activeChatId !== payload.sender_id) {
+              showInAppNotificationToast({
+                title: '⚡ Live Typing Request',
+                body: `${payload.sender_name || 'A friend'} wants to start Live Typing! Tap to connect.`,
+                avatar: payload.sender_avatar,
+                url: `/messages?user=${payload.sender_id}`,
+                type: 'message',
+                senderId: payload.sender_id,
+                dedupeKey: `live_prop_${payload.sender_id}`
+              });
+            }
+          }
+        })
         .subscribe();
     });
 
@@ -339,9 +384,23 @@ const AppLayout: React.FC = () => {
   const mainRef = useRef<HTMLElement>(null);
   
   useEffect(() => {
-    // Force refresh data on browser reload (app mount)
-    queryClient.invalidateQueries();
-    useGlobalStore.getState().fetchHomeFeed(false, true);
+    // Eagerly prefetch route chunks on idle so all buttons (Friends, Messages, Profile, Cinema, Lab, etc.) open instantly
+    const preloadCommonPages = () => {
+      preloadAppRoute('messages');
+      preloadAppRoute('friends');
+      preloadAppRoute('profile');
+      preloadAppRoute('create-post');
+      preloadAppRoute('cinema');
+      preloadAppRoute('lab');
+      preloadAppRoute('reels');
+      preloadAppRoute('notifications');
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(preloadCommonPages, { timeout: 1200 });
+    } else {
+      setTimeout(preloadCommonPages, 300);
+    }
   }, []);
   const [pullProgress, setPullProgress] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);

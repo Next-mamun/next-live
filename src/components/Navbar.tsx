@@ -200,6 +200,8 @@ const Navbar: React.FC = () => {
       <div className="flex items-center justify-end gap-1 relative">
         <Link 
           to="/cinema"
+          onPointerDown={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('cinema'); }}
+          onMouseEnter={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('cinema'); }}
           className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-black dark:text-white"
           title="Watch Party"
         >
@@ -207,6 +209,8 @@ const Navbar: React.FC = () => {
         </Link>
         <Link 
           to="/lab"
+          onPointerDown={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('lab'); }}
+          onMouseEnter={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('lab'); }}
           className="p-2 rounded-full hover:bg-black/5 dark:hover:bg-white/5 transition-colors text-black dark:text-white"
           title="Lab (E-Books)"
         >
@@ -216,6 +220,7 @@ const Navbar: React.FC = () => {
           <button
             type="button"
             onClick={() => navigate('/login')}
+            onPointerDown={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('login'); }}
             className="flex items-center gap-2 bg-[#1877F2] hover:bg-[#166fe5] text-white text-xs sm:text-sm font-bold px-4 py-1.5 rounded-full shadow-md shadow-blue-500/20 transition-all active:scale-[0.98]"
           >
             <LogIn size={16} />

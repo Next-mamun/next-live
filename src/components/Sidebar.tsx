@@ -11,8 +11,19 @@ import { useQueryClient } from '@tanstack/react-query';
 const SidebarItem = React.memo<{ icon: React.ReactNode, label: string | React.ReactNode, to: string, badge?: number, onClick?: () => void }>(({ icon, label, to, badge, onClick }) => {
   const location = useLocation();
   const isActive = location.pathname === to;
+  const handlePreload = () => {
+    if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) {
+      (window as any).__preloadAppRoute(to);
+    }
+  };
   return (
-    <Link onClick={onClick} to={to} className={`flex items-center gap-3 p-3 rounded-lg transition-colors ${isActive ? 'bg-[#e7f3ff] dark:bg-gray-800 text-[#1877F2] dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'}`}>
+    <Link 
+      onClick={onClick} 
+      onPointerDown={handlePreload}
+      onMouseEnter={handlePreload}
+      to={to} 
+      className={`flex items-center gap-3 p-3 rounded-lg transition-colors ${isActive ? 'bg-[#e7f3ff] dark:bg-gray-800 text-[#1877F2] dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-700 dark:text-gray-300'}`}
+    >
       <div className={`relative ${isActive ? 'text-[#1877F2]' : 'text-gray-500 dark:text-gray-400'}`}>
         {icon}
         {!!badge && badge > 0 && (
