@@ -163,4 +163,6 @@ ins.adsbygoogle[data-ad-status="unfilled"] {
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
 }
 
-
+button, a, [role="button"] {
+  touch-action: manipulation;
+}

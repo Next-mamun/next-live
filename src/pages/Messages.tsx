@@ -1,9 +1,10 @@
 import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/dexie";
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink, Loader2 } from 'lucide-react';
-import EmojiPicker, { Theme } from 'emoji-picker-react';
+
+const EmojiPicker = lazy(() => import('emoji-picker-react'));
 import { useAuth } from '@/contexts/AuthContext';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import ZoomableImage from '@/components/ZoomableImage';
@@ -28,7 +29,8 @@ import {
   deleteFriendshipSmart,
 } from '@/lib/profileSync';
 
-import { MediaEditor, CameraCapture } from '../components/MediaTools';
+const MediaEditor = lazy(() => import('../components/MediaTools').then(m => ({ default: m.MediaEditor })));
+const CameraCapture = lazy(() => import('../components/MediaTools').then(m => ({ default: m.CameraCapture })));
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useUpload } from '@/contexts/UploadContext';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -4004,13 +4006,15 @@ const Messages: React.FC = () => {
                       <div className="absolute bottom-full right-0 mb-2 z-50 shadow-2xl animate-in slide-in-from-bottom-2 duration-200">
                         <div className="fixed inset-0" onClick={() => setShowEmojiPicker(false)}></div>
                         <div className="relative">
-                          <EmojiPicker 
-                            onEmojiClick={handleEmojiClick}
-                            autoFocusSearch={false}
-                            theme={Theme.AUTO}
-                            width={300}
-                            height={400}
-                          />
+                          <Suspense fallback={<div className="w-[300px] h-[400px] bg-white dark:bg-gray-900 rounded-xl flex items-center justify-center"><Loader2 className="animate-spin text-[#1877F2]" /></div>}>
+                            <EmojiPicker 
+                              onEmojiClick={handleEmojiClick}
+                              autoFocusSearch={false}
+                              theme={'auto' as any}
+                              width={300}
+                              height={400}
+                            />
+                          </Suspense>
                         </div>
                       </div>
                     )}
@@ -4137,12 +4141,14 @@ const Messages: React.FC = () => {
           </div>
         )}
         {showMediaEditor && selectedMedia && (
-          <MediaEditor 
-            mediaUrl={selectedMedia.url} 
-            mediaType={selectedMedia.type === 'video' ? 'video' : 'image'} 
-            onSave={handleMediaSave} 
-            onCancel={() => { setShowMediaEditor(false); setSelectedMedia(null); }} 
-          />
+          <Suspense fallback={null}>
+            <MediaEditor 
+              mediaUrl={selectedMedia.url} 
+              mediaType={selectedMedia.type === 'video' ? 'video' : 'image'} 
+              onSave={handleMediaSave} 
+              onCancel={() => { setShowMediaEditor(false); setSelectedMedia(null); }} 
+            />
+          </Suspense>
         )}
 
         {showMediaPreviewModal && selectedMedia && (
@@ -4279,21 +4285,23 @@ const Messages: React.FC = () => {
         )}
 
         {showCameraCapture && (
-          <CameraCapture 
-            onCapture={(dataUrl, type) => {
-              setShowCameraCapture(false);
-              fetch(dataUrl)
-                .then(r => r.blob())
-                .then(blob => {
-                  const ext = type === 'video' ? 'webm' : 'jpg';
-                  const file = new File([blob], `camera_${Date.now()}.${ext}`, {
-                    type: blob.type || (type === 'video' ? 'video/webm' : 'image/jpeg')
+          <Suspense fallback={null}>
+            <CameraCapture 
+              onCapture={(dataUrl, type) => {
+                setShowCameraCapture(false);
+                fetch(dataUrl)
+                  .then(r => r.blob())
+                  .then(blob => {
+                    const ext = type === 'video' ? 'webm' : 'jpg';
+                    const file = new File([blob], `camera_${Date.now()}.${ext}`, {
+                      type: blob.type || (type === 'video' ? 'video/webm' : 'image/jpeg')
+                    });
+                    processIncomingFile(file);
                   });
-                  processIncomingFile(file);
-                });
-            }} 
-            onCancel={() => setShowCameraCapture(false)} 
-          />
+              }} 
+              onCancel={() => setShowCameraCapture(false)} 
+            />
+          </Suspense>
         )}
       </div>
 

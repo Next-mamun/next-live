@@ -1,21 +1,24 @@
-import * as tf from '@tensorflow/tfjs';
-import * as nsfwjs from 'nsfwjs';
+import type { NSFWJS } from 'nsfwjs';
 import { toast } from 'sonner';
 
 // Singleton model promise to prevent multiple reloads and memory leaks
-let modelPromise: Promise<nsfwjs.NSFWJS> | null = null;
+let modelPromise: Promise<NSFWJS> | null = null;
 let isModelReady = false;
 
 // Concise, standard message without lengthy clutter
 export const ADULT_BLOCKED_MESSAGE = 'Adult content is not allowed. Please upload appropriate content.';
 
 /**
- * Loads and caches the NSFWJS model (MobileNetV2)
+ * Loads and caches the NSFWJS model (MobileNetV2) lazily only when media scanning runs
  */
-export async function getNSFWModel(): Promise<nsfwjs.NSFWJS> {
+export async function getNSFWModel(): Promise<NSFWJS> {
   if (!modelPromise) {
     modelPromise = (async () => {
       try {
+        const [tf, nsfwjs] = await Promise.all([
+          import('@tensorflow/tfjs'),
+          import('nsfwjs')
+        ]);
         await tf.ready();
         // Load bundled MobileNetV2 for optimal speed and accuracy
         const model = await nsfwjs.load();

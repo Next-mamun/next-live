@@ -65,7 +65,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ src, className }) => {
          poster={poster}
          controls
          playsInline
-         preload={saveDataMode ? "none" : "metadata"}
+         preload={saveDataMode || poster ? "none" : "metadata"}
          className="w-full max-h-[600px] rounded-lg bg-black object-contain"
          onPlay={() => setIsPlaying(true)}
          onPause={() => setIsPlaying(false)}

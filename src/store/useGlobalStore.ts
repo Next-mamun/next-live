@@ -409,35 +409,34 @@ export const useGlobalStore = create<GlobalState>()(
           }).filter(v => v.videoType !== 'NONE');
 
           if (feedVideos.length > 0 || populatedPosts.length > 0) {
-             try {
-               await import('@/lib/dexie').then(async ({ localDB }) => {
-                 if (feedVideos.length > 0) {
-                   // Delta Sync: Don't clear, just bulk put and manage LRU cap (50)
-                   await localDB.feed_videos.bulkPut(feedVideos as any);
-                   const totalVideos = await localDB.feed_videos.count();
-                   if (totalVideos > 50) {
-                     const all = await localDB.feed_videos.orderBy('timestamp').toArray();
-                     const toRemove = all.slice(0, totalVideos - 50);
-                     const idsToRemove = toRemove.map(item => item.id).filter(Boolean);
-                     if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
+             setTimeout(() => {
+               import('@/lib/dexie').then(async ({ localDB }) => {
+                 try {
+                   if (feedVideos.length > 0) {
+                     await localDB.feed_videos.bulkPut(feedVideos as any);
+                     const totalVideos = await localDB.feed_videos.count();
+                     if (totalVideos > 50) {
+                       const all = await localDB.feed_videos.orderBy('timestamp').toArray();
+                       const toRemove = all.slice(0, totalVideos - 50);
+                       const idsToRemove = toRemove.map(item => item.id).filter(Boolean);
+                       if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
+                     }
                    }
-                 }
-                 
-                 if (populatedPosts.length > 0) {
-                   // Full content caching for main feed (all media types: photo, video, text, YouTube)
-                   const offlinePosts = populatedPosts.map(p => ({
-                     ...p,
-                     created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
-                   }));
-                   if (!loadMore) {
-                     await localDB.posts.clear();
+                   if (populatedPosts.length > 0) {
+                     const offlinePosts = populatedPosts.map(p => ({
+                       ...p,
+                       created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
+                     }));
+                     if (!loadMore) {
+                       await localDB.posts.clear();
+                     }
+                     await localDB.posts.bulkPut(offlinePosts as any);
                    }
-                   await localDB.posts.bulkPut(offlinePosts as any);
+                 } catch (e) {
+                   console.warn("feed cache bulkPut error", e);
                  }
-               });
-             } catch (e) {
-               console.warn("feed cache bulkPut error", e);
-             }
+               }).catch(() => {});
+             }, 250);
           }
           
           const hasMore = activeDB === 'firebase'
@@ -533,13 +532,16 @@ export const useGlobalStore = create<GlobalState>()(
             }
           };
 
-          migrateUserMessagesOnce(userId)
-            .then((imported) => {
-              if (imported && !cancelled) {
-                fetchInitialMessages();
-              }
-            })
-            .catch(() => {});
+          setTimeout(() => {
+            if (cancelled) return;
+            migrateUserMessagesOnce(userId)
+              .then((imported) => {
+                if (imported && !cancelled) {
+                  fetchInitialMessages();
+                }
+              })
+              .catch(() => {});
+          }, 3000);
 
           fetchInitialMessages().then(() => {
             if (cancelled) return;

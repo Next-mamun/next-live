@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import { Image as LucideImage, Video, ThumbsUp, Send, X, CheckCircle, Clapperboard, Link as LinkIcon, Search, Camera, Pencil } from 'lucide-react';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import ZoomableImage from '@/components/ZoomableImage';
@@ -10,7 +10,9 @@ import { db } from '../lib/firebase';
 import { doc, getDoc, updateDoc, collection, query, where, getDocs, limit, increment } from 'firebase/firestore';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { CameraCapture, MediaEditor } from '@/components/MediaTools';
+
+const CameraCapture = lazy(() => import('@/components/MediaTools').then(m => ({ default: m.CameraCapture })));
+const MediaEditor = lazy(() => import('@/components/MediaTools').then(m => ({ default: m.MediaEditor })));
 
 import PostCard from '@/components/PostCard';
 import AdSenseAd from '@/components/AdSenseAd';
@@ -19,7 +21,7 @@ import { getPosterUrl, optimizeCloudinaryUrl, parseDate } from '@/lib/utils';
 import { useUpload } from '@/contexts/UploadContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { localDB } from '@/lib/dexie';
-import { formatReelDoc, populateReelsWithProfiles } from './Reels';
+import { formatReelDoc, populateReelsWithProfiles } from '@/lib/reelsHelper';
 import { useContentFilter } from '@/hooks/useContentFilter';
 import { toast } from 'sonner';
 
@@ -107,8 +109,20 @@ const Feed: React.FC = () => {
   // Use Global Store for state
   const { feedPosts, fetchHomeFeed, postsLoading, postsError, hasMorePosts, addPostOptimistic } = useGlobalStore();
 
+  const [ribbonReady, setRibbonReady] = useState(false);
+
   useEffect(() => {
-    fetchHomeFeed(false, false);
+    // Yield initial frame so navigation buttons, Navbar, and Sidebar are 100% interactive immediately
+    const feedTimer = setTimeout(() => {
+      fetchHomeFeed(false, false);
+    }, 20);
+    const ribbonTimer = setTimeout(() => {
+      setRibbonReady(true);
+    }, 220);
+    return () => {
+      clearTimeout(feedTimer);
+      clearTimeout(ribbonTimer);
+    };
   }, [fetchHomeFeed]);
 
   const handleLoadMore = () => {
@@ -128,9 +142,10 @@ const Feed: React.FC = () => {
     }
   };
 
-  // Fetch Reels
+  // Fetch Reels (deferred slightly so critical interactive shell paints first)
   const { data: reels = [] } = useQuery({
     queryKey: ['reels_ribbon', showAllReels],
+    enabled: ribbonReady,
     staleTime: 5 * 60 * 1000, // 5 minutes TTL
     gcTime: 10 * 60 * 1000,
     queryFn: async () => {
@@ -359,11 +374,15 @@ const Feed: React.FC = () => {
     });
   }, [posts, searchQuery, selectedCategory, contentTypeFilter]);
 
-  const [visibleCount, setVisibleCount] = useState(15);
+  const [visibleCount, setVisibleCount] = useState(5);
   const progressiveSentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setVisibleCount(15);
+    setVisibleCount(5);
+    const expandTimer = setTimeout(() => {
+      setVisibleCount((prev) => (prev < 10 ? 10 : prev));
+    }, 350);
+    return () => clearTimeout(expandTimer);
   }, [searchQuery, selectedCategory, contentTypeFilter, feedRandomSeed]);
 
   const visiblePosts = useMemo(() => {
@@ -378,7 +397,7 @@ const Feed: React.FC = () => {
     const progObserver = new IntersectionObserver(
       (entries) => {
         if (entries[0]?.isIntersecting) {
-          setVisibleCount((prev) => Math.min(prev + 15, filteredPosts.length));
+          setVisibleCount((prev) => Math.min(prev + 10, filteredPosts.length));
         }
       },
       { rootMargin: '400px 0px' }
@@ -812,7 +831,7 @@ const Feed: React.FC = () => {
                   ) : reel.media_url ? (
                     <video 
                       src={!reel.media_url.includes('facebook') ? `${reel.media_url}#t=0.1` : reel.media_url} 
-                      preload="metadata" 
+                      preload="none" 
                       muted 
                       playsInline 
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 pointer-events-none" 
@@ -965,28 +984,32 @@ const Feed: React.FC = () => {
 
       {/* Camera & Editor Modals */}
       {showCamera && (
-        <CameraCapture 
-          onCapture={(url, type) => {
-            setSelectedFile(url);
-            setPreviewUrl(url);
-            setFileType(type);
-            setShowCamera(false);
-          }}
-          onCancel={() => setShowCamera(false)}
-        />
+        <Suspense fallback={null}>
+          <CameraCapture 
+            onCapture={(url, type) => {
+              setSelectedFile(url);
+              setPreviewUrl(url);
+              setFileType(type);
+              setShowCamera(false);
+            }}
+            onCancel={() => setShowCamera(false)}
+          />
+        </Suspense>
       )}
 
       {showEditor && selectedFile && previewUrl && (
-        <MediaEditor 
-          mediaUrl={previewUrl}
-          mediaType={fileType as 'image' | 'video'}
-          onSave={(processed) => {
-            setSelectedFile(processed);
-            setPreviewUrl(processed);
-            setShowEditor(false);
-          }}
-          onCancel={() => setShowEditor(false)}
-        />
+        <Suspense fallback={null}>
+          <MediaEditor 
+            mediaUrl={previewUrl}
+            mediaType={fileType as 'image' | 'video'}
+            onSave={(processed) => {
+              setSelectedFile(processed);
+              setPreviewUrl(processed);
+              setShowEditor(false);
+            }}
+            onCancel={() => setShowEditor(false)}
+          />
+        </Suspense>
       )}
     </div>
   );

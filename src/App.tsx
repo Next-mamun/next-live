@@ -92,13 +92,21 @@ const handleDynamicImportError = async (err: any) => {
 window.addEventListener('error', (e) => handleDynamicImportError(e.error || e.message));
 window.addEventListener('unhandledrejection', (e) => handleDynamicImportError(e.reason));
 
-// Primary Feed imported directly for instant home loading
+// Primary core navigation routes imported directly for instant 0ms switching regardless of Home Feed state
 import Feed from '@/pages/Feed';
+import Messages from '@/pages/Messages';
+import Friends from '@/pages/Friends';
+import Profile from '@/pages/Profile';
+import Notifications from '@/pages/Notifications';
+import CreatePost from '@/pages/CreatePost';
+import Lab from '@/pages/Lab';
+import Cinema from '@/pages/Cinema';
+import Settings from '@/pages/Settings';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 import { AuthBottomSheet } from '@/components/AuthBottomSheet';
 import { GuestLockedView } from '@/components/GuestLockedView';
 
-// Safe lazy loader that gracefully retries after clearing stale chunk caches
+// Safe lazy loader for secondary routes
 const safeLazy = (importFn: () => Promise<any>) =>
   lazy(async () => {
     try {
@@ -122,37 +130,23 @@ const safeLazy = (importFn: () => Promise<any>) =>
     }
   });
 
-// Routes with safe lazy loading (slashes initial dev-server request burst & preview rate limits)
-const Messages = safeLazy(() => import('@/pages/Messages'));
-const Friends = safeLazy(() => import('@/pages/Friends'));
-const Profile = safeLazy(() => import('@/pages/Profile'));
-const Notifications = safeLazy(() => import('@/pages/Notifications'));
 const Reels = safeLazy(() => import('@/pages/Reels'));
-const CreatePost = safeLazy(() => import('@/pages/CreatePost'));
-const Lab = safeLazy(() => import('@/pages/Lab'));
-const Cinema = safeLazy(() => import('@/pages/Cinema'));
 const Meet = safeLazy(() => import('@/pages/Meet'));
 const Login = safeLazy(() => import('@/pages/Login'));
 const Register = safeLazy(() => import('@/pages/Register'));
-const Settings = safeLazy(() => import('@/pages/Settings'));
 const ChildSafety = safeLazy(() => import('@/pages/ChildSafety'));
 const Features = safeLazy(() => import('@/pages/Features'));
 
-// Export preloadAppRoute and attach to window for 0ms instant page navigation
+// Preload helper for secondary lazy routes on hover/pointer-down
 export const preloadAppRoute = (route: string) => {
   const clean = route.replace(/^\//, '').split('/')[0];
   switch (clean) {
-    case 'messages': import('@/pages/Messages'); break;
-    case 'friends': import('@/pages/Friends'); break;
-    case 'profile': import('@/pages/Profile'); break;
-    case 'create-post': import('@/pages/CreatePost'); break;
-    case 'cinema': import('@/pages/Cinema'); break;
-    case 'lab': import('@/pages/Lab'); break;
     case 'reels': import('@/pages/Reels'); break;
-    case 'notifications': import('@/pages/Notifications'); break;
-    case 'settings': import('@/pages/Settings'); break;
     case 'meet': import('@/pages/Meet'); break;
     case 'features': import('@/pages/Features'); break;
+    case 'login': import('@/pages/Login'); break;
+    case 'register': import('@/pages/Register'); break;
+    case 'child-safety': import('@/pages/ChildSafety'); break;
   }
 };
 if (typeof window !== 'undefined') {
@@ -385,32 +379,16 @@ const AppLayout: React.FC = () => {
 
   const queryClient = useQueryClient();
   const mainRef = useRef<HTMLElement>(null);
-  
-  useEffect(() => {
-    // Eagerly prefetch route chunks on idle so all buttons (Friends, Messages, Profile, Cinema, Lab, etc.) open instantly
-    const preloadCommonPages = () => {
-      preloadAppRoute('messages');
-      preloadAppRoute('friends');
-      preloadAppRoute('profile');
-      preloadAppRoute('create-post');
-      preloadAppRoute('cinema');
-      preloadAppRoute('lab');
-      preloadAppRoute('reels');
-      preloadAppRoute('notifications');
-    };
-
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      (window as any).requestIdleCallback(preloadCommonPages, { timeout: 1200 });
-    } else {
-      setTimeout(preloadCommonPages, 300);
-    }
-  }, []);
   const [pullProgress, setPullProgress] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const pullProgressRef = useRef(0);
 
   const onTouchStart = (e: React.TouchEvent) => {
-    // DO NOT prevent default here or scrolling will break
+    const el = e.target as HTMLElement | null;
+    if (el && el.closest('nav, aside, a, button, input, textarea, select, [role="button"]')) {
+      setTouchStart(null);
+      return;
+    }
     setTouchStart({ x: e.touches[0].clientX, y: e.touches[0].clientY });
   };
 
@@ -934,12 +912,15 @@ const App: React.FC = () => {
         }
       }
 
-      // One-time background sync of current user & public legacy profiles to Supabase
+      // One-time background sync of current user & public legacy profiles to Supabase (deferred so startup stays 100% responsive)
       const syncKey = `supa_self_synced_${currentUser.id}`;
+      let backfillTimer: any;
       if (!sessionStorage.getItem(syncKey)) {
         sessionStorage.setItem(syncKey, '1');
-        syncProfileToSupabase(currentUser).catch(() => {});
-        backfillPublicProfilesOnce().catch(() => {});
+        backfillTimer = setTimeout(() => {
+          syncProfileToSupabase(currentUser).catch(() => {});
+          backfillPublicProfilesOnce().catch(() => {});
+        }, 3500);
       }
 
       // Initialize global listeners via Zustand Store after UI mounts and Dexie hydrates
@@ -955,6 +936,7 @@ const App: React.FC = () => {
 
       return () => {
         cancelled = true;
+        if (backfillTimer) clearTimeout(backfillTimer);
         if (unsubMessages) unsubMessages();
         if (unsubNotifs) unsubNotifs();
       };
