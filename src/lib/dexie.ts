@@ -187,9 +187,12 @@ export const getUserProfile = async (userId: string) => {
 
 // Utility to convert Image URL/File to Base64
 export const getBase64Image = async (url: string): Promise<string> => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
   try {
-    if (url.startsWith('data:image')) return url;
-    const response = await fetch(url, { mode: 'cors' });
+    if (!url || url.startsWith('data:image')) return url;
+    const response = await fetch(url, { mode: 'cors', signal: controller.signal });
+    if (!response.ok) return url;
     const blob = await response.blob();
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -200,6 +203,8 @@ export const getBase64Image = async (url: string): Promise<string> => {
   } catch (error) {
     console.warn("Failed to convert image to base64, returning original URL", error);
     return url;
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

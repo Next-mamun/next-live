@@ -111,6 +111,67 @@ async function startServer() {
     }
   }
 
+  // Same-origin Supabase Proxy fallback for BD carriers / restricted Wi-Fi blocking *.supabase.co
+  app.all('/api/supabase-proxy', express.raw({ type: '*/*', limit: '15mb' }), async (req, res) => {
+    const rawPath =
+      (typeof req.query?.path === 'string' ? req.query.path : '') ||
+      (typeof req.headers['x-supabase-path'] === 'string' ? req.headers['x-supabase-path'] : '');
+
+    if (!rawPath || (!rawPath.startsWith('/rest/v1/') && !rawPath.startsWith('/auth/v1/') && !rawPath.startsWith('/storage/v1/'))) {
+      return res.status(400).json({ error: 'Invalid Supabase proxy path' });
+    }
+
+    const baseUrl = getValidSupabaseUrl().replace(/\/+$/, '');
+    const targetUrl = `${baseUrl}${rawPath}`;
+    const allowHeaders = [
+      'apikey',
+      'authorization',
+      'content-type',
+      'accept',
+      'prefer',
+      'range',
+      'x-client-info',
+      'accept-profile',
+      'content-profile',
+      'x-upsert',
+    ];
+    const forwardHeaders: Record<string, string> = {};
+    for (const h of allowHeaders) {
+      const val = req.headers[h];
+      if (typeof val === 'string' && val.length > 0) {
+        forwardHeaders[h] = val;
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    try {
+      const hasBody = req.method !== 'GET' && req.method !== 'HEAD' && Buffer.isBuffer(req.body) && req.body.length > 0;
+      const upstreamResp = await fetch(targetUrl, {
+        method: req.method || 'GET',
+        headers: forwardHeaders,
+        body: hasBody ? new Uint8Array(req.body) : undefined,
+        signal: controller.signal,
+      });
+
+      const respHeaders = ['content-type', 'content-range', 'preference-applied', 'x-supabase-api-version'];
+      for (const h of respHeaders) {
+        const val = upstreamResp.headers.get(h);
+        if (val) res.setHeader(h, val);
+      }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+      const buf = Buffer.from(await upstreamResp.arrayBuffer());
+      return res.status(upstreamResp.status).send(buf);
+    } catch (err: any) {
+      console.warn('[supabase-proxy] Upstream error:', err?.message || err);
+      return res.status(502).json({ error: 'Supabase upstream unreachable' });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  });
+
   app.use(express.json({ limit: '10mb' }));
 
   // API Routes
@@ -447,9 +508,9 @@ async function startServer() {
       res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.send(`
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
 try {
+  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
   firebase.initializeApp({
     projectId: "next-489515",
     appId: "1:947258146571:web:2dd66aa09474e5f7d22c0e",

@@ -8,11 +8,12 @@
   <meta http-equiv="Expires" content="0" />
   
   <script>
-    // Failsafe White Screen Prevention: Intercept chunk/script/resource mismatches & blank-root mounts immediately
+    // Failsafe White Screen Prevention: Non-blocking immediate watchdog & asset mismatch recovery
     (function() {
       var reloadLockKey = 'next_chunk_reload_lock';
       var watchdogLockKey = 'next_root_watchdog_tried';
       var isRecovering = false;
+      window.__NEXT_APP_MOUNTED = false;
 
       function clearSwAndCaches() {
         var tasks = [];
@@ -44,9 +45,9 @@
       }
 
       function triggerFailsafeReload(reason) {
-        if (isRecovering) return;
+        if (isRecovering || window.__NEXT_APP_MOUNTED) return;
         var lastReload = Number(sessionStorage.getItem(reloadLockKey) || '0');
-        if (Date.now() - lastReload > 10000) {
+        if (Date.now() - lastReload > 12000) {
           isRecovering = true;
           sessionStorage.setItem(reloadLockKey, String(Date.now()));
           console.warn('⚠️ [White Screen Prevention] Reloading due to asset/chunk error:', reason);
@@ -56,29 +57,31 @@
         }
       }
 
-      // 1. Trigger SW update check immediately when any page or PWA opens
+      // 1. Trigger SW update check in background without blocking boot
       if ('serviceWorker' in navigator) {
-        try {
-          navigator.serviceWorker.getRegistrations().then(function(regs) {
-            regs.forEach(function(r) {
-              try { r.update(); } catch (_) {}
-            });
-          }).catch(function() {});
-        } catch (_) {}
+        setTimeout(function() {
+          try {
+            navigator.serviceWorker.getRegistrations().then(function(regs) {
+              regs.forEach(function(r) {
+                try { r.update(); } catch (_) {}
+              });
+            }).catch(function() {});
+          } catch (_) {}
+        }, 1200);
       }
 
-      // 2. Catch BOTH JS errors AND <script>/<link> 404/MIME load failures (which have empty e.message!)
+      // 2. Catch critical bundle load failures before React mounts
       window.addEventListener('error', function(e) {
         var target = e && e.target;
-        if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
-          var src = target.src || target.href || '';
-          if (src.indexOf(window.location.origin) === 0 || src.indexOf('/assets/') > -1) {
-            triggerFailsafeReload('Asset load failed: ' + src);
+        if (target && target.tagName === 'SCRIPT') {
+          var src = target.src || '';
+          if (src.indexOf(window.location.origin) === 0 || src.indexOf('/assets/') > -1 || src.indexOf('/src/') > -1) {
+            triggerFailsafeReload('Script load failed: ' + src);
             return;
           }
         }
         var msg = (e && (e.message || (e.error && e.error.message))) ? String(e.message || e.error.message) : '';
-        if (msg.indexOf('dynamically imported module') > -1 || msg.indexOf('Loading chunk') > -1 || msg.indexOf('Importing a module script failed') > -1 || msg.indexOf('SyntaxError') > -1) {
+        if (msg.indexOf('dynamically imported module') > -1 || msg.indexOf('Loading chunk') > -1 || msg.indexOf('Importing a module script failed') > -1) {
           triggerFailsafeReload(msg);
         }
       }, true);
@@ -90,41 +93,44 @@
         }
       });
 
-      // 3. White-screen watchdog: if #root stays completely empty after 5.5s, auto-recover once or show recovery button
-      window.addEventListener('DOMContentLoaded', function() {
-        setTimeout(function() {
-          var root = document.getElementById('root');
-          if (!root || root.childElementCount > 0) return;
+      // 3. Independent White-screen watchdog (NEVER gated behind DOMContentLoaded!)
+      setTimeout(function() {
+        if (window.__NEXT_APP_MOUNTED) return;
+        var root = document.getElementById('root');
+        var hasAppContent = root && root.childElementCount > 0 && !document.getElementById('next-boot-splash');
+        if (hasAppContent) return;
 
-          var lastWatchdog = Number(sessionStorage.getItem(watchdogLockKey) || '0');
-          if (navigator.onLine && Date.now() - lastWatchdog > 30000) {
-            sessionStorage.setItem(watchdogLockKey, String(Date.now()));
+        var lastWatchdog = Number(sessionStorage.getItem(watchdogLockKey) || '0');
+        if (navigator.onLine && Date.now() - lastWatchdog > 35000) {
+          sessionStorage.setItem(watchdogLockKey, String(Date.now()));
+          clearSwAndCaches().finally(function() {
+            window.location.replace(buildBustUrl());
+          });
+          return;
+        }
+
+        if (!root) return;
+        var isDark = false;
+        try { isDark = localStorage.getItem('next_media_theme') === 'dark'; } catch (_) {}
+        root.innerHTML =
+          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:' + (isDark ? '#000000' : '#f0f2f5') + ';font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">' +
+            '<div style="max-width:380px;width:100%;background:' + (isDark ? '#18191a' : '#ffffff') + ';border-radius:20px;padding:28px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.12);">' +
+              '<div style="width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:#1877F2;color:#fff;font-size:26px;font-weight:900;display:flex;align-items:center;justify-content:center;">N</div>' +
+              '<h2 style="margin:0 0 8px;font-size:19px;font-weight:800;color:' + (isDark ? '#f3f4f6' : '#111827') + ';">Connection Slow or Cache Stale</h2>' +
+              '<p style="margin:0 0 20px;font-size:13px;color:' + (isDark ? '#9ca3af' : '#4b5563') + ';line-height:1.5;">ইন্টারনেট ধীরগতির কারণে বা পুরনো ক্যাশের জন্য অ্যাপ লোড হতে সময় লাগছে। আবার চেষ্টা করতে নিচের বাটনে চাপ দিন।</p>' +
+              '<button id="next-watchdog-reload-btn" style="width:100%;padding:12px 16px;border:none;border-radius:12px;background:#1877F2;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">Refresh &amp; Retry Now</button>' +
+            '</div>' +
+          '</div>';
+        var btn = document.getElementById('next-watchdog-reload-btn');
+        if (btn) {
+          btn.addEventListener('click', function() {
+            btn.textContent = 'Retrying...';
             clearSwAndCaches().finally(function() {
               window.location.replace(buildBustUrl());
             });
-            return;
-          }
-
-          root.innerHTML =
-            '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:#f0f2f5;font-family:sans-serif;">' +
-              '<div style="max-width:380px;width:100%;background:#fff;border-radius:20px;padding:28px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.08);">' +
-                '<div style="width:56px;height:56px;margin:0 auto 14px;border-radius:16px;background:#1877F2;color:#fff;font-size:26px;font-weight:900;display:flex;align-items:center;justify-content:center;">N</div>' +
-                '<h2 style="margin:0 0 8px;font-size:19px;font-weight:800;color:#111827;">Update Required</h2>' +
-                '<p style="margin:0 0 20px;font-size:13px;color:#4b5563;line-height:1.5;">Next needs to refresh cached files to load the latest version. Your account and messages remain safe.</p>' +
-                '<button id="next-watchdog-reload-btn" style="width:100%;padding:12px 16px;border:none;border-radius:12px;background:#1877F2;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">Refresh &amp; Update Now</button>' +
-              '</div>' +
-            '</div>';
-          var btn = document.getElementById('next-watchdog-reload-btn');
-          if (btn) {
-            btn.addEventListener('click', function() {
-              btn.textContent = 'Updating...';
-              clearSwAndCaches().finally(function() {
-                window.location.replace(buildBustUrl());
-              });
-            });
-          }
-        }, 5500);
-      });
+          });
+        }
+      }, 8000);
     })();
   </script>
   
@@ -491,10 +497,28 @@
   <meta name="theme-color" content="#1877F2">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/src/index.css">
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1044610166642937" crossorigin="anonymous"></script>
   <script>
+    // Load Google Fonts non-blockingly after initial paint so BD carrier/ISP stalls never freeze WebView
+    (function() {
+      var loadFonts = function() {
+        try {
+          if (document.getElementById('next-inter-font')) return;
+          var l = document.createElement('link');
+          l.id = 'next-inter-font';
+          l.rel = 'stylesheet';
+          l.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap';
+          document.head.appendChild(l);
+        } catch (_) {}
+      };
+      if (document.readyState === 'complete') {
+        setTimeout(loadFonts, 300);
+      } else {
+        window.addEventListener('load', function() { setTimeout(loadFonts, 300); }, { once: true });
+      }
+    })();
+
+    // Deep-link launcher for Android browsers only (never executes inside TWA/WebView/Standalone/Loops)
     (function() {
       try {
         var userAgent = navigator.userAgent || navigator.vendor || window.opera || '';
@@ -503,11 +527,16 @@
         var path = window.location.pathname || '/';
         var search = window.location.search || '';
         var hash = window.location.hash || '';
-        var isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone || (document.referrer && document.referrer.indexOf('android-app://') > -1);
-        var isWebview = Boolean(window.AndroidApp) || userAgent.indexOf('Next') > -1 || userAgent.indexOf('wv') > -1 || (userAgent.indexOf('Android') > -1 && userAgent.indexOf('Version/') > -1) || userAgent.indexOf('Themes') > -1;
+        var mm = window.matchMedia;
+        var isStandalone = (mm && (mm('(display-mode: standalone)').matches || mm('(display-mode: fullscreen)').matches || mm('(display-mode: minimal-ui)').matches || mm('(display-mode: window-controls-overlay)').matches)) || window.navigator.standalone || (document.referrer && document.referrer.indexOf('android-app://') > -1);
+        var isWebview = Boolean(window.AndroidApp || window.ReactNativeWebView || window.Capacitor || window.cordova || (window.webkit && window.webkit.messageHandlers)) || /Next|wv|WebView|Android.*Version\/|Themes|Appilix|WebIntoApp|Median|GoNative|Sketchware|Kodular|Flutter|next\.isbest|FB_IAB|FBAN|FBAV|Instagram|Line\//i.test(userAgent);
+        var intentAttemptKey = 'next_intent_tried_' + path;
+        var alreadyTried = false;
+        try { alreadyTried = sessionStorage.getItem(intentAttemptKey) === '1'; } catch (_) {}
 
-        if (isAndroid && !isBot && !isStandalone && !isWebview && search.indexOf('fallback=1') === -1 && search.indexOf('app=1') === -1) {
+        if (isAndroid && !isBot && !isStandalone && !isWebview && !alreadyTried && search.indexOf('fallback=1') === -1 && search.indexOf('app=1') === -1) {
           if (path.indexOf('/post') === 0 || path.indexOf('/reels') === 0 || path.indexOf('/messages') === 0 || path.indexOf('/profile') === 0 || path.indexOf('/cinema') === 0 || path.indexOf('/meet') === 0) {
+            try { sessionStorage.setItem(intentAttemptKey, '1'); } catch (_) {}
             var baseWithoutHash = window.location.origin + path + search;
             var fallbackUrl = baseWithoutHash + (search ? '&' : '?') + 'fallback=1' + hash;
             var intentUrl = "intent://" + window.location.host + path + search + "#Intent;scheme=https;package=next.isbest;S.browser_fallback_url=" + encodeURIComponent(fallbackUrl) + ";end";
@@ -599,7 +628,24 @@
     </div>
   </noscript>
 
-  <div id="root"></div>
+  <div id="root">
+    <div id="next-boot-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+      <div style="width:52px;height:52px;border-radius:16px;background:#1877F2;color:#fff;font-size:24px;font-weight:900;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(24,119,242,0.28);">N</div>
+      <div style="font-size:13px;font-weight:700;color:#65676B;letter-spacing:0.02em;">Opening Next...</div>
+    </div>
+  </div>
+  <script>
+    (function() {
+      try {
+        if (localStorage.getItem('next_media_theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+          document.body.style.backgroundColor = '#000000';
+          var s = document.getElementById('next-boot-splash');
+          if (s) s.style.background = '#000000';
+        }
+      } catch (_) {}
+    })();
+  </script>
   <script type="module" src="/src/index.tsx"></script>
 </body>
 </html>

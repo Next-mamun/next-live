@@ -10,6 +10,20 @@ const DISPLAY_SLOT = '6970765232';
 const INFEED_SLOT = '7198046270';
 const INFEED_LAYOUT_KEY = '-6t+ed+2i-1n-4w';
 
+const ensureAdSenseScript = () => {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById('next-adsense-script')) return;
+  try {
+    const s = document.createElement('script');
+    s.id = 'next-adsense-script';
+    s.async = true;
+    s.crossOrigin = 'anonymous';
+    s.src = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${CLIENT_ID}`;
+    s.onerror = () => {};
+    document.head.appendChild(s);
+  } catch (_) {}
+};
+
 const AdSenseAd: React.FC<AdSenseAdProps> = ({ slotType = 'infeed', className = '' }) => {
   const [adLoaded, setAdLoaded] = useState(false);
   const [isUnfilled, setIsUnfilled] = useState(false);
@@ -17,6 +31,7 @@ const AdSenseAd: React.FC<AdSenseAdProps> = ({ slotType = 'infeed', className = 
   const pushedRef = useRef(false);
 
   useEffect(() => {
+    ensureAdSenseScript();
     // Only execute if not already pushed
     if (!pushedRef.current && adRef.current) {
       try {

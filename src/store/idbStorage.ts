@@ -3,13 +3,24 @@ import { StateStorage } from 'zustand/middleware';
 
 export const idbStorage: StateStorage = {
   getItem: async (name: string): Promise<string | null> => {
-    const val = await get(name);
-    return val || null;
+    try {
+      const val = await Promise.race([
+        get(name),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+      return val || null;
+    } catch {
+      return null;
+    }
   },
   setItem: async (name: string, value: string): Promise<void> => {
-    await set(name, value);
+    try {
+      await set(name, value);
+    } catch {}
   },
   removeItem: async (name: string): Promise<void> => {
-    await del(name);
+    try {
+      await del(name);
+    } catch {}
   },
 };

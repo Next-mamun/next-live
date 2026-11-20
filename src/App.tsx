@@ -41,6 +41,13 @@ const safeGetStoredUser = (): User | null => {
   }
 };
 
+const withTimeout = <T,>(promise: Promise<T>, ms: number, fallback: T): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+};
+
 const extractChatUserIdFromTarget = (route: string): string | null => {
   try {
     const parsed = new URL(route, 'https://next-nexto.vercel.app');
@@ -945,16 +952,24 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let unmounted = false;
+    (window as any).__NEXT_APP_MOUNTED = true;
+
+    // Hard failsafe: never keep the router blocked on Loading Next... for more than 1.5s on slow BD carriers
+    const authUnlockTimer = setTimeout(() => {
+      if (!unmounted) {
+        setLoadingAuth(false);
+      }
+    }, 1500);
 
     const handleRedirectResult = async () => {
       try {
-        const result = await getRedirectResult(auth);
+        const result = await withTimeout(getRedirectResult(auth), 4000, null as any);
         if (result && result.user) {
-          const userDoc = await getDoc(doc(db, 'profiles', result.user.uid));
-          if (!userDoc.exists()) {
+          const userDoc = await withTimeout(getDoc(doc(db, 'profiles', result.user.uid)), 3500, null as any);
+          if (!userDoc || !userDoc.exists()) {
             const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
-            const uniqueUsername = await ensureUniqueUsername(emailBase, result.user.uid);
-            const bio = await generateBio(uniqueUsername);
+            const uniqueUsername = await withTimeout(ensureUniqueUsername(emailBase, result.user.uid), 2500, emailBase);
+            const bio = await withTimeout(generateBio(uniqueUsername), 2500, 'Exploring Next.');
             const newProfile = {
                username: uniqueUsername,
                display_name: result.user.displayName || uniqueUsername,
@@ -964,16 +979,16 @@ const App: React.FC = () => {
                created_at: new Date().toISOString()
             };
             try {
-              await setDoc(doc(db, 'profiles', result.user.uid), newProfile);
+              await withTimeout(setDoc(doc(db, 'profiles', result.user.uid), newProfile), 3000, undefined as any);
             } catch (_) {}
             const fullProfile = { id: result.user.uid, ...newProfile };
-            await syncProfileToSupabase(fullProfile);
-            await cacheUserInDexie(fullProfile);
+            syncProfileToSupabase(fullProfile).catch(() => {});
+            cacheUserInDexie(fullProfile).catch(() => {});
             if (!unmounted) setCurrentUser(fullProfile as any);
           } else {
             const existingProfile = { id: userDoc.id, ...userDoc.data() };
-            await syncProfileToSupabase(existingProfile);
-            await cacheUserInDexie(existingProfile);
+            syncProfileToSupabase(existingProfile).catch(() => {});
+            cacheUserInDexie(existingProfile).catch(() => {});
             if (!unmounted) setCurrentUser(existingProfile as any);
           }
         }
@@ -1021,6 +1036,7 @@ const App: React.FC = () => {
 
     return () => {
       unmounted = true;
+      clearTimeout(authUnlockTimer);
       window.removeEventListener('next_force_logout_reinstall', handleReinstallForceLogout);
       unsubscribe();
     };
@@ -1028,8 +1044,8 @@ const App: React.FC = () => {
 
   const fetchUserProfile = async (userId: string) => {
     try {
-      // 1. Strict Local-Lock Rule: Check Dexie first
-      const localUser = await localDB.users.get(userId);
+      // 1. Strict Local-Lock Rule: Check Dexie first (with 1.5s safety timeout)
+      const localUser = await withTimeout(localDB.users.get(userId), 1500, undefined);
       if (localUser) {
         console.log("Local-Lock: Loaded user from Dexie, blocking Firebase request.");
         setCurrentUser(localUser as any);
@@ -1042,38 +1058,34 @@ const App: React.FC = () => {
         return;
       }
 
-      let data: any = null;
-      let attempts = 0;
-      
-      while (attempts < 4) {
-        try {
-          const userDoc = await getDoc(doc(db, 'profiles', userId));
-          if (userDoc.exists()) {
-             data = { id: userDoc.id, ...userDoc.data() };
-             break;
-          }
-        } catch (dbErr) {
-          console.warn("Firestore error during profile fetch (quota exceeded?):", dbErr);
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 600));
-        attempts++;
-      }
+      // Immediately prefer Supabase smart fetch (backed by resilient proxy fallback!) first if Firestore stalls
+      let data: any = await withTimeout(fetchProfileSmart(userId), 4500, null);
 
       if (!data) {
-        data = await fetchProfileSmart(userId);
+        for (let attempts = 0; attempts < 2; attempts++) {
+          try {
+            const userDoc = await withTimeout(getDoc(doc(db, 'profiles', userId)), 3000, null as any);
+            if (userDoc && userDoc.exists()) {
+              data = { id: userDoc.id, ...userDoc.data() };
+              break;
+            }
+          } catch (dbErr) {
+            console.warn("Firestore error during profile fetch:", dbErr);
+            break;
+          }
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
       }
         
       if (data) {
-        // Sync original profile data (including original avatar URL) to Supabase
         syncProfileToSupabase(data).catch(() => {});
 
         const cachedCopy = { ...data };
         if (cachedCopy.avatar_url) {
-           cachedCopy.avatar_url = await getBase64Image(cachedCopy.avatar_url);
+           cachedCopy.avatar_url = await withTimeout(getBase64Image(cachedCopy.avatar_url), 2500, cachedCopy.avatar_url);
         }
         
-        await cacheUserInDexie(cachedCopy);
+        cacheUserInDexie(cachedCopy).catch(() => {});
 
         setCurrentUser(cachedCopy as User);
         localStorage.setItem('next_media_user', JSON.stringify(cachedCopy));

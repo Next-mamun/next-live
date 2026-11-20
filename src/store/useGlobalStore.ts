@@ -317,22 +317,28 @@ export const useGlobalStore = create<GlobalState>()(
              if (data) fetchedDocs = data;
           };
 
+          const runWithTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+            Promise.race([
+              promise,
+              new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)),
+            ]);
+
           try {
             if (activeDB === 'firebase') {
               try {
-                await fetchFromFirebase();
+                await runWithTimeout(fetchFromFirebase(), 7000, 'Firebase feed');
               } catch (err) {
-                console.warn("Firebase fetch failed, switching DB:", err);
+                console.warn("Firebase fetch failed/timed out, switching DB:", err);
                 switchDB('firebase');
-                await fetchFromSupabase();
+                await runWithTimeout(fetchFromSupabase(), 8000, 'Supabase feed fallback');
               }
             } else {
               try {
-                await fetchFromSupabase();
+                await runWithTimeout(fetchFromSupabase(), 7000, 'Supabase feed');
               } catch (err) {
-                console.warn("Supabase fetch failed, switching DB:", err);
+                console.warn("Supabase fetch failed/timed out, switching DB:", err);
                 switchDB('supabase');
-                await fetchFromFirebase();
+                await runWithTimeout(fetchFromFirebase(), 8000, 'Firebase feed fallback');
               }
             }
           } catch (err) {

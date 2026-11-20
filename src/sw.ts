@@ -22,12 +22,17 @@ cleanupOutdatedCaches();
 // Precache lightweight PWA assets (icons & manifest)
 precacheAndRoute((self as any).__WB_MANIFEST || []);
 
-// Seed offline HTML shell on install so offline launches still work
+// Seed offline HTML shell on install so offline/slow deep-link launches always boot cleanly
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(HTML_SHELL_CACHE).then((cache) =>
       fetch('/', { cache: 'no-store' })
-        .then((resp) => (resp && resp.ok ? cache.put('/', resp) : undefined))
+        .then(async (resp) => {
+          if (resp && resp.ok) {
+            await cache.put('/', resp.clone());
+            await cache.put('/index.html', resp);
+          }
+        })
         .catch(() => {})
     )
   );
@@ -85,14 +90,32 @@ registerRoute(
   new NetworkOnly()
 );
 
-// Always use NetworkFirst for page navigations so Web/PWA users immediately get the latest index.html when online
+// Always use NetworkFirst for page navigations so Web/PWA users get latest index.html,
+// while falling back cleanly to the cached SPA shell on slow carriers or deep-link URLs (/messages, /post/:id, etc.)
 registerRoute(
   ({ request }) => request.mode === 'navigate',
   new NetworkFirst({
     cacheName: HTML_SHELL_CACHE,
-    networkTimeoutSeconds: 3,
+    networkTimeoutSeconds: 8,
     plugins: [
       new CacheableResponsePlugin({ statuses: [200] }),
+      {
+        cacheWillUpdate: async ({ response }) => {
+          if (!response || response.status !== 200) return null;
+          const ct = String(response.headers.get('content-type') || '').toLowerCase();
+          return ct.includes('text/html') ? response : null;
+        },
+        handlerDidError: async () => {
+          const shellCache = await caches.open(HTML_SHELL_CACHE);
+          return (
+            (await shellCache.match('/')) ||
+            (await shellCache.match('/index.html')) ||
+            (await caches.match('/')) ||
+            (await caches.match('/index.html')) ||
+            Response.error()
+          );
+        },
+      },
     ],
   })
 );
@@ -130,9 +153,6 @@ self.addEventListener('message', (event) => {
 
 declare const importScripts: (...urls: string[]) => void;
 
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
-
 const firebaseConfig = {
   projectId: "next-489515",
   appId: "1:947258146571:web:2dd66aa09474e5f7d22c0e",
@@ -143,6 +163,8 @@ const firebaseConfig = {
 };
 
 try {
+  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
   (self as any).firebase.initializeApp(firebaseConfig);
   const messaging = (self as any).firebase.messaging();
 

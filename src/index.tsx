@@ -52,11 +52,14 @@ const queryClient = new QueryClient({
   },
 });
 
-// 2. Safe IndexedDB Persister (Never throws or corrupts React mount)
+// 2. Safe IndexedDB Persister (Never throws, hangs, or corrupts React mount)
 const idbStorage = {
   getItem: async (key: string) => {
     try {
-      const val = await idb.get(key);
+      const val = await Promise.race([
+        idb.get(key),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
       return val ?? null;
     } catch (e) {
       console.warn("idbStorage read error handled safely:", e);
@@ -229,6 +232,7 @@ import { UploadProvider } from './contexts/UploadContext';
 import { Toaster } from 'sonner';
 
 const root = ReactDOM.createRoot(rootElement);
+(window as any).__NEXT_APP_MOUNTED = true;
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
