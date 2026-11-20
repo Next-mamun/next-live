@@ -137,7 +137,7 @@ if ('serviceWorker' in navigator) {
   });
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'SW_UPDATED') {
-      window.dispatchEvent(new CustomEvent('next_sw_updated'));
+      window.dispatchEvent(new CustomEvent('next_sw_updated', { detail: { version: event.data.version } }));
     }
   });
 }

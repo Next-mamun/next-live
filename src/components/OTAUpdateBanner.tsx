@@ -4,10 +4,13 @@ import { RefreshCw, X, Sparkles } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
 
+const AUTO_UPDATE_SECONDS = 10;
+
 export const OTAUpdateBanner: React.FC = () => {
   const [newVersion, setNewVersion] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [countdown, setCountdown] = useState<number>(AUTO_UPDATE_SECONDS);
   const lastCheckRef = useRef<number>(0);
   const isCheckingRef = useRef<boolean>(false);
 
@@ -15,8 +18,18 @@ export const OTAUpdateBanner: React.FC = () => {
   const { currentUser } = useAuth();
   const isChatOpen = useGlobalStore((state) => state.isChatOpen);
 
+  // Clean up cache-busting query param after reload so address bar stays tidy
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('_v')) {
+        url.searchParams.delete('_v');
+        window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+      }
+    } catch (_) {}
+  }, []);
+
   const checkForUpdate = useCallback(async () => {
-    // Throttle checks to avoid excessive network calls (minimum 15s interval)
     const now = Date.now();
     if (now - lastCheckRef.current < 15000 || isCheckingRef.current) {
       return;
@@ -25,20 +38,16 @@ export const OTAUpdateBanner: React.FC = () => {
     isCheckingRef.current = true;
 
     try {
-      // Trigger Service Worker update check if available
+      // Ask SW in background to check for new SW file
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.getRegistrations().then((regs) => {
           regs.forEach((reg) => {
             reg.update().catch(() => {});
-            if (reg.waiting && import.meta.env.PROD) {
-              setNewVersion((prev) => prev || 'latest');
-              setDismissed(false);
-            }
           });
         }).catch(() => {});
       }
 
-      // Non-blocking fetch with no-cache to bypass browser memory & disk cache
+      // Single source of truth: compare server version.json against compiled VITE_APP_VERSION
       const response = await fetch(`/version.json?_t=${now}`, {
         cache: 'no-store',
         headers: {
@@ -53,30 +62,46 @@ export const OTAUpdateBanner: React.FC = () => {
 
       const data = await response.json();
       const remoteVersion = data?.version ? String(data.version).trim() : null;
+      if (!remoteVersion) return;
 
-      if (!remoteVersion) {
-        return;
-      }
-
-      // Always compare against the compiled bundle's own version (never overwrite localStorage with remoteVersion!)
       const runningVersion = ((import.meta as any).env?.VITE_APP_VERSION || '').trim();
       const localVersion = runningVersion || localStorage.getItem('app_version') || '';
 
+      // If we are already running the remote version, clear any old OTA flags and keep banner hidden
+      if (localVersion && remoteVersion === localVersion) {
+        localStorage.setItem('app_version', remoteVersion);
+        sessionStorage.removeItem('ota_just_updated_version');
+        sessionStorage.removeItem('ota_just_updated_at');
+        setNewVersion(null);
+        return;
+      }
+
+      // Guard against infinite reload loop if user just clicked update for this version within last 25s
+      const justUpdatedVer = sessionStorage.getItem('ota_just_updated_version');
+      const justUpdatedAt = Number(sessionStorage.getItem('ota_just_updated_at') || '0');
+      if (justUpdatedVer === remoteVersion && now - justUpdatedAt < 25000) {
+        return;
+      }
+
       if (localVersion && remoteVersion !== localVersion && import.meta.env.PROD) {
-        setNewVersion(remoteVersion);
-        setDismissed(false);
+        setNewVersion((prev) => {
+          if (prev !== remoteVersion) {
+            setCountdown(AUTO_UPDATE_SECONDS);
+            setDismissed(false);
+          }
+          return remoteVersion;
+        });
       } else if (runningVersion) {
         localStorage.setItem('app_version', runningVersion);
       }
-    } catch (err) {
-      // Silently ignore network failures to ensure zero impact on app usage
+    } catch (_) {
+      // Silently ignore network errors
     } finally {
       isCheckingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
-    // 1. Asynchronously schedule initial check without blocking app startup
     const timer = setTimeout(() => {
       if ('requestIdleCallback' in window) {
         (window as any).requestIdleCallback(() => {
@@ -87,14 +112,15 @@ export const OTAUpdateBanner: React.FC = () => {
       }
     }, 1500);
 
-    // 2. Listen for Service Worker update broadcasts & focus/visibility
-    const handleSwUpdateEvent = () => {
+    const handleSwUpdateEvent = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      const runningBuildTime = ((import.meta as any).env?.VITE_BUILD_TIME || '').trim();
+      // If the newly activated SW matches our running bundle, do NOT re-show update banner
+      if (detail?.version && runningBuildTime && String(detail.version) === runningBuildTime) {
+        return;
+      }
       lastCheckRef.current = 0;
       checkForUpdate();
-      if (import.meta.env.PROD) {
-        setNewVersion((prev) => prev || 'latest');
-        setDismissed(false);
-      }
     };
 
     const handleVisibilityChange = () => {
@@ -111,7 +137,6 @@ export const OTAUpdateBanner: React.FC = () => {
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleFocus);
 
-    // 3. Periodic background check every 5 minutes
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
         checkForUpdate();
@@ -127,12 +152,27 @@ export const OTAUpdateBanner: React.FC = () => {
     };
   }, [checkForUpdate]);
 
-  const handleUpdate = async () => {
+  const handleUpdate = useCallback(async () => {
     if (isUpdating || !newVersion) return;
     setIsUpdating(true);
 
     try {
-      // a. Activate any waiting SW & unregister old Service Workers
+      // Record that we triggered update to this target version to prevent any re-prompt loop
+      sessionStorage.setItem('ota_just_updated_version', newVersion);
+      sessionStorage.setItem('ota_just_updated_at', String(Date.now()));
+      if (newVersion !== 'latest') {
+        localStorage.setItem('app_version', newVersion);
+      }
+
+      // 1. Clear Cache Storage (IndexedDB / Dexie / Auth remain untouched)
+      if ('caches' in window && window.caches) {
+        try {
+          const cacheKeys = await window.caches.keys();
+          await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
+        } catch (_) {}
+      }
+
+      // 2. Activate waiting SW or unregister stale SWs
       if ('serviceWorker' in navigator) {
         try {
           const registrations = await navigator.serviceWorker.getRegistrations();
@@ -144,27 +184,21 @@ export const OTAUpdateBanner: React.FC = () => {
             }
             await registration.unregister();
           }
-        } catch (swErr) {
-          console.warn('Failed to unregister service worker:', swErr);
-        }
+        } catch (_) {}
       }
 
-      // b. Clear static Cache Storage (IndexedDB/Dexie/Auth data remains UNTOUCHED)
-      if ('caches' in window && window.caches) {
-        try {
-          const cacheKeys = await window.caches.keys();
-          await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
-        } catch (cacheErr) {
-          console.warn('Failed to clear caches:', cacheErr);
-        }
-      }
+      // 3. Force browser HTTP cache to fetch fresh index.html before navigating
+      try {
+        await fetch(window.location.pathname || '/', {
+          cache: 'reload',
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache'
+          }
+        });
+      } catch (_) {}
 
-      // c. Save the new version string if known
-      if (newVersion !== 'latest') {
-        localStorage.setItem('app_version', newVersion);
-      }
-
-      // d. Perform a hard reload preserving current path with cache-busting parameter
+      // 4. Hard replace preserving current route with cache-buster
       const bustUrl = new URL(window.location.href);
       bustUrl.searchParams.set('_v', String(Date.now()));
       window.location.replace(bustUrl.toString());
@@ -172,13 +206,35 @@ export const OTAUpdateBanner: React.FC = () => {
       console.error('Error during OTA update:', err);
       window.location.replace(window.location.origin + '?_v=' + Date.now());
     }
-  };
+  }, [isUpdating, newVersion]);
+
+  // 10-second Auto-Update countdown when banner is visible
+  useEffect(() => {
+    if (!newVersion || dismissed || isUpdating) return;
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [newVersion, dismissed, isUpdating]);
+
+  useEffect(() => {
+    if (newVersion && !dismissed && !isUpdating && countdown === 0) {
+      handleUpdate();
+    }
+  }, [countdown, newVersion, dismissed, isUpdating, handleUpdate]);
 
   if (!newVersion || dismissed) {
     return null;
   }
 
-  // Adjust bottom spacing on mobile when bottom navigation bar is visible
   const isMessages = location.pathname.startsWith('/messages');
   const hasBottomNav = currentUser && !(isMessages && isChatOpen);
   const bottomPositionClass = hasBottomNav
@@ -201,7 +257,9 @@ export const OTAUpdateBanner: React.FC = () => {
               A new update is available
             </p>
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-              Version {newVersion} is ready to install.
+              {isUpdating
+                ? `Installing version ${newVersion}...`
+                : `Version ${newVersion} • Auto-updating in ${countdown}s`}
             </p>
           </div>
         </div>
@@ -214,7 +272,7 @@ export const OTAUpdateBanner: React.FC = () => {
             className="bg-[#1877F2] hover:bg-blue-600 active:scale-95 text-white text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-70 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-            <span>{isUpdating ? 'Updating...' : 'Update Now'}</span>
+            <span>{isUpdating ? 'Updating...' : `Update (${countdown}s)`}</span>
           </button>
           <button
             id="ota-dismiss-btn"

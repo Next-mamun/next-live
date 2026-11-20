@@ -168,6 +168,9 @@ const AppLayout: React.FC = () => {
   const navigate = useNavigate();
   const isAuthPage = location.pathname === '/login' || location.pathname === '/register';
   const isMessages = location.pathname.startsWith('/messages');
+  const isCinema = location.pathname.startsWith('/cinema');
+  const isMeet = location.pathname.startsWith('/meet');
+  const isLockedViewportPage = isMessages || isCinema || isMeet;
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
 
@@ -412,14 +415,14 @@ const AppLayout: React.FC = () => {
   };
 
   const onTouchMove = (e: React.TouchEvent) => {
-    if (!touchStart || isRefreshing) return;
+    if (!touchStart || isRefreshing || isCinema || isMeet) return;
     
     let target = e.target as HTMLElement | null;
     let hasScrolledParent = false;
     let inChatArea = false;
     
     while (target && target !== document.body) {
-      if (target.id === 'chat-messages') {
+      if (target.id === 'chat-messages' || target.id === 'cinema-chat-container') {
         inChatArea = true;
       }
       if (target.scrollTop > 0) {
@@ -430,9 +433,9 @@ const AppLayout: React.FC = () => {
 
     if (inChatArea || hasScrolledParent) return;
 
-    // For non-messages pages, also check mainEl
+    // For non-locked pages, also check mainEl
     const mainEl = mainRef.current;
-    if (!isMessages && (!mainEl || mainEl.scrollTop > 0)) return;
+    if (!isLockedViewportPage && (!mainEl || mainEl.scrollTop > 0)) return;
 
     const currentX = e.touches[0].clientX;
     const currentY = e.touches[0].clientY;
@@ -488,9 +491,9 @@ const AppLayout: React.FC = () => {
   const tabs = ['/', '/friends', '/reels', '/notifications', '/messages'];
 
   const handleSwipe = (direction: 'left' | 'right') => {
-     // Ignore swipe navigation inside messages completely to avoid conflicts with message touch functionality
+     // Ignore swipe navigation inside messages/cinema/meet to avoid conflicts with chat & room controls
      const currentPath = location.pathname;
-     if (currentPath.startsWith('/messages')) return;
+     if (currentPath.startsWith('/messages') || currentPath.startsWith('/cinema') || currentPath.startsWith('/meet')) return;
 
      let currentIndex = tabs.findIndex(tab => currentPath === tab || (tab !== '/' && currentPath.startsWith(tab)));
      
@@ -522,8 +525,8 @@ const AppLayout: React.FC = () => {
         <main 
           ref={mainRef}
           className={`h-full max-h-full min-h-0 w-full flex-1 min-w-0 relative ${!isAuthPage ? 'pt-14' : ''} ${
-            isMessages
-              ? `flex flex-col overflow-hidden bg-white dark:bg-black ${!isKeyboardOpen ? (!shouldHideBottomNav ? 'pb-16 lg:pb-0' : 'md:pb-16 lg:pb-0') : ''}`
+            isLockedViewportPage
+              ? `flex flex-col overflow-hidden ${isCinema || isMeet ? 'bg-black' : 'bg-white dark:bg-black'} ${!isKeyboardOpen ? (!shouldHideBottomNav ? 'pb-16 lg:pb-0' : 'md:pb-16 lg:pb-0') : ''}`
               : 'block overflow-x-hidden overflow-y-auto scroll-container px-0 md:p-4 pb-24 lg:pb-6'
           }`}
         >
@@ -546,7 +549,7 @@ const AppLayout: React.FC = () => {
             </div>
           )}
 
-          <div className={isMessages ? 'flex-1 w-full flex flex-col min-h-0 max-h-full' : 'w-full'}>
+          <div className={isLockedViewportPage ? 'flex-1 w-full flex flex-col min-h-0 max-h-full overflow-hidden' : 'w-full'}>
           <Suspense fallback={
             <div className="h-full flex items-center justify-center min-h-[50vh]">
               <div className="fast-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[#1877F2]"></div>
