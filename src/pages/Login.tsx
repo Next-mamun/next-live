@@ -5,7 +5,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { auth, db } from '../lib/firebase';
 import { supabase } from '../lib/supabase';
 import { signInWithEmailAndPassword, signInWithPopup, signInWithRedirect, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteField, collection, query, where, getDocs } from 'firebase/firestore';
 import { generateBio } from '../services/geminiService';
 import { syncProfileToSupabase, ensureUniqueUsername, cacheUserInDexie, fetchProfileSmart } from '../lib/profileSync';
 import { User, Lock } from 'lucide-react';
@@ -211,43 +211,42 @@ const Login: React.FC = () => {
        
       const loginEmail = profileData.email || `${profileData.username}@nextmedia.app`;
 
-      if (profileData.password === password || loginEmail) {
-        if (loginEmail) {
-           await signInWithEmailAndPassword(auth, loginEmail, password);
-        }
+      await signInWithEmailAndPassword(auth, loginEmail, password);
 
-        const fullProfile = { id: profileId, ...profileData };
-        await syncProfileToSupabase(fullProfile);
-        await cacheUserInDexie(fullProfile);
-        setCurrentUser(fullProfile as any);
-        
-        try {
-          const saved = localStorage.getItem('next_saved_accounts');
-          let accounts = saved ? JSON.parse(saved) : [];
-          if (!Array.isArray(accounts)) accounts = [];
-          const newAcc = {
-            id: profileId,
-            username: profileData.username,
-            display_name: profileData.display_name,
-            email: loginEmail,
-            password: password,
-            avatar_url: profileData.avatar_url || ''
-          };
-          const idx = accounts.findIndex((a: any) => a.id === newAcc.id);
-          if (idx > -1) {
-            accounts[idx] = { ...accounts[idx], ...newAcc };
-          } else {
-            accounts.push(newAcc);
-          }
-          localStorage.setItem('next_saved_accounts', JSON.stringify(accounts));
-        } catch (e) {
-          console.error('Failed to save account to switcher:', e);
-        }
-        
-        navigate(returnUrl);
-      } else {
-        setError('Invalid password');
+      if ('password' in profileData) {
+        updateDoc(doc(db, 'profiles', profileId), { password: deleteField() }).catch(() => {});
       }
+
+      const { password: _removedPwd, ...cleanProfileData } = profileData;
+      const fullProfile = { id: profileId, ...cleanProfileData };
+      await syncProfileToSupabase(fullProfile);
+      await cacheUserInDexie(fullProfile);
+      setCurrentUser(fullProfile as any);
+
+      try {
+        const saved = localStorage.getItem('next_saved_accounts');
+        let accounts = saved ? JSON.parse(saved) : [];
+        if (!Array.isArray(accounts)) accounts = [];
+        accounts = accounts.map(({ password: _p, ...rest }: any) => rest);
+        const newAcc = {
+          id: profileId,
+          username: cleanProfileData.username,
+          display_name: cleanProfileData.display_name,
+          email: loginEmail,
+          avatar_url: cleanProfileData.avatar_url || ''
+        };
+        const idx = accounts.findIndex((a: any) => a.id === newAcc.id);
+        if (idx > -1) {
+          accounts[idx] = { ...accounts[idx], ...newAcc };
+        } else {
+          accounts.push(newAcc);
+        }
+        localStorage.setItem('next_saved_accounts', JSON.stringify(accounts));
+      } catch (e) {
+        console.error('Failed to save account to switcher:', e);
+      }
+
+      navigate(returnUrl);
     } catch (err: any) {
        console.error(err);
        setError('Authentication failed. Are you sure you entered the correct password?');
@@ -301,7 +300,7 @@ const Login: React.FC = () => {
           </button>
 
           <Link 
-            to="/register"
+            to={returnUrl && returnUrl !== '/' ? `/register?returnUrl=${encodeURIComponent(returnUrl)}` : '/register'}
             className="bg-white/5 text-white py-4 rounded-xl text-lg font-bold hover:bg-white/10 transition-all text-center active:scale-[0.98] border border-white/10"
           >
             Create new account

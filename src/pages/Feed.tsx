@@ -367,7 +367,9 @@ const Feed: React.FC = () => {
       let matchType = true;
       if (contentTypeFilter !== 'All') {
          const type = contentTypeFilter === 'Video' ? 'video' : contentTypeFilter.toLowerCase();
-         matchType = (p.media_type || 'text') === type;
+         const kind = getPostKind(p);
+         const derivedType = (kind === 'youtube' || kind === 'nativeVideo') ? 'video' : kind;
+         matchType = (p.media_type || derivedType) === type || derivedType === type;
       }
 
       return matchSearch && matchCat && matchType;
@@ -638,18 +640,25 @@ const Feed: React.FC = () => {
       </div>
 
       {!currentUser && (
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 text-white shadow-lg mb-4 flex items-center justify-between gap-4 animate-in fade-in duration-300">
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 text-white shadow-lg mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 animate-in fade-in duration-300">
           <div>
             <p className="font-extrabold text-base sm:text-lg">Welcome to Next!</p>
             <p className="text-xs sm:text-sm text-blue-100 mt-0.5">Explore posts, watch reels, or join to connect and share.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate('/login')}
-            className="shrink-0 bg-white text-[#1877F2] font-black text-xs sm:text-sm px-4 py-2 rounded-xl shadow-md hover:bg-blue-50 transition-all active:scale-95"
-          >
-            Log In / Sign Up
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Link
+              to="/login"
+              className="bg-white text-[#1877F2] font-black text-xs sm:text-sm px-4 py-2 rounded-xl shadow-md hover:bg-blue-50 transition-all active:scale-95 text-center"
+            >
+              Log In
+            </Link>
+            <Link
+              to="/register"
+              className="bg-white/15 hover:bg-white/25 text-white border border-white/30 font-black text-xs sm:text-sm px-4 py-2 rounded-xl transition-all active:scale-95 text-center"
+            >
+              Sign Up
+            </Link>
+          </div>
         </div>
       )}
 
@@ -869,7 +878,7 @@ const Feed: React.FC = () => {
       )}
 
       {/* Combined Feed items */}
-      {postsError ? (
+      {postsError && posts.length === 0 ? (
         <div className="flex flex-col items-center justify-center p-20 gap-4">
           <p className="font-bold text-red-500">Error loading posts: {postsError.message}</p>
           <button type="button" onClick={handleRefreshFeed} className="bg-[#1877F2] text-white px-4 py-2 rounded-lg font-bold">Retry</button>
@@ -924,7 +933,7 @@ const Feed: React.FC = () => {
                 />
                 {(index + 1) % 5 === 0 && (
                   <AdSenseAd 
-                    key={`ad-${index}`}
+                    key={`ad-${post.id}-${Math.floor((index + 1) / 5) % 2 === 1 ? 'infeed' : 'display'}`}
                     slotType={Math.floor((index + 1) / 5) % 2 === 1 ? 'infeed' : 'display'} 
                   />
                 )}
@@ -961,6 +970,13 @@ const Feed: React.FC = () => {
             <div className="text-center py-10">
               <p className="text-gray-500 dark:text-gray-400 font-bold">No posts found.</p>
               <p className="text-sm text-gray-400 mt-2">Be the first to create a post!</p>
+              <button
+                type="button"
+                onClick={handleRefreshFeed}
+                className="mt-4 px-5 py-2 rounded-full bg-[#1877F2] text-white text-xs font-bold hover:opacity-90 transition-opacity"
+              >
+                Refresh Feed
+              </button>
             </div>
           )}
           {!postsLoading && posts.length > 0 && filteredPosts.length === 0 && (

@@ -31,7 +31,7 @@ export default defineConfig(({ mode }) => {
           strategies: 'injectManifest',
           srcDir: 'src',
           filename: 'sw.ts',
-          registerType: 'autoUpdate',
+          registerType: 'prompt',
           manifest: false,
           injectManifest: {
             // Keep precache ultra-lightweight (< 150 KB) so old PWAs update in < 0.3s instead of stalling on 44 MB AI shards

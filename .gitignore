@@ -12,10 +12,18 @@ dist
 dist-ssr
 *.local
 .env
+.env.*
+!.env.example
+
+# Secrets & Keys
+*.pem
+*.key
+*.p12
 
 # Firebase config
 firebase-blueprint.json
 service-account.json
+service-account*.json
 google-services.json
 
 # Editor directories and files

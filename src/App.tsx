@@ -34,7 +34,13 @@ const safeGetStoredUser = (): User | null => {
     const saved = localStorage.getItem('next_media_user');
     if (!saved || saved === 'undefined' || saved === 'null') return null;
     const parsed = JSON.parse(saved);
-    return parsed && typeof parsed === 'object' && parsed.id ? parsed : null;
+    if (!parsed || typeof parsed !== 'object' || !parsed.id) return null;
+    if ('password' in parsed) {
+      const { password: _removed, ...clean } = parsed;
+      localStorage.setItem('next_media_user', JSON.stringify(clean));
+      return clean as User;
+    }
+    return parsed as User;
   } catch (_) {
     try { localStorage.removeItem('next_media_user'); } catch {}
     return null;
@@ -70,34 +76,7 @@ const AuthRouteRedirect: React.FC = () => {
   return <Navigate to={safeTarget} replace />;
 };
 
-// Robust dynamic import and chunk loading failure handler (Prevents White Screen of Death on updates)
-const handleDynamicImportError = async (err: any) => {
-  const msg = String(err?.message || err?.reason?.message || err || '');
-  const isChunkErr =
-    msg.includes('Failed to fetch dynamically imported module') ||
-    msg.includes('error loading dynamically imported module') ||
-    msg.includes('Loading chunk') ||
-    msg.includes('Importing a module script failed');
-
-  if (isChunkErr) {
-    console.warn("⚠️ [Next Deploy Recovery] Chunk hash mismatch detected. Refreshing cache...", msg);
-    const key = 'chunk_reload_lock_' + window.location.pathname;
-    const lastReload = Number(sessionStorage.getItem(key) || '0');
-    if (Date.now() - lastReload > 8000) {
-      sessionStorage.setItem(key, String(Date.now()));
-      if ('caches' in window) {
-        try {
-          const names = await caches.keys();
-          await Promise.all(names.map(n => caches.delete(n)));
-        } catch (_) {}
-      }
-      window.location.reload();
-    }
-  }
-};
-
-window.addEventListener('error', (e) => handleDynamicImportError(e.error || e.message));
-window.addEventListener('unhandledrejection', (e) => handleDynamicImportError(e.reason));
+// Note: Chunk loading recovery is handled safely in src/index.tsx with external script & protected-route guards.
 
 // Primary core navigation routes imported directly for instant 0ms switching regardless of Home Feed state
 import Feed from '@/pages/Feed';
@@ -109,6 +88,8 @@ import CreatePost from '@/pages/CreatePost';
 import Lab from '@/pages/Lab';
 import Cinema from '@/pages/Cinema';
 import Settings from '@/pages/Settings';
+import Login from '@/pages/Login';
+import Register from '@/pages/Register';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 import { AuthBottomSheet } from '@/components/AuthBottomSheet';
 import { GuestLockedView } from '@/components/GuestLockedView';
@@ -139,8 +120,6 @@ const safeLazy = (importFn: () => Promise<any>) =>
 
 const Reels = safeLazy(() => import('@/pages/Reels'));
 const Meet = safeLazy(() => import('@/pages/Meet'));
-const Login = safeLazy(() => import('@/pages/Login'));
-const Register = safeLazy(() => import('@/pages/Register'));
 const ChildSafety = safeLazy(() => import('@/pages/ChildSafety'));
 const Features = safeLazy(() => import('@/pages/Features'));
 
@@ -151,8 +130,6 @@ export const preloadAppRoute = (route: string) => {
     case 'reels': import('@/pages/Reels'); break;
     case 'meet': import('@/pages/Meet'); break;
     case 'features': import('@/pages/Features'); break;
-    case 'login': import('@/pages/Login'); break;
-    case 'register': import('@/pages/Register'); break;
     case 'child-safety': import('@/pages/ChildSafety'); break;
   }
 };
@@ -175,14 +152,28 @@ const AppLayout: React.FC = () => {
   const isChatOpen = useGlobalStore(state => state.isChatOpen);
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
 
+  useEffect(() => {
+    if (isAuthPage) {
+      useGlobalStore.getState().closeAuthModal();
+    }
+  }, [isAuthPage]);
+
   // Global navigator for push notification clicks & Android native bridge
   useEffect(() => {
     const navigateToAppUrl = (rawUrl: string) => {
       const target = normalizeAppRoute(rawUrl);
-      navigate(target);
       const chatUid = extractChatUserIdFromTarget(target);
+      const hasLiveProposal = target.includes('liveProposal=1');
+      if (chatUid && hasLiveProposal) {
+        useGlobalStore.getState().setPendingLiveProposal({
+          senderId: chatUid,
+          senderName: 'Friend',
+          timestamp: Date.now()
+        });
+      }
+      navigate(target);
       if (chatUid) {
-        window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid } }));
+        window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid, liveProposal: hasLiveProposal } }));
       }
     };
     (window as any).__appNavigate = navigateToAppUrl;
@@ -197,10 +188,18 @@ const AppLayout: React.FC = () => {
       const handleSwMsg = (event: MessageEvent) => {
         if (event.data?.type === 'NAVIGATE' && event.data?.url) {
           const target = normalizeAppRoute(event.data.url);
-          navigate(target);
           const chatUid = extractChatUserIdFromTarget(target);
+          const hasLiveProposal = target.includes('liveProposal=1');
+          if (chatUid && hasLiveProposal) {
+            useGlobalStore.getState().setPendingLiveProposal({
+              senderId: chatUid,
+              senderName: 'Friend',
+              timestamp: Date.now()
+            });
+          }
+          navigate(target);
           if (chatUid) {
-            window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid } }));
+            window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUid, liveProposal: hasLiveProposal } }));
           }
         }
       };
@@ -219,19 +218,45 @@ const AppLayout: React.FC = () => {
       const msgType = payload.data?.type;
       if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
 
+      const isLiveProposal = msgType === 'live_proposal' || payload.data?.action === 'LIVE_PROPOSAL_REQUEST';
+      if (isLiveProposal && senderId) {
+        useGlobalStore.getState().setPendingLiveProposal({
+          senderId,
+          senderName: payload.data?.sender_name || 'Friend',
+          senderAvatar: payload.data?.sender_avatar,
+          timestamp: Date.now()
+        });
+        window.dispatchEvent(new CustomEvent('P2P_SIGNAL', {
+          detail: {
+            peerId: senderId,
+            data: {
+              type: 'LIVE_PROPOSAL_REQUEST',
+              sender_id: senderId,
+              sender_name: payload.data?.sender_name,
+              sender_avatar: payload.data?.sender_avatar
+            }
+          }
+        }));
+      }
+
+      const defaultMsgUrl = senderId
+        ? (isLiveProposal ? `/messages?user=${senderId}&liveProposal=1` : `/messages?user=${senderId}`)
+        : '/';
       const targetUrl = normalizeAppRoute(
-        payload.data?.url || (msgType === 'message' && senderId ? `/messages?user=${senderId}` : '/')
+        payload.data?.url || (msgType === 'message' || isLiveProposal ? defaultMsgUrl : '/')
       );
       const title = payload.notification?.title || payload.data?.title || 'New Notification';
       const body = payload.notification?.body || payload.data?.body || 'You have a new message';
 
       const { isChatOpen, activeChatId } = useGlobalStore.getState();
-      if (msgType === 'message' && isChatOpen && activeChatId === senderId) {
+      if ((msgType === 'message' || isLiveProposal) && isChatOpen && activeChatId === senderId) {
         playNotificationSound();
         return;
       }
 
-      const dedupeKey = payload.data?.notif_id
+      const dedupeKey = isLiveProposal && senderId
+        ? `live_prop_${senderId}`
+        : payload.data?.notif_id
         ? `msg_${payload.data.notif_id}`
         : (senderId ? `msg_fc_${senderId}_${body}` : undefined);
 
@@ -269,12 +294,38 @@ const AppLayout: React.FC = () => {
           const msgType = payload.data?.type;
           if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
 
-          if (msgType === 'message' && isChatOpen && activeChatId === senderId) {
+          const isLiveProposal = msgType === 'live_proposal' || payload.data?.action === 'LIVE_PROPOSAL_REQUEST';
+          if (isLiveProposal && senderId) {
+            useGlobalStore.getState().setPendingLiveProposal({
+              senderId,
+              senderName: payload.data?.sender_name || 'Friend',
+              senderAvatar: payload.data?.sender_avatar,
+              timestamp: Date.now()
+            });
+            window.dispatchEvent(new CustomEvent('P2P_SIGNAL', {
+              detail: {
+                peerId: senderId,
+                data: {
+                  type: 'LIVE_PROPOSAL_REQUEST',
+                  sender_id: senderId,
+                  sender_name: payload.data?.sender_name,
+                  sender_avatar: payload.data?.sender_avatar
+                }
+              }
+            }));
+          }
+
+          if ((msgType === 'message' || isLiveProposal) && isChatOpen && activeChatId === senderId) {
             playNotificationSound();
             return;
           }
-          const targetUrl = normalizeAppRoute(payload.data?.url || (senderId ? `/messages?user=${senderId}` : '/'));
-          const dedupeKey = payload.data?.notif_id
+          const defaultUrl = senderId
+            ? (isLiveProposal ? `/messages?user=${senderId}&liveProposal=1` : `/messages?user=${senderId}`)
+            : '/';
+          const targetUrl = normalizeAppRoute(payload.data?.url || defaultUrl);
+          const dedupeKey = isLiveProposal && senderId
+            ? `live_prop_${senderId}`
+            : payload.data?.notif_id
             ? `msg_${payload.data.notif_id}`
             : (senderId ? `msg_bc_${senderId}_${payload.body || ''}` : undefined);
 
@@ -292,6 +343,22 @@ const AppLayout: React.FC = () => {
           const payload = event.payload;
           if (!payload || !payload.sender_id) return;
 
+          if (payload.type === 'LIVE_PROPOSAL_REQUEST') {
+            useGlobalStore.getState().setPendingLiveProposal({
+              senderId: payload.sender_id,
+              senderName: payload.sender_name || 'Friend',
+              senderAvatar: payload.sender_avatar,
+              timestamp: Date.now()
+            });
+          } else if (
+            payload.type === 'LIVE_PROPOSAL_CANCEL' ||
+            payload.type === 'LIVE_PROPOSAL_REJECTED' ||
+            payload.type === 'LIVE_PROPOSAL_ACCEPTED' ||
+            payload.type === 'LIVE_STOP'
+          ) {
+            useGlobalStore.getState().clearPendingLiveProposal(payload.sender_id);
+          }
+
           // Dispatch locally so Messages.tsx immediately catches the proposal / cancel / accept / reject
           window.dispatchEvent(new CustomEvent('P2P_SIGNAL', {
             detail: { peerId: payload.sender_id, data: payload }
@@ -302,10 +369,10 @@ const AppLayout: React.FC = () => {
             if (!isChatOpen || activeChatId !== payload.sender_id) {
               showInAppNotificationToast({
                 title: '⚡ Live Typing Request',
-                body: `${payload.sender_name || 'A friend'} wants to start Live Typing! Tap to connect.`,
+                body: `${payload.sender_name || 'A friend'} wants to start Live Typing! Tap to accept.`,
                 avatar: payload.sender_avatar,
-                url: `/messages?user=${payload.sender_id}`,
-                type: 'message',
+                url: `/messages?user=${payload.sender_id}&liveProposal=1`,
+                type: 'live_proposal',
                 senderId: payload.sender_id,
                 dedupeKey: `live_prop_${payload.sender_id}`
               });
@@ -550,6 +617,19 @@ const AppLayout: React.FC = () => {
               <Route path="/features" element={<Features />} />
               <Route path="/about" element={<Features />} />
               <Route path="/child-safety" element={<ChildSafety />} />
+              <Route
+                path="/profile"
+                element={
+                  currentUser ? (
+                    <Navigate to={`/profile/${currentUser.username || currentUser.id}`} replace />
+                  ) : (
+                    <GuestLockedView
+                      title="Your Profile"
+                      description="Sign in or create an account to view your profile, posts, and friends."
+                    />
+                  )
+                }
+              />
               <Route path="/profile/:username" element={<Profile />} />
 
               {/* Auth Pages */}
@@ -645,7 +725,10 @@ const App: React.FC = () => {
   });
   const [loadingAuth, setLoadingAuth] = useState(() => {
     if (reinstallLogoutPendingRef.current) return false;
-    return safeGetStoredUser() ? false : true;
+    if (safeGetStoredUser()) return false;
+    // Never block guests with a loading screen on public/auth/locked routes; only hold briefly on /settings redirect
+    const initialPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+    return initialPath.startsWith('/settings');
   });
 
   const [darkMode, setDarkMode] = useState(() => {
@@ -892,8 +975,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (currentUser?.id) {
-      localStorage.setItem('next_media_user', JSON.stringify(currentUser));
-      useGlobalStore.getState().setCurrentUser(currentUser);
+      const { password: _removedPwd, ...cleanCurrentUser } = currentUser as any;
+      localStorage.setItem('next_media_user', JSON.stringify(cleanCurrentUser));
+      useGlobalStore.getState().setCurrentUser(cleanCurrentUser);
       flushPendingFCMToken(currentUser.id).catch(() => {});
 
       // Ensure native Android WebView push permission or Web Notification permission
@@ -1080,7 +1164,7 @@ const App: React.FC = () => {
       if (data) {
         syncProfileToSupabase(data).catch(() => {});
 
-        const cachedCopy = { ...data };
+        const { password: _removedPwd, ...cachedCopy } = { ...data };
         if (cachedCopy.avatar_url) {
            cachedCopy.avatar_url = await withTimeout(getBase64Image(cachedCopy.avatar_url), 2500, cachedCopy.avatar_url);
         }
@@ -1127,7 +1211,14 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-[#f0f2f5] dark:bg-[#000000] flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="fast-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#1877F2]"></div>
+          <div className="relative flex items-center justify-center">
+            <div className="fast-spin rounded-full h-16 w-16 border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2]" />
+            <img
+              src="/Next-AppLogo.jpg"
+              alt="Next"
+              className="absolute w-11 h-11 rounded-full object-cover shadow-sm"
+            />
+          </div>
           <p className="text-gray-500 dark:text-gray-400 font-bold animate-pulse">Loading Next...</p>
         </div>
       </div>

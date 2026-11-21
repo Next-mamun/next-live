@@ -72,8 +72,11 @@ self.addEventListener('activate', (event) => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of clients) {
         try {
-          // One-time rescue navigation ONLY when upgrading from a legacy pre-v2 SW that trapped clients on old HTML
-          if (!prevVer && hadLegacyPrecache && 'navigate' in client) {
+          const isProtectedClient =
+            client.url.includes('/cinema') ||
+            client.url.includes('/meet') ||
+            client.url.includes('/messages');
+          if (!prevVer && hadLegacyPrecache && !isProtectedClient && 'navigate' in client) {
             await (client as WindowClient).navigate(client.url).catch(() => {});
           } else {
             client.postMessage({ type: 'SW_UPDATED', version: SW_VERSION });
@@ -96,7 +99,7 @@ registerRoute(
   ({ request }) => request.mode === 'navigate',
   new NetworkFirst({
     cacheName: HTML_SHELL_CACHE,
-    networkTimeoutSeconds: 8,
+    networkTimeoutSeconds: 4,
     plugins: [
       new CacheableResponsePlugin({ statuses: [200] }),
       {
@@ -238,15 +241,33 @@ self.addEventListener('notificationclick', (event: any) => {
     }
   }
 
-  // Convert full same-origin HTTPS URL to relative route if needed
+  // Strictly enforce same-origin relative routes (block external phishing redirects or // scheme-relative URLs)
   try {
-    if (typeof urlToOpen === 'string' && urlToOpen.startsWith('http')) {
-      const parsed = new URL(urlToOpen);
-      if (parsed.origin === self.location.origin) {
-        urlToOpen = parsed.pathname + parsed.search + parsed.hash;
+    if (typeof urlToOpen !== 'string') {
+      urlToOpen = '/';
+    } else {
+      const trimmed = urlToOpen.trim();
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        const parsed = new URL(trimmed);
+        if (parsed.origin === self.location.origin) {
+          urlToOpen = parsed.pathname + parsed.search + parsed.hash;
+        } else {
+          urlToOpen = '/';
+        }
+      } else {
+        urlToOpen = trimmed;
+      }
+      if (!urlToOpen.startsWith('/') || urlToOpen.startsWith('//') || urlToOpen.includes('\\')) {
+        urlToOpen = '/';
+      }
+      const lower = urlToOpen.toLowerCase();
+      if (lower.includes('javascript:') || lower.includes('data:')) {
+        urlToOpen = '/';
       }
     }
-  } catch (_) {}
+  } catch (_) {
+    urlToOpen = '/';
+  }
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients: any) => {

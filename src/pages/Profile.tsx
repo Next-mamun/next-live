@@ -521,9 +521,17 @@ const Profile: React.FC = () => {
               {isEditing ? (
                 <textarea value={editData.bio} onChange={e => setEditData({...editData, bio: e.target.value})} className="w-full border dark:border-gray-700 rounded-lg p-2 text-center italic text-gray-800 dark:text-white bg-transparent focus:ring-2 focus:ring-blue-200 outline-none" rows={3}/>
               ) : (
-                <p className="text-center italic font-medium text-gray-700 dark:text-gray-300" dangerouslySetInnerHTML={{ 
-                  __html: profile.bio ? profile.bio.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') : '' 
-                }} />
+                <p className="text-center italic font-medium text-gray-700 dark:text-gray-300">
+                  {profile.bio
+                    ? profile.bio.split(/(\*\*.*?\*\*)/g).map((part: string, idx: number) =>
+                        part.startsWith('**') && part.endsWith('**') && part.length > 4 ? (
+                          <strong key={idx}>{part.slice(2, -2)}</strong>
+                        ) : (
+                          <React.Fragment key={idx}>{part}</React.Fragment>
+                        )
+                      )
+                    : ''}
+                </p>
               )}
               <div className="mt-6 space-y-4">
                 <div className="flex items-center gap-3 text-gray-600 dark:text-gray-400 font-medium"><Users className="text-gray-400" size={20} /> <span className="font-bold text-gray-900 dark:text-white">{friendsCount}</span> Friends</div>

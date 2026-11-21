@@ -59,6 +59,10 @@ export const OTAUpdateBanner: React.FC = () => {
       if (!response.ok) {
         return;
       }
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('application/json')) {
+        return;
+      }
 
       const data = await response.json();
       const remoteVersion = data?.version ? String(data.version).trim() : null;
@@ -204,13 +208,22 @@ export const OTAUpdateBanner: React.FC = () => {
       window.location.replace(bustUrl.toString());
     } catch (err) {
       console.error('Error during OTA update:', err);
-      window.location.replace(window.location.origin + '?_v=' + Date.now());
+      const fallbackPath = (window.location.pathname || '/') + (window.location.search || '');
+      const sep = fallbackPath.includes('?') ? '&' : '?';
+      window.location.replace(`${window.location.origin}${fallbackPath}${sep}_v=${Date.now()}${window.location.hash || ''}`);
     }
   }, [isUpdating, newVersion]);
 
-  // 10-second Auto-Update countdown when banner is visible
+  const isMessages = location.pathname.startsWith('/messages');
+  const isProtectedActivity =
+    location.pathname.startsWith('/cinema') ||
+    location.pathname.startsWith('/meet') ||
+    location.pathname.startsWith('/upload') ||
+    (isMessages && isChatOpen);
+
+  // 10-second Auto-Update countdown when banner is visible (paused during Cinema/Meet/Upload/active Chat so user is never kicked mid-session)
   useEffect(() => {
-    if (!newVersion || dismissed || isUpdating) return;
+    if (!newVersion || dismissed || isUpdating || isProtectedActivity) return;
 
     const timer = setInterval(() => {
       setCountdown((prev) => {
@@ -223,20 +236,20 @@ export const OTAUpdateBanner: React.FC = () => {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [newVersion, dismissed, isUpdating]);
+  }, [newVersion, dismissed, isUpdating, isProtectedActivity]);
 
   useEffect(() => {
-    if (newVersion && !dismissed && !isUpdating && countdown === 0) {
+    if (newVersion && !dismissed && !isUpdating && !isProtectedActivity && countdown === 0) {
       handleUpdate();
     }
-  }, [countdown, newVersion, dismissed, isUpdating, handleUpdate]);
+  }, [countdown, newVersion, dismissed, isUpdating, isProtectedActivity, handleUpdate]);
 
   if (!newVersion || dismissed) {
     return null;
   }
 
-  const isMessages = location.pathname.startsWith('/messages');
-  const hasBottomNav = currentUser && !(isMessages && isChatOpen);
+  const isAuthPage = location.pathname === '/login' || location.pathname === '/register';
+  const hasBottomNav = !isAuthPage && !(isMessages && isChatOpen);
   const bottomPositionClass = hasBottomNav
     ? 'bottom-20 md:bottom-6'
     : 'bottom-4 md:bottom-6';
@@ -259,6 +272,8 @@ export const OTAUpdateBanner: React.FC = () => {
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
               {isUpdating
                 ? `Installing version ${newVersion}...`
+                : isProtectedActivity
+                ? `Version ${newVersion} • Tap Update when ready`
                 : `Version ${newVersion} • Auto-updating in ${countdown}s`}
             </p>
           </div>
@@ -272,7 +287,7 @@ export const OTAUpdateBanner: React.FC = () => {
             className="bg-[#1877F2] hover:bg-blue-600 active:scale-95 text-white text-xs sm:text-sm font-medium px-3.5 py-1.5 rounded-xl shadow-sm transition-all flex items-center gap-1.5 disabled:opacity-70 cursor-pointer whitespace-nowrap"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isUpdating ? 'animate-spin' : ''}`} />
-            <span>{isUpdating ? 'Updating...' : `Update (${countdown}s)`}</span>
+            <span>{isUpdating ? 'Updating...' : isProtectedActivity ? 'Update' : `Update (${countdown}s)`}</span>
           </button>
           <button
             id="ota-dismiss-btn"

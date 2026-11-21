@@ -52,7 +52,9 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
     }
     const chatUserId = extractChatUserIdFromRoute(targetRoute);
     if (chatUserId) {
-      window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: chatUserId } }));
+      window.dispatchEvent(new CustomEvent('open_chat_direct', {
+        detail: { userId: chatUserId, liveProposal: targetRoute.includes('liveProposal=1') }
+      }));
     }
   }, [navigate]);
 
@@ -113,10 +115,12 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
       >
         <div className="flex flex-col items-center gap-4 animate-in fade-in zoom-in-95 duration-200">
           <div className="relative flex items-center justify-center">
-            <div className="w-14 h-14 rounded-full border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2] animate-spin" />
-            <div className="absolute w-8 h-8 rounded-full bg-[#1877F2]/10 flex items-center justify-center">
-              <span className="text-[#1877F2] font-black text-sm">N</span>
-            </div>
+            <div className="w-16 h-16 rounded-full border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2] animate-spin" />
+            <img
+              src="/Next-AppLogo.jpg"
+              alt="Next"
+              className="absolute w-11 h-11 rounded-full object-cover shadow-sm"
+            />
           </div>
           <p className="text-gray-600 dark:text-gray-300 font-bold text-sm tracking-wide animate-pulse">
             Opening Next...

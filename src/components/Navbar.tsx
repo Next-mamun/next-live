@@ -217,15 +217,21 @@ const Navbar: React.FC = () => {
           <BookOpen size={24} />
         </Link>
         {!currentUser ? (
-          <button
-            type="button"
-            onClick={() => navigate('/login')}
-            onPointerDown={() => { if (typeof window !== 'undefined' && (window as any).__preloadAppRoute) (window as any).__preloadAppRoute('login'); }}
-            className="flex items-center gap-2 bg-[#1877F2] hover:bg-[#166fe5] text-white text-xs sm:text-sm font-bold px-4 py-1.5 rounded-full shadow-md shadow-blue-500/20 transition-all active:scale-[0.98]"
-          >
-            <LogIn size={16} />
-            <span>Log In</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <Link
+              to="/login"
+              className="flex items-center gap-1.5 bg-[#1877F2] hover:bg-[#166fe5] text-white text-xs sm:text-sm font-bold px-3.5 sm:px-4 py-1.5 rounded-full shadow-md shadow-blue-500/20 transition-all active:scale-[0.98]"
+            >
+              <LogIn size={16} />
+              <span>Log In</span>
+            </Link>
+            <Link
+              to="/register"
+              className="hidden sm:inline-flex items-center bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-white text-xs sm:text-sm font-bold px-3.5 py-1.5 rounded-full transition-all active:scale-[0.98]"
+            >
+              Sign Up
+            </Link>
+          </div>
         ) : (
           <>
             <button 

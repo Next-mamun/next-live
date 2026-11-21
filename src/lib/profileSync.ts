@@ -39,10 +39,6 @@ export const buildSupabaseProfilePayload = (profile: any, includeExtended = true
     payload.bio = profile.bio;
   }
 
-  if (typeof profile?.is_verified === 'boolean') {
-    payload.is_verified = profile.is_verified;
-  }
-
   if (typeof profile?.fcm_token === 'string' || profile?.fcm_token === null) {
     payload.fcm_token = profile.fcm_token;
   }

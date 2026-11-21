@@ -118,6 +118,12 @@ const Register: React.FC = () => {
       return;
     }
 
+    if (formData.password.length < 6) {
+      setError('Password must be at least 6 characters');
+      setLoading(false);
+      return;
+    }
+
     const usernameLower = formData.username.trim().toLowerCase();
     if (!usernameLower || /\s/.test(usernameLower)) {
       setError('Username cannot be empty or contain spaces');
@@ -142,7 +148,6 @@ const Register: React.FC = () => {
       
       const newProfile = {
           username: usernameLower,
-          password: formData.password, // Optional backup for legacy reasons
           email: fakeEmail,
           display_name: formData.lastName ? `${formData.firstName.trim()} ${formData.lastName.trim()}` : formData.firstName.trim(),
           bio: bio,
@@ -166,12 +171,12 @@ const Register: React.FC = () => {
         const saved = localStorage.getItem('next_saved_accounts');
         let accounts = saved ? JSON.parse(saved) : [];
         if (!Array.isArray(accounts)) accounts = [];
+        accounts = accounts.map(({ password: _p, ...rest }: any) => rest);
         const newAcc = {
           id: result.user.uid,
           username: usernameLower,
           display_name: newProfile.display_name,
           email: fakeEmail,
-          password: formData.password,
           avatar_url: newProfile.avatar_url
         };
         const idx = accounts.findIndex((a: any) => a.id === newAcc.id);

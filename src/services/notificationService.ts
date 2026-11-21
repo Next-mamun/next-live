@@ -157,24 +157,17 @@ const sanitizePushData = (data?: any): Record<string, string> => {
 
 export const sendPushNotification = async (token: string, title: string, body: string, data?: any, receiverId?: string) => {
   try {
+    const { getAuthHeaders } = await import('@/lib/clientAuth');
+    const headers = await getAuthHeaders({ 'Content-Type': 'application/json' });
     const response = await fetch('/api/send-notification', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({ token, title, body, data: sanitizePushData(data), userId: receiverId }),
     });
     const result = await response.json();
     
     if (result?.notRegistered && receiverId) {
       tokenCache.delete(receiverId);
-      try {
-        await updateDoc(doc(db, 'profiles', receiverId), { fcm_token: null });
-      } catch (e) {}
-      try {
-        const { supabase } = await import('@/lib/supabase');
-        await supabase.from('profiles').update({ fcm_token: null }).eq('id', receiverId);
-      } catch (e) {}
     }
     
     return result;
@@ -341,8 +334,9 @@ export const showInAppNotificationToast = ({
             toast.dismiss(t);
             const rawTarget = url || (senderId ? `/messages?user=${senderId}` : '/messages');
             const targetUrl = normalizeAppRoute(rawTarget);
+            const hasLiveProposal = type === 'live_proposal' || targetUrl.includes('liveProposal=1');
             if (senderId) {
-              window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: senderId } }));
+              window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: senderId, liveProposal: hasLiveProposal } }));
             }
             if ((window as any).__appNavigate) {
               (window as any).__appNavigate(targetUrl);
@@ -429,8 +423,9 @@ export const showNotification = (title: string, options?: NotificationOptions) =
         const targetUrl = normalizeAppRoute(
           dataObj?.url || (dataObj?.sender_id ? `/messages?user=${dataObj.sender_id}` : '/messages')
         );
+        const hasLiveProposal = dataObj?.type === 'live_proposal' || targetUrl.includes('liveProposal=1');
         if (dataObj?.sender_id) {
-          window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: dataObj.sender_id } }));
+          window.dispatchEvent(new CustomEvent('open_chat_direct', { detail: { userId: dataObj.sender_id, liveProposal: hasLiveProposal } }));
         }
         if ((window as any).__appNavigate) {
           (window as any).__appNavigate(targetUrl);

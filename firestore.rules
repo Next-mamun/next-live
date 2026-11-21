@@ -1,127 +1,297 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     function isSignedIn() {
       return request.auth != null;
     }
 
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidProfilePayload(data) {
+      return !('password' in data) &&
+        (!('username' in data) || data.username == null || (data.username is string && data.username.size() <= 64)) &&
+        (!('display_name' in data) || data.display_name == null || (data.display_name is string && data.display_name.size() <= 120)) &&
+        (!('bio' in data) || data.bio == null || (data.bio is string && data.bio.size() <= 1000)) &&
+        (!('avatar_url' in data) || data.avatar_url == null || (data.avatar_url is string && data.avatar_url.size() <= 2048)) &&
+        (!('cover_url' in data) || data.cover_url == null || (data.cover_url is string && data.cover_url.size() <= 2048)) &&
+        (!('fcm_token' in data) || data.fcm_token == null || (data.fcm_token is string && data.fcm_token.size() <= 2048)) &&
+        (!('members' in data) || (data.members is list && data.members.size() <= 200));
+    }
+
+    function isValidPostPayload(data) {
+      return data.user_id is string &&
+        data.user_id.size() > 0 &&
+        data.user_id.size() <= 128 &&
+        (!('content' in data) || data.content == null || (data.content is string && data.content.size() <= 10000)) &&
+        (!('media_url' in data) || data.media_url == null || (data.media_url is string && data.media_url.size() <= 2048)) &&
+        (!('media_type' in data) || data.media_type == null || (data.media_type is string && data.media_type.size() <= 64)) &&
+        (!('category' in data) || data.category == null || (data.category is string && data.category.size() <= 64));
+    }
+
+    function isValidDeltaOne(incVal, hasEx, exVal, allowDecrement) {
+      return incVal is int &&
+        incVal >= 0 &&
+        (
+          (!hasEx || exVal == null)
+            ? incVal == 1
+            : (incVal == exVal + 1 || (allowDecrement && incVal == exVal - 1))
+        );
+    }
+
+    function isValidCounterUpdate() {
+      let changed = incoming().diff(existing()).affectedKeys();
+      return changed.size() > 0 &&
+        changed.hasOnly(['views', 'likesCount', 'like_count', 'comment_count', 'commentsCount']) &&
+        (!changed.hasAny(['views']) || isValidDeltaOne(incoming().views, 'views' in existing(), existing().get('views', null), false)) &&
+        (!changed.hasAny(['likesCount']) || isValidDeltaOne(incoming().likesCount, 'likesCount' in existing(), existing().get('likesCount', null), true)) &&
+        (!changed.hasAny(['like_count']) || isValidDeltaOne(incoming().like_count, 'like_count' in existing(), existing().get('like_count', null), true)) &&
+        (!changed.hasAny(['comment_count']) || isValidDeltaOne(incoming().comment_count, 'comment_count' in existing(), existing().get('comment_count', null), true)) &&
+        (!changed.hasAny(['commentsCount']) || isValidDeltaOne(incoming().commentsCount, 'commentsCount' in existing(), existing().get('commentsCount', null), true));
+    }
+
     match /profiles/{userId} {
       allow read: if true;
-      allow create: if isSignedIn() && (
-        request.auth.uid == userId ||
-        (request.resource.data.is_group == true && request.resource.data.admin_id == request.auth.uid)
-      );
-      allow update: if isSignedIn() && (
-        request.auth.uid == userId ||
-        (resource.data.is_group == true && (resource.data.admin_id == request.auth.uid || request.auth.uid in resource.data.members))
-      );
-      allow delete: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidProfilePayload(incoming()) &&
+        (!('is_verified' in incoming()) || incoming().is_verified == false) &&
+        (
+          request.auth.uid == userId ||
+          (userId.matches('^group_.*') && incoming().is_group == true && incoming().admin_id == request.auth.uid)
+        );
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidProfilePayload(incoming()) &&
+        (!('is_verified' in incoming()) || incoming().is_verified == existing().get('is_verified', false)) &&
+        (
+          (
+            request.auth.uid == userId &&
+            (!('admin_id' in incoming()) || incoming().admin_id == existing().get('admin_id', null)) &&
+            (!('is_group' in incoming()) || incoming().is_group == existing().get('is_group', false))
+          ) ||
+          (existing().get('is_group', false) == true && existing().get('admin_id', '') == request.auth.uid)
+        );
+      allow delete: if isSignedIn() &&
+        isValidId(userId) &&
+        (
+          request.auth.uid == userId ||
+          (existing().get('is_group', false) == true && existing().get('admin_id', '') == request.auth.uid)
+        );
     }
-    
+
     match /reports/{reportId} {
-      allow create: if isSignedIn();
-      allow read: if false;
+      allow create: if isSignedIn() &&
+        isValidId(reportId) &&
+        (!('reporter_id' in incoming()) || incoming().reporter_id == request.auth.uid) &&
+        (!('user_id' in incoming()) || incoming().user_id == request.auth.uid) &&
+        (!('reason' in incoming()) || (incoming().reason is string && incoming().reason.size() <= 2000));
+      allow read, update, delete: if false;
     }
-    
+
     match /posts/{postId} {
       allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow update: if isSignedIn() && (
-        resource.data.user_id == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'likesCount', 'like_count', 'comment_count', 'commentsCount'])
-      );
-      allow delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(postId) &&
+        isValidPostPayload(incoming()) &&
+        incoming().user_id == request.auth.uid;
+      allow update: if isSignedIn() &&
+        isValidId(postId) &&
+        (
+          (isValidPostPayload(incoming()) && existing().user_id == request.auth.uid && incoming().user_id == existing().user_id) ||
+          isValidCounterUpdate()
+        );
+      allow delete: if isSignedIn() && isValidId(postId) && existing().user_id == request.auth.uid;
     }
-    
+
     match /likes/{likeId} {
       allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(likeId) &&
+        incoming().user_id == request.auth.uid &&
+        incoming().post_id is string &&
+        incoming().post_id.size() > 0 &&
+        incoming().post_id.size() <= 128;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(likeId) && existing().user_id == request.auth.uid;
     }
-    
+
     match /comments/{commentId} {
       allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow update, delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(commentId) &&
+        incoming().user_id == request.auth.uid &&
+        incoming().post_id is string &&
+        incoming().post_id.size() > 0 &&
+        incoming().post_id.size() <= 128 &&
+        incoming().content is string &&
+        incoming().content.size() > 0 &&
+        incoming().content.size() <= 2000;
+      allow update: if isSignedIn() &&
+        isValidId(commentId) &&
+        existing().user_id == request.auth.uid &&
+        incoming().user_id == existing().user_id &&
+        incoming().post_id == existing().post_id &&
+        incoming().content is string &&
+        incoming().content.size() > 0 &&
+        incoming().content.size() <= 2000;
+      allow delete: if isSignedIn() && isValidId(commentId) && existing().user_id == request.auth.uid;
     }
-    
+
     match /messages/{messageId} {
       allow read: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid ||
-        (resource.data.is_group == true && (resource.data.members != null && request.auth.uid in resource.data.members))
+        existing().sender_id == request.auth.uid ||
+        existing().receiver_id == request.auth.uid ||
+        (existing().get('is_group', false) == true && existing().get('members', []) is list && request.auth.uid in existing().members)
       );
-      allow create: if isSignedIn() && request.resource.data.sender_id == request.auth.uid;
-      allow update: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid
-      );
-      allow delete: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid
-      );
+      allow create: if isSignedIn() &&
+        isValidId(messageId) &&
+        incoming().sender_id == request.auth.uid &&
+        incoming().receiver_id is string &&
+        incoming().receiver_id.size() > 0 &&
+        incoming().receiver_id.size() <= 128 &&
+        (!('content' in incoming()) || incoming().content == null || (incoming().content is string && incoming().content.size() <= 10000)) &&
+        (!('text' in incoming()) || incoming().text == null || (incoming().text is string && incoming().text.size() <= 10000));
+      allow update: if isSignedIn() &&
+        isValidId(messageId) &&
+        (
+          (
+            existing().sender_id == request.auth.uid &&
+            incoming().sender_id == existing().sender_id &&
+            incoming().receiver_id == existing().receiver_id
+          ) ||
+          (
+            existing().receiver_id == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['is_read', 'deleted_for'])
+          )
+        );
+      allow delete: if isSignedIn() && isValidId(messageId) && existing().sender_id == request.auth.uid;
     }
-    
+
     match /notifications/{notificationId} {
-      allow read: if isSignedIn() && resource.data.user_id == request.auth.uid;
-      allow update, delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
-      allow create: if isSignedIn();
+      allow read: if isSignedIn() && existing().user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(notificationId) &&
+        incoming().sender_id == request.auth.uid &&
+        incoming().user_id is string &&
+        incoming().user_id.size() > 0 &&
+        incoming().user_id.size() <= 128 &&
+        incoming().is_read == false &&
+        incoming().type in ['like', 'comment', 'friend_request', 'friend_accept', 'message', 'live_proposal', 'mention'] &&
+        (!('content' in incoming()) || incoming().content == null || (incoming().content is string && incoming().content.size() <= 1000));
+      allow update: if isSignedIn() &&
+        isValidId(notificationId) &&
+        existing().user_id == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['is_read']) &&
+        incoming().is_read is bool;
+      allow delete: if isSignedIn() && isValidId(notificationId) && existing().user_id == request.auth.uid;
     }
-    
+
     match /friendships/{friendshipId} {
       allow read: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid
+        existing().sender_id == request.auth.uid ||
+        existing().receiver_id == request.auth.uid
       );
-      allow create: if isSignedIn() && request.resource.data.sender_id == request.auth.uid;
-      allow update: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid
-      );
-      allow delete: if isSignedIn() && (
-        resource.data.sender_id == request.auth.uid || 
-        resource.data.receiver_id == request.auth.uid
-      );
+      allow create: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        incoming().sender_id == request.auth.uid &&
+        incoming().receiver_id is string &&
+        incoming().receiver_id.size() > 0 &&
+        incoming().receiver_id.size() <= 128 &&
+        incoming().receiver_id != request.auth.uid &&
+        incoming().status in ['pending', 'blocked'];
+      allow update: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        (
+          (
+            existing().receiver_id == request.auth.uid &&
+            existing().status == 'pending' &&
+            incoming().status == 'accepted' &&
+            incoming().sender_id == existing().sender_id &&
+            incoming().receiver_id == existing().receiver_id
+          ) ||
+          (
+            (existing().sender_id == request.auth.uid || existing().receiver_id == request.auth.uid) &&
+            incoming().status == 'blocked' &&
+            incoming().sender_id == request.auth.uid
+          )
+        );
+      allow delete: if isSignedIn() &&
+        isValidId(friendshipId) &&
+        (existing().sender_id == request.auth.uid || existing().receiver_id == request.auth.uid);
     }
-    
+
     match /reels/{reelId} {
       allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow update: if isSignedIn() && (
-        resource.data.user_id == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views', 'likesCount', 'like_count', 'comment_count', 'commentsCount'])
-      );
-      allow delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(reelId) &&
+        isValidPostPayload(incoming()) &&
+        incoming().user_id == request.auth.uid;
+      allow update: if isSignedIn() &&
+        isValidId(reelId) &&
+        (
+          (isValidPostPayload(incoming()) && existing().user_id == request.auth.uid && incoming().user_id == existing().user_id) ||
+          isValidCounterUpdate()
+        );
+      allow delete: if isSignedIn() && isValidId(reelId) && existing().user_id == request.auth.uid;
     }
-    
+
     match /stories/{storyId} {
       allow read: if true;
-      allow create: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow update, delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() &&
+        isValidId(storyId) &&
+        incoming().user_id == request.auth.uid &&
+        (!('media_url' in incoming()) || (incoming().media_url is string && incoming().media_url.size() <= 2048));
+      allow update: if isSignedIn() &&
+        isValidId(storyId) &&
+        existing().user_id == request.auth.uid &&
+        incoming().user_id == existing().user_id;
+      allow delete: if isSignedIn() && isValidId(storyId) && existing().user_id == request.auth.uid;
     }
 
     match /story_views/{viewId} {
       allow read: if isSignedIn();
-      allow create, update: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(viewId) && incoming().user_id == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(viewId) && existing().user_id == request.auth.uid && incoming().user_id == existing().user_id;
+      allow delete: if isSignedIn() && isValidId(viewId) && existing().user_id == request.auth.uid;
     }
 
     match /typing_status/{statusId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && (
-        request.resource.data.sender_id == request.auth.uid ||
-        statusId.matches('^' + request.auth.uid + '_.*')
-      );
+      allow create, update: if isSignedIn() &&
+        isValidId(statusId) &&
+        (
+          incoming().get('sender_id', '') == request.auth.uid ||
+          statusId.matches('^' + request.auth.uid + '_.*')
+        );
+      allow delete: if isSignedIn() &&
+        isValidId(statusId) &&
+        (
+          existing().get('sender_id', '') == request.auth.uid ||
+          statusId.matches('^' + request.auth.uid + '_.*')
+        );
     }
 
     match /deleted_posts/{postId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && request.resource.data.user_id == request.auth.uid;
-    }
-
-    match /{document=**} {
-      allow read, write: if false; 
+      allow create: if isSignedIn() && isValidId(postId) && incoming().user_id == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(postId) && existing().user_id == request.auth.uid && incoming().user_id == existing().user_id;
+      allow delete: if isSignedIn() && isValidId(postId) && existing().user_id == request.auth.uid;
     }
   }
 }

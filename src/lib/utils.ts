@@ -238,13 +238,20 @@ export function normalizeAppRoute(rawUrl?: string | null): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) return '/';
 
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('vbscript:') || trimmed.includes('\\')) {
+    return '/';
+  }
+
   try {
     if (trimmed.startsWith('/')) {
+      if (trimmed.startsWith('//')) return '/';
       const parsed = new URL(trimmed, 'https://next-nexto.vercel.app');
       parsed.searchParams.delete('fallback');
       parsed.searchParams.delete('_bust');
       const qs = parsed.searchParams.toString();
-      return `${parsed.pathname}${qs ? `?${qs}` : ''}${parsed.hash || ''}` || '/';
+      const safePath = parsed.pathname.startsWith('//') ? '/' : parsed.pathname;
+      return `${safePath}${qs ? `?${qs}` : ''}${parsed.hash || ''}` || '/';
     }
 
     // Handle https://, http://, or custom scheme like next://messages?user=123 or app://post/456
@@ -252,15 +259,18 @@ export function normalizeAppRoute(rawUrl?: string | null): string {
     const isCustomScheme = parsed.protocol !== 'http:' && parsed.protocol !== 'https:';
     let pathname = parsed.pathname || '/';
     if (isCustomScheme && parsed.host) {
-      // Custom scheme e.g. next://messages?user=123 -> host is "messages", pathname is "" or "/123"
       pathname = `/${parsed.host}${pathname === '/' ? '' : pathname}`;
+    }
+    if (!pathname.startsWith('/') || pathname.startsWith('//')) {
+      pathname = '/';
     }
     parsed.searchParams.delete('fallback');
     parsed.searchParams.delete('_bust');
     const qs = parsed.searchParams.toString();
     return `${pathname}${qs ? `?${qs}` : ''}${parsed.hash || ''}` || '/';
   } catch {
-    return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    const safe = trimmed.startsWith('/') && !trimmed.startsWith('//') ? trimmed : '/';
+    return safe;
   }
 }
 

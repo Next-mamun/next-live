@@ -4,7 +4,7 @@ import { supabase } from './supabase';
 import { localDB, saveLocalConversation } from './dexie';
 
 const DB_SWITCH_KEY = 'next_media_db_fallback';
-const DB_SWITCH_EXPIRY = 24 * 60 * 60 * 1000; // 24 hours
+const DB_SWITCH_EXPIRY = 2 * 60 * 1000; // 2 minutes temporary fallback only
 
 export const getActiveDB = (): 'firebase' | 'supabase' => {
   try {
@@ -21,6 +21,12 @@ export const getActiveDB = (): 'firebase' | 'supabase' => {
     // Ignore parse errors
   }
   return 'firebase';
+};
+
+export const clearDBFallback = () => {
+  try {
+    localStorage.removeItem(DB_SWITCH_KEY);
+  } catch {}
 };
 
 export const switchDB = (from: 'firebase' | 'supabase') => {
@@ -45,44 +51,39 @@ export const dualWritePost = async (postData: any) => {
   try {
     postRef = await addDoc(collection(db, 'posts'), postData);
   } catch (err) {
-    console.error("Firebase write failed, switching DB:", err);
-    switchDB('firebase');
+    console.error("Firebase write failed:", err);
   }
-  
-  // 2. Write to Supabase (Backup)
+
+  // 2. Write to Supabase (Backup with schema-safe fields)
   try {
-    const supabaseData = { ...postData };
-    if (supabaseData.created_at && typeof supabaseData.created_at !== 'string' && supabaseData.created_at.toDate) {
-       supabaseData.created_at = supabaseData.created_at.toDate().toISOString();
-    } else if (!supabaseData.created_at || supabaseData.created_at?.isEqual) {
-       supabaseData.created_at = new Date().toISOString();
+    let createdIso = new Date().toISOString();
+    if (postData.created_at && typeof postData.created_at === 'string') {
+      createdIso = postData.created_at;
+    } else if (postData.created_at?.toDate) {
+      try { createdIso = postData.created_at.toDate().toISOString(); } catch {}
     }
 
-    if (!supabaseData.user_id && supabaseData.userId) {
-      supabaseData.user_id = supabaseData.userId;
-    }
-    
-    const payload: any = {
-      ...supabaseData
+    const userId = postData.user_id || postData.userId;
+    const basePayload: Record<string, any> = {
+      id: postRef?.id || crypto.randomUUID(),
+      user_id: userId,
+      content: postData.content || '',
+      media_url: postData.media_url || postData.image_url || postData.video_url || null,
+      media_type: postData.media_type || 'text',
+      created_at: createdIso,
     };
 
-    if (postRef?.id) {
-      payload.id = postRef.id;
-    } else {
-      payload.id = crypto.randomUUID();
-    }
+    const fullPayload = postData.category
+      ? { ...basePayload, category: postData.category }
+      : basePayload;
 
-    delete payload.views;
-    delete payload.source_type;
-    delete payload.youtube_id;
-    delete payload.firebase_id;
-
-    const { error } = await supabase.from('posts').insert(payload);
-    if (error) {
-      console.warn('Supabase dual-write error (posts):', error.message || error);
-      if (!postRef) throw error; // If Firebase also failed, throw the error
-    } else {
-      console.log('Successfully written to Supabase posts!');
+    const { error } = await supabase.from('posts').insert(fullPayload);
+    if (error && postData.category && (error.message || '').toLowerCase().includes('category')) {
+      const { error: retryErr } = await supabase.from('posts').insert(basePayload);
+      if (retryErr && !postRef) throw retryErr;
+    } else if (error) {
+      console.warn('Supabase dual-write warning (posts):', error.message || error);
+      if (!postRef) throw error;
     }
   } catch (error) {
     console.error('Supabase dual-write catch (posts):', error);

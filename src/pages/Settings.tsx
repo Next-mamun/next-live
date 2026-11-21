@@ -249,31 +249,39 @@ const Settings: React.FC = () => {
   const [savedAccounts, setSavedAccounts] = useState<any[]>(() => {
     try {
       const saved = localStorage.getItem('next_saved_accounts');
-      return saved ? JSON.parse(saved) : [];
+      const parsed = saved ? JSON.parse(saved) : [];
+      if (!Array.isArray(parsed)) return [];
+      const scrubbed = parsed.map(({ password: _pwd, ...rest }: any) => rest);
+      if (parsed.some((a: any) => a && 'password' in a)) {
+        localStorage.setItem('next_saved_accounts', JSON.stringify(scrubbed));
+      }
+      return scrubbed;
     } catch {
       return [];
     }
   });
 
   const [isSwitching, setIsSwitching] = useState(false);
+  const [switchTargetAccount, setSwitchTargetAccount] = useState<any | null>(null);
+  const [switchAccountPassword, setSwitchAccountPassword] = useState('');
+  const [switchAccountError, setSwitchAccountError] = useState('');
   const [showAddAccountModal, setShowAddAccountModal] = useState(false);
   const [addAccountUsername, setAddAccountUsername] = useState('');
   const [addAccountPassword, setAddAccountPassword] = useState('');
   const [addAccountError, setAddAccountError] = useState('');
   const [addAccountLoading, setAddAccountLoading] = useState(false);
 
-  // Auto-save current user on load if not present
+  // Auto-save current user metadata (never password) on load if not present
   useEffect(() => {
     if (currentUser && profile) {
       const exists = savedAccounts.some((a: any) => a.id === currentUser.id);
-      if (!exists && profile.password) {
+      if (!exists) {
         const currAny = currentUser as any;
         const newAcc = {
           id: currentUser.id,
           username: profile.username || currAny.username,
           display_name: profile.display_name || currAny.display_name,
           email: profile.email || currAny.email || `${profile.username || currAny.username}@nextmedia.app`,
-          password: profile.password,
           avatar_url: profile.avatar_url || currAny.avatar_url || ''
         };
         const updated = [...savedAccounts, newAcc];
@@ -283,50 +291,56 @@ const Settings: React.FC = () => {
     }
   }, [currentUser, profile, savedAccounts]);
 
-  const handleSwitchAccount = async (targetAccount: any) => {
-    if (!targetAccount.email || !targetAccount.password) {
-      toast.error('Cannot switch: missing credentials. Please log in again.');
+  const handleSwitchAccount = (targetAccount: any) => {
+    if (!targetAccount?.email) {
+      toast.error('Cannot switch: missing account email. Please log in again.');
       return;
     }
-    
+    setSwitchAccountError('');
+    setSwitchAccountPassword('');
+    setSwitchTargetAccount(targetAccount);
+  };
+
+  const confirmSwitchAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!switchTargetAccount?.email || !switchAccountPassword) {
+      setSwitchAccountError('Please enter your password.');
+      return;
+    }
+
     setIsSwitching(true);
-    const toastId = toast.loading(`Switching to @${targetAccount.username}...`);
-    
+    setSwitchAccountError('');
+    const toastId = toast.loading(`Switching to @${switchTargetAccount.username}...`);
+
     try {
-      // 1. Clear current user profile and auth
       await signOut(auth);
-      
-      // 2. Sign in to target
-      const result = await signInWithEmailAndPassword(auth, targetAccount.email, targetAccount.password);
-      
-      // 3. Clear react-query cache completely to delete all old data cache
+      const result = await signInWithEmailAndPassword(auth, switchTargetAccount.email, switchAccountPassword);
+
       queryClient.clear();
       try {
         const idb = await import('idb-keyval');
         await idb.clear();
-      } catch (e) {
-        console.error(e);
+      } catch (err) {
+        console.error(err);
       }
-      
-      // 4. Update state and localStorage
+
       const userDoc = await getDoc(doc(db, 'profiles', result.user.uid));
       if (userDoc.exists()) {
-        const profileData = userDoc.data();
+        const { password: _removedPwd, ...profileData } = userDoc.data() as any;
         const freshUser = { id: userDoc.id, ...profileData };
-        
-        // Ensure accurate state
+
         const updatedAccounts = savedAccounts.map((acc: any) => {
-          if (acc.id === targetAccount.id) {
+          const { password: _p, ...cleanAcc } = acc;
+          if (cleanAcc.id === switchTargetAccount.id) {
             return {
-              ...acc,
+              ...cleanAcc,
               display_name: profileData.display_name,
-              avatar_url: profileData.avatar_url || acc.avatar_url
+              avatar_url: profileData.avatar_url || cleanAcc.avatar_url
             };
           }
-          return acc;
+          return cleanAcc;
         });
 
-        // Preserve system settings
         const savedTheme = localStorage.getItem('next_media_theme');
         const savedDesktop = localStorage.getItem('next_media_desktop');
         const savedNexto = localStorage.getItem('next_media_nexto');
@@ -334,11 +348,9 @@ const Settings: React.FC = () => {
         const savedAutoLoginReinstall = localStorage.getItem('next_auto_login_reinstall');
         const savedPwaInstalled = localStorage.getItem('next_pwa_installed');
 
-        // Wipe local storage clean
         localStorage.clear();
         sessionStorage.clear();
 
-        // Restore preserved keys
         localStorage.setItem('next_saved_accounts', JSON.stringify(updatedAccounts));
         if (savedTheme) localStorage.setItem('next_media_theme', savedTheme);
         if (savedDesktop) localStorage.setItem('next_media_desktop', savedDesktop);
@@ -346,18 +358,21 @@ const Settings: React.FC = () => {
         if (savedKeyboard) localStorage.setItem('saved_keyboard_height', savedKeyboard);
         if (savedAutoLoginReinstall !== null) localStorage.setItem('next_auto_login_reinstall', savedAutoLoginReinstall);
         if (savedPwaInstalled !== null) localStorage.setItem('next_pwa_installed', savedPwaInstalled);
-        
+
         localStorage.setItem('next_media_user', JSON.stringify(freshUser));
         setCurrentUser(freshUser as any);
       }
-      
-      toast.success(`Switched to @${targetAccount.username}!`, { id: toastId });
+
+      setSwitchTargetAccount(null);
+      setSwitchAccountPassword('');
+      toast.success(`Switched to @${switchTargetAccount.username}!`, { id: toastId });
       setTimeout(() => {
         window.location.href = '/';
-      }, 500);
+      }, 400);
     } catch (err: any) {
       console.error(err);
-      toast.error(`Switch failed: ${err.message}`, { id: toastId });
+      toast.dismiss(toastId);
+      setSwitchAccountError('Incorrect password or verification failed.');
     } finally {
       setIsSwitching(false);
     }
@@ -375,47 +390,50 @@ const Settings: React.FC = () => {
     }
 
     try {
-      const q = query(collection(db, 'profiles'), where('username', '==', addAccountUsername.toLowerCase()));
-      const querySnapshot = await getDocs(q);
-      
-      let profileDoc = null;
-      let profileData = null;
+      const cleanInput = addAccountUsername.trim().toLowerCase();
+      let profileDoc: any = null;
+      let profileData: any = null;
 
-      if (!querySnapshot.empty) {
-        profileDoc = querySnapshot.docs[0];
-        profileData = profileDoc.data();
-      } else {
-        const qEmail = query(collection(db, 'profiles'), where('email', '==', addAccountUsername.toLowerCase()));
+      if (cleanInput.includes('@')) {
+        const qEmail = query(collection(db, 'profiles'), where('email', '==', cleanInput));
         const snapEmail = await getDocs(qEmail);
         if (!snapEmail.empty) {
           profileDoc = snapEmail.docs[0];
           profileData = profileDoc.data();
         }
+      } else {
+        const q = query(collection(db, 'profiles'), where('username', '==', cleanInput));
+        const querySnapshot = await getDocs(q);
+        if (!querySnapshot.empty) {
+          profileDoc = querySnapshot.docs[0];
+          profileData = profileDoc.data();
+        }
       }
 
-      if (!profileDoc || !profileData) {
-        setAddAccountError('User not found.');
-        setAddAccountLoading(false);
-        return;
+      const targetEmail = profileData?.email || (cleanInput.includes('@') ? cleanInput : `${cleanInput}@nextmedia.app`);
+
+      await signOut(auth);
+      const result = await signInWithEmailAndPassword(auth, targetEmail, addAccountPassword);
+
+      if (!profileData) {
+        const fetchedDoc = await getDoc(doc(db, 'profiles', result.user.uid));
+        if (fetchedDoc.exists()) {
+          profileDoc = fetchedDoc;
+          profileData = fetchedDoc.data();
+        }
       }
 
-      if (profileData.password !== addAccountPassword) {
-        setAddAccountError('Invalid password.');
-        setAddAccountLoading(false);
-        return;
-      }
-
-      const targetEmail = profileData.email || `${profileData.username}@nextmedia.app`;
+      const { password: _removedPwd, ...cleanProfile } = profileData || {};
+      const resolvedUsername = cleanProfile.username || cleanInput.split('@')[0];
       const newAcc = {
-        id: profileDoc.id,
-        username: profileData.username,
-        display_name: profileData.display_name,
+        id: profileDoc?.id || result.user.uid,
+        username: resolvedUsername,
+        display_name: cleanProfile.display_name || resolvedUsername,
         email: targetEmail,
-        password: addAccountPassword,
-        avatar_url: profileData.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${profileData.username}`
+        avatar_url: cleanProfile.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${resolvedUsername}`
       };
 
-      const updatedList = [...savedAccounts];
+      const updatedList = savedAccounts.map(({ password: _p, ...rest }: any) => rest);
       const idx = updatedList.findIndex((a: any) => a.id === newAcc.id);
       if (idx > -1) {
         updatedList[idx] = { ...updatedList[idx], ...newAcc };
@@ -425,20 +443,16 @@ const Settings: React.FC = () => {
       setSavedAccounts(updatedList);
       localStorage.setItem('next_saved_accounts', JSON.stringify(updatedList));
 
-      await signOut(auth);
-      const result = await signInWithEmailAndPassword(auth, targetEmail, addAccountPassword);
-      
       queryClient.clear();
       try {
         const idb = await import('idb-keyval');
         await idb.clear();
-      } catch (e) {
-        console.error(e);
+      } catch (err) {
+        console.error(err);
       }
-      
-      const freshUser = { id: profileDoc.id, ...profileData };
 
-      // Preserve system settings
+      const freshUser = { id: newAcc.id, ...cleanProfile };
+
       const savedTheme = localStorage.getItem('next_media_theme');
       const savedDesktop = localStorage.getItem('next_media_desktop');
       const savedNexto = localStorage.getItem('next_media_nexto');
@@ -446,11 +460,9 @@ const Settings: React.FC = () => {
       const savedAutoLoginReinstall = localStorage.getItem('next_auto_login_reinstall');
       const savedPwaInstalled = localStorage.getItem('next_pwa_installed');
 
-      // Wipe local storage clean
       localStorage.clear();
       sessionStorage.clear();
 
-      // Restore preserved keys
       localStorage.setItem('next_saved_accounts', JSON.stringify(updatedList));
       if (savedTheme) localStorage.setItem('next_media_theme', savedTheme);
       if (savedDesktop) localStorage.setItem('next_media_desktop', savedDesktop);
@@ -458,21 +470,21 @@ const Settings: React.FC = () => {
       if (savedKeyboard) localStorage.setItem('saved_keyboard_height', savedKeyboard);
       if (savedAutoLoginReinstall !== null) localStorage.setItem('next_auto_login_reinstall', savedAutoLoginReinstall);
       if (savedPwaInstalled !== null) localStorage.setItem('next_pwa_installed', savedPwaInstalled);
-      
+
       localStorage.setItem('next_media_user', JSON.stringify(freshUser));
       setCurrentUser(freshUser as any);
 
-      toast.success(`Account @${profileData.username} added and activated!`);
+      toast.success(`Account @${resolvedUsername} added and activated!`);
       setShowAddAccountModal(false);
       setAddAccountUsername('');
       setAddAccountPassword('');
 
       setTimeout(() => {
         window.location.href = '/';
-      }, 500);
+      }, 400);
     } catch (err: any) {
       console.error(err);
-      setAddAccountError(err.message || 'Verification or sign-in failed.');
+      setAddAccountError('Invalid username/email or password.');
     } finally {
       setAddAccountLoading(false);
     }
@@ -1091,6 +1103,56 @@ const Settings: React.FC = () => {
                     >
                       {addAccountLoading && <RefreshCw size={16} className="animate-spin" />}
                       {addAccountLoading ? 'Verifying...' : 'Add & Switch'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {switchTargetAccount && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[999] p-4 animate-in fade-in duration-200" onClick={() => !isSwitching && setSwitchTargetAccount(null)}>
+              <div className="bg-white dark:bg-gray-900 rounded-3xl p-6 w-full max-w-md shadow-2xl border border-gray-150 dark:border-gray-800 animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
+                <div className="flex justify-between items-center mb-5">
+                  <h3 className="text-xl font-black text-gray-900 dark:text-white">Confirm Password</h3>
+                  <button onClick={() => !isSwitching && setSwitchTargetAccount(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors">
+                    <Minimize2 size={20} />
+                  </button>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4 font-medium">
+                  Enter the password for <span className="font-bold text-gray-900 dark:text-white">@{switchTargetAccount.username}</span> to switch accounts securely.
+                </p>
+                <form onSubmit={confirmSwitchAccount} className="flex flex-col gap-4">
+                  <div className="relative">
+                    <Lock size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="password"
+                      value={switchAccountPassword}
+                      onChange={(e) => setSwitchAccountPassword(e.target.value)}
+                      placeholder="Enter account password"
+                      autoFocus
+                      className="w-full p-3 pl-10 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-sm outline-none focus:border-[#1877F2] dark:text-white transition-all font-bold"
+                    />
+                  </div>
+                  {switchAccountError && (
+                    <p className="text-xs text-red-500 font-bold bg-red-500/10 p-3 rounded-lg border border-red-500/20">{switchAccountError}</p>
+                  )}
+                  <div className="flex gap-3 mt-2">
+                    <button
+                      type="button"
+                      disabled={isSwitching}
+                      onClick={() => setSwitchTargetAccount(null)}
+                      className="flex-1 py-3 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-sm hover:bg-gray-200 transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSwitching}
+                      className="flex-1 py-3 bg-[#1877F2] text-white font-bold rounded-xl text-sm hover:bg-blue-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      {isSwitching && <RefreshCw size={16} className="animate-spin" />}
+                      {isSwitching ? 'Switching...' : 'Switch Account'}
                     </button>
                   </div>
                 </form>

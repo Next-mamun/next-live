@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { UserMinus, MessageSquare, Check, X, UserPlus, Search, Ban } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db } from '../lib/firebase';
@@ -21,19 +21,73 @@ import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { redis } from '@/lib/redis';
 import { triggerNotification } from '@/services/notificationService';
-import { localDB, getBase64Image, LocalFriend } from '@/lib/dexie';
+import { localDB, LocalFriend } from '@/lib/dexie';
 
 const Friends: React.FC = () => {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeTab, setActiveTab] = useState<'friends' | 'requests' | 'discover' | 'blocked'>('discover');
+  const [dexieSeedData, setDexieSeedData] = useState<{ requests: any[]; friends: any[]; discovery: any[]; blockedUsers: any[] } | undefined>(undefined);
 
   const [localPendingRequests, setLocalPendingRequests] = useState<Record<string, boolean>>({});
   const [localCancelledRequests, setLocalCancelledRequests] = useState<Record<string, boolean>>({});
   const [localAcceptedRequests, setLocalAcceptedRequests] = useState<Record<string, boolean>>({});
   const [localDeletedRequests, setLocalDeletedRequests] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      setDebouncedSearch('');
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedSearch(trimmed);
+    }, 220);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Instant (<10ms) Dexie hydration so Friends page never flashes empty skeleton when cached
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [cachedFriends, cachedUsers] = await Promise.all([
+          localDB.friends.toArray(),
+          localDB.users.limit(60).toArray()
+        ]);
+        if (cancelled || (cachedFriends.length === 0 && cachedUsers.length === 0)) return;
+
+        const frsFallback = cachedFriends
+          .filter(f => f.status === 'accepted')
+          .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
+        const reqsFallback = cachedFriends
+          .filter(f => f.status === 'pending' && !f.is_pending)
+          .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
+        const blksFallback = cachedFriends
+          .filter(f => f.status === 'blocked')
+          .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
+        const relatedSet = new Set([currentUser.id, ...cachedFriends.map(f => f.id)]);
+        const pendingSent = cachedFriends
+          .filter(f => f.status === 'pending' && f.is_pending)
+          .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar, is_pending: true }));
+        const discFallback = [
+          ...pendingSent,
+          ...cachedUsers
+            .filter((u: any) => u.id && !u.is_group && !String(u.id).startsWith('group_') && !relatedSet.has(u.id))
+            .map((u: any) => ({ id: u.id, display_name: u.display_name || u.name, username: u.username, avatar_url: u.avatar_url || u.avatar, is_verified: u.is_verified }))
+        ];
+
+        if (!cancelled) {
+          setDexieSeedData({ requests: reqsFallback, friends: frsFallback, blockedUsers: blksFallback, discovery: discFallback });
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -76,72 +130,35 @@ const Friends: React.FC = () => {
   }, [currentUser?.id, queryClient]);
 
   const { data: friendsData, isLoading: loading } = useQuery({
-    queryKey: ['friends', currentUser?.id, searchQuery],
+    queryKey: ['friends', currentUser?.id],
     queryFn: async () => {
-      if (!currentUser?.id) return { requests: [], friends: [], discovery: [], blockedUsers: [] };
+      if (!currentUser?.id) return { requests: [], friends: [], discovery: [], blockedUsers: [], relatedIds: [currentUser?.id].filter(Boolean) };
 
-      const cacheKey = `friends_cache_${currentUser.id}_${searchQuery.trim()}`;
+      const cacheKey = `friends_cache_${currentUser.id}`;
 
-      // 1. Fetch friendships smart (Supabase primary + automatic Firestore fallback on 22P02 UUID mismatch)
-      const { rows: allRel, error: relErr } = await fetchUserFriendshipsSmart(currentUser.id);
-      if (relErr) {
-        console.warn('Friendships query error:', relErr.message || relErr);
-      }
-
-      // 2. Fetch profiles 100% from Supabase
-      let profQuery = supabase
-        .from('profiles')
-        .select('*')
-        .neq('id', currentUser.id)
-        .order('created_at', { ascending: false })
-        .limit(150);
-
-      if (searchQuery.trim()) {
-        const sq = searchQuery.trim();
-        profQuery = supabase
+      // Fetch friendships & lightweight discover profiles in parallel (never select('*') or 150 rows sequentially)
+      const [relRes, profRes] = await Promise.all([
+        fetchUserFriendshipsSmart(currentUser.id),
+        supabase
           .from('profiles')
-          .select('*')
+          .select('id,display_name,username,avatar_url,is_verified,is_group,created_at')
           .neq('id', currentUser.id)
-          .or(`display_name.ilike.%${sq}%,username.ilike.%${sq}%`)
-          .limit(100);
+          .order('created_at', { ascending: false })
+          .limit(60)
+      ]);
+
+      const { rows: allRel, error: relErr } = relRes;
+      const { data: profData, error: profErr } = profRes;
+
+      if (relErr) console.warn('Friendships query error:', relErr.message || relErr);
+      if (profErr) console.warn('Supabase profiles query error:', profErr.message);
+
+      if (relErr && profErr && dexieSeedData) {
+        return dexieSeedData;
       }
 
-      const { data: profData, error: profErr } = await profQuery;
-      if (profErr) {
-        console.warn('Supabase profiles query error:', profErr.message);
-      }
-
-      // Offline/error fallback from Dexie cache so Friends never appears empty on transient network errors
-      if (relErr && profErr) {
-        try {
-          const cachedFriends = await localDB.friends.toArray();
-          const cachedUsers = await localDB.users.toArray();
-          const frsFallback = cachedFriends
-            .filter(f => f.status === 'accepted')
-            .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
-          const reqsFallback = cachedFriends
-            .filter(f => f.status === 'pending' && !f.is_pending)
-            .map(f => ({ id: f.id, friendship_id: f.friendship_id, display_name: f.name, username: f.username, avatar_url: f.avatar }));
-          const relatedSet = new Set([currentUser.id, ...cachedFriends.map(f => f.id)]);
-          const discFallback = cachedUsers
-            .filter(u => u.id && !relatedSet.has(u.id))
-            .map(u => ({ id: u.id, display_name: u.display_name || u.name, username: u.username, avatar_url: u.avatar_url || u.avatar, is_verified: u.is_verified }));
-          return { requests: reqsFallback, friends: frsFallback, blockedUsers: [], discovery: discFallback };
-        } catch {}
-      }
-
-      const allProfTemp = (profData || [])
+      const allProf = (profData || [])
         .filter((p: any) => !p.is_group && !String(p.id).startsWith('group_'));
-
-      allProfTemp.forEach((p: any) => cacheUserInDexie(p));
-
-      let allProf = allProfTemp;
-      if (searchQuery.trim()) {
-        const sq = searchQuery.toLowerCase();
-        allProf = allProfTemp.filter((p: any) =>
-          p.display_name?.toLowerCase().includes(sq) || p.username?.toLowerCase().includes(sq)
-        );
-      }
 
       const profMap = new Map(allProf.map((p: any) => [p.id, p]));
 
@@ -169,7 +186,7 @@ const Friends: React.FC = () => {
 
         relatedIds.add(otherId);
 
-        const localFriend: LocalFriend = {
+        dexieUpdates.push({
           id: otherProf.id,
           friendship_id: rel.id,
           name: otherProf.display_name || '',
@@ -177,8 +194,7 @@ const Friends: React.FC = () => {
           avatar: otherProf.avatar_url || '',
           status: rel.status,
           is_pending: rel.status === 'pending' && rel.sender_id === currentUser.id
-        };
-        dexieUpdates.push(localFriend);
+        });
 
         if (rel.status === 'accepted') {
           frs.push({ ...otherProf, friendship_id: rel.id });
@@ -201,88 +217,132 @@ const Friends: React.FC = () => {
         }
       });
 
-      const filterList = (list: any[]) => {
-        if (!searchQuery.trim()) return list;
-        const q = searchQuery.toLowerCase();
-        return list.filter(p => {
-          const target = p.profiles || p;
-          const name = (target.display_name || '').toLowerCase();
-          const user = (target.username || '').toLowerCase();
-          return name.includes(q) || user.includes(q);
-        });
-      };
-
       const uniqueById = (list: any[]) => {
         const map = new Map();
         list.forEach(item => {
-          const id = item.id;
-          if (!map.has(id)) map.set(id, item);
+          if (!map.has(item.id)) map.set(item.id, item);
         });
         return Array.from(map.values());
       };
 
       const result = {
-        requests: uniqueById(filterList(reqs)),
-        friends: uniqueById(filterList(frs)),
-        blockedUsers: uniqueById(filterList(blks)),
-        discovery: uniqueById(filterList(disc))
+        requests: uniqueById(reqs),
+        friends: uniqueById(frs),
+        blockedUsers: uniqueById(blks),
+        discovery: uniqueById(disc),
+        relatedIds: Array.from(relatedIds)
       };
 
-      if (!relErr && !searchQuery.trim()) {
+      // Persist Dexie & Redis strictly in background so UI paints in 0ms without blocking on avatar conversions
+      setTimeout(() => {
         try {
-          if (dexieUpdates.length === 0) {
-            await localDB.friends.clear();
-          } else {
-            for (const f of dexieUpdates) {
-              if (f.avatar && !f.avatar.startsWith('data:image')) {
-                f.avatar = await getBase64Image(f.avatar);
-              }
-            }
-            await localDB.friends.clear();
-            await localDB.friends.bulkPut(dexieUpdates);
+          allProf.slice(0, 40).forEach((p: any) => cacheUserInDexie(p));
+          if (!relErr) {
+            localDB.friends.clear()
+              .then(() => {
+                if (dexieUpdates.length > 0) {
+                  return localDB.friends.bulkPut(dexieUpdates).then(() => undefined);
+                }
+                return undefined;
+              })
+              .catch(() => {});
           }
-        } catch (err) {
-          console.error('Dexie save error:', err);
-        }
-      }
-
-      try {
-        await redis.setex(cacheKey, 10, JSON.stringify(result));
-      } catch (e) {
-        console.warn('Redis write failed for friends cache', e);
-      }
+          redis.setex(cacheKey, 60, JSON.stringify(result)).catch(() => {});
+        } catch (_) {}
+      }, 40);
 
       return result;
     },
-    staleTime: 10 * 1000,
+    placeholderData: dexieSeedData,
+    staleTime: 60 * 1000,
     gcTime: Infinity,
   });
 
-  const { requests = [], friends = [], discovery = [], blockedUsers = [] } = friendsData || {};
+  // Lightweight debounced remote search ONLY when user types >= 2 chars (never blocks keystrokes or re-fetches friendships)
+  const { data: remoteSearchResults = [], isFetching: isSearchingRemote } = useQuery({
+    queryKey: ['friends-remote-search', currentUser?.id, debouncedSearch],
+    enabled: Boolean(currentUser?.id && debouncedSearch.length >= 2),
+    queryFn: async () => {
+      if (!currentUser?.id || !debouncedSearch) return [];
+      const sq = debouncedSearch.replace(/[%_,()]/g, '').trim();
+      if (!sq) return [];
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,display_name,username,avatar_url,is_verified,is_group')
+        .neq('id', currentUser.id)
+        .or(`display_name.ilike.%${sq}%,username.ilike.%${sq}%`)
+        .limit(30);
+      if (error) return [];
+      return (data || []).filter((p: any) => !p.is_group && !String(p.id).startsWith('group_'));
+    },
+    staleTime: 30 * 1000,
+  });
 
-  const displayedRequests = requests.filter((r: any) => !localAcceptedRequests[r.friendship_id] && !localDeletedRequests[r.friendship_id]);
+  const baseData = friendsData || dexieSeedData || { requests: [], friends: [], discovery: [], blockedUsers: [] };
+  const { requests = [], friends = [], discovery = [], blockedUsers = [] } = baseData;
 
-  const acceptedFriends = requests
-    .filter((r: any) => localAcceptedRequests[r.friendship_id])
-    .map((r: any) => ({
-      id: r.id,
-      display_name: r.profiles?.display_name || r.display_name,
-      username: r.profiles?.username || r.username,
-      avatar_url: r.profiles?.avatar_url || r.avatar_url,
-      is_verified: r.profiles?.is_verified || r.is_verified,
-      friendship_id: r.friendship_id
-    }));
+  const filterBySearch = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return (list: any[]) => {
+      if (!q) return list;
+      return list.filter((p) => {
+        const target = p.profiles || p;
+        const name = (target.display_name || '').toLowerCase();
+        const user = (target.username || '').toLowerCase();
+        return name.includes(q) || user.includes(q);
+      });
+    };
+  }, [searchQuery]);
 
-  const displayedFriends = [...friends, ...acceptedFriends].filter((f: any) => !localDeletedRequests[f.friendship_id]);
+  const displayedRequests = useMemo(
+    () => filterBySearch(requests.filter((r: any) => !localAcceptedRequests[r.friendship_id] && !localDeletedRequests[r.friendship_id])),
+    [filterBySearch, requests, localAcceptedRequests, localDeletedRequests]
+  );
 
-  const displayedDiscovery = discovery
-    .map((p: any) => {
-      let isPending = p.is_pending;
-      if (localPendingRequests[p.id]) isPending = true;
-      if (localCancelledRequests[p.id]) isPending = false;
-      return { ...p, is_pending: isPending };
-    })
-    .filter((p: any) => !localDeletedRequests[p.friendship_id || p.id]);
+  const acceptedFriends = useMemo(
+    () => requests
+      .filter((r: any) => localAcceptedRequests[r.friendship_id])
+      .map((r: any) => ({
+        id: r.id,
+        display_name: r.profiles?.display_name || r.display_name,
+        username: r.profiles?.username || r.username,
+        avatar_url: r.profiles?.avatar_url || r.avatar_url,
+        is_verified: r.profiles?.is_verified || r.is_verified,
+        friendship_id: r.friendship_id
+      })),
+    [requests, localAcceptedRequests]
+  );
+
+  const displayedFriends = useMemo(
+    () => filterBySearch([...friends, ...acceptedFriends].filter((f: any) => !localDeletedRequests[f.friendship_id])),
+    [filterBySearch, friends, acceptedFriends, localDeletedRequests]
+  );
+
+  const displayedBlocked = useMemo(
+    () => filterBySearch(blockedUsers),
+    [filterBySearch, blockedUsers]
+  );
+
+  const displayedDiscovery = useMemo(() => {
+    const existingIds = new Set<string>([
+      ...friends.map((f: any) => f.id),
+      ...requests.map((r: any) => r.id),
+      ...blockedUsers.map((b: any) => b.id),
+      ...discovery.map((d: any) => d.id),
+    ]);
+
+    const extraRemote = (remoteSearchResults || []).filter((p: any) => p?.id && !existingIds.has(p.id));
+    const combined = extraRemote.length > 0 ? [...discovery, ...extraRemote] : discovery;
+
+    return filterBySearch(combined)
+      .map((p: any) => {
+        let isPending = p.is_pending;
+        if (localPendingRequests[p.id]) isPending = true;
+        if (localCancelledRequests[p.id]) isPending = false;
+        return { ...p, is_pending: isPending };
+      })
+      .filter((p: any) => !localDeletedRequests[p.friendship_id || p.id]);
+  }, [friends, requests, blockedUsers, discovery, remoteSearchResults, filterBySearch, localPendingRequests, localCancelledRequests, localDeletedRequests]);
 
   const handleStatus = async (id: string, status: 'accepted' | 'delete' | 'blocked') => {
     if (status === 'delete') {
@@ -306,8 +366,8 @@ const Friends: React.FC = () => {
       setLocalAcceptedRequests(prev => ({ ...prev, [id]: true }));
     }
 
-    const previousData = queryClient.getQueryData(['friends', currentUser?.id, searchQuery]);
-    queryClient.setQueryData(['friends', currentUser?.id, searchQuery], (old: any) => {
+    const previousData = queryClient.getQueryData(['friends', currentUser?.id]);
+    queryClient.setQueryData(['friends', currentUser?.id], (old: any) => {
       if (!old) return old;
       if (status === 'delete') {
         return {
@@ -376,7 +436,7 @@ const Friends: React.FC = () => {
       } else if (status === 'delete') {
         setLocalDeletedRequests(prev => ({ ...prev, [id]: false }));
       }
-      queryClient.setQueryData(['friends', currentUser?.id, searchQuery], previousData);
+      queryClient.setQueryData(['friends', currentUser?.id], previousData);
     }
   };
 
@@ -386,8 +446,8 @@ const Friends: React.FC = () => {
     setLocalCancelledRequests(prev => ({ ...prev, [targetId]: false }));
 
     const tempId = 'temp-' + Date.now();
-    const previousData = queryClient.getQueryData(['friends', currentUser.id, searchQuery]);
-    queryClient.setQueryData(['friends', currentUser.id, searchQuery], (old: any) => {
+    const previousData = queryClient.getQueryData(['friends', currentUser.id]);
+    queryClient.setQueryData(['friends', currentUser.id], (old: any) => {
       if (!old) return old;
       const targetUser = old.discovery.find((u: any) => u.id === targetId);
       if (!targetUser) return old;
@@ -403,7 +463,7 @@ const Friends: React.FC = () => {
       const inserted = await sendFriendRequestSmart(currentUser.id, targetId);
 
       if (inserted?.id) {
-        queryClient.setQueryData(['friends', currentUser.id, searchQuery], (old: any) => {
+        queryClient.setQueryData(['friends', currentUser.id], (old: any) => {
           if (!old) return old;
           return {
             ...old,
@@ -447,7 +507,7 @@ const Friends: React.FC = () => {
     } catch (err) {
       console.error('Error sending request:', err);
       setLocalPendingRequests(prev => ({ ...prev, [targetId]: false }));
-      queryClient.setQueryData(['friends', currentUser.id, searchQuery], previousData);
+      queryClient.setQueryData(['friends', currentUser.id], previousData);
     }
   };
 
@@ -462,7 +522,7 @@ const Friends: React.FC = () => {
       setLocalCancelledRequests(prev => ({ ...prev, [resolvedTargetId]: true }));
     }
 
-    queryClient.setQueryData(['friends', currentUser?.id, searchQuery], (old: any) => {
+    queryClient.setQueryData(['friends', currentUser?.id], (old: any) => {
       if (!old) return old;
       return {
         ...old,
@@ -540,7 +600,7 @@ const Friends: React.FC = () => {
         </button>
       </div>
 
-      {loading && !friendsData ? (
+      {loading && !friendsData && !dexieSeedData ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[...Array(8)].map((_, i) => (
               <div key={i} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl p-4 flex flex-col items-center text-center animate-pulse">
@@ -578,7 +638,9 @@ const Friends: React.FC = () => {
             {activeTab === 'discover' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
                     {displayedDiscovery.length === 0 ? (
-                        <div className="col-span-full text-center py-20 text-gray-400 font-medium">No new users found. Try searching!</div>
+                        <div className="col-span-full text-center py-20 text-gray-400 font-medium">
+                          {isSearchingRemote ? 'Searching users...' : 'No new users found. Try searching!'}
+                        </div>
                     ) : displayedDiscovery.map((p: any) => (
                     <div key={p.id} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl p-4 flex flex-col items-center text-center transition-all hover:shadow-md relative group">
                         <div onClick={() => navigate(`/profile/${p.username || p.id}`)} className="cursor-pointer">
@@ -634,9 +696,9 @@ const Friends: React.FC = () => {
 
             {activeTab === 'blocked' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 animate-in fade-in duration-300">
-                    {blockedUsers.length === 0 ? (
+                    {displayedBlocked.length === 0 ? (
                         <div className="col-span-full text-center py-20 text-gray-400 font-medium">No blocked users.</div>
-                    ) : blockedUsers.map((f: any) => (
+                    ) : displayedBlocked.map((f: any) => (
                     <div key={f.id} className="bg-white dark:bg-black border border-gray-100 dark:border-gray-800 rounded-2xl p-4 flex items-center justify-between shadow-sm hover:shadow-md transition-all">
                         <div className="flex items-center gap-4 opacity-50">
                         <ProfileAvatar userId={f.id} defaultAvatar={f.avatar_url || undefined} name={f.display_name || f.username || 'User'} className="w-12 h-12 rounded-full border shadow-sm object-cover grayscale" />

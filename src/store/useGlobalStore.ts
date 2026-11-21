@@ -3,9 +3,9 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { idbStorage } from './idbStorage';
 import { db } from '@/lib/firebase';
-import { collection, query, where, onSnapshot, orderBy, limit, getDocs, getDoc, doc, startAfter, or } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, limit, getDocs, getDocsFromServer, getDoc, doc, startAfter, or } from 'firebase/firestore';
 import { toast } from 'sonner';
-import { getActiveDB, switchDB } from '@/lib/dbHelper';
+import { clearDBFallback, getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
 import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
 import { fetchProfileSmart, fetchProfilesBatchSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
@@ -26,6 +26,42 @@ interface Notification {
   [key: string]: any;
 }
 
+export interface PendingLiveProposal {
+  senderId: string;
+  senderName: string;
+  senderAvatar?: string;
+  timestamp: number;
+}
+
+const PENDING_LIVE_PROPOSALS_KEY = 'next_pending_live_proposals';
+const LIVE_PROPOSAL_TTL_MS = 2 * 60 * 1000;
+
+const readStoredLiveProposals = (): Record<string, PendingLiveProposal> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = sessionStorage.getItem(PENDING_LIVE_PROPOSALS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    const cleaned: Record<string, PendingLiveProposal> = {};
+    Object.entries(parsed || {}).forEach(([k, v]: [string, any]) => {
+      if (v && v.senderId && now - Number(v.timestamp || 0) < LIVE_PROPOSAL_TTL_MS) {
+        cleaned[k] = v;
+      }
+    });
+    return cleaned;
+  } catch (_) {
+    return {};
+  }
+};
+
+const writeStoredLiveProposals = (map: Record<string, PendingLiveProposal>) => {
+  if (typeof window === 'undefined') return;
+  try {
+    sessionStorage.setItem(PENDING_LIVE_PROPOSALS_KEY, JSON.stringify(map));
+  } catch (_) {}
+};
+
 interface GlobalState {
   currentUser: any | null;
   feedPosts: Post[];
@@ -41,6 +77,9 @@ interface GlobalState {
   isSupabaseActive: boolean;
   isChatOpen: boolean;
   activeChatId: string | null;
+  pendingLiveProposals: Record<string, PendingLiveProposal>;
+  setPendingLiveProposal: (proposal: PendingLiveProposal) => void;
+  clearPendingLiveProposal: (senderId: string) => void;
   isAuthModalOpen: boolean;
   authModalMessage: string;
   authModalAction: (() => void) | null;
@@ -69,6 +108,7 @@ const INITIAL_FEED_POOL = 25;
 const FEED_PAGE_SIZE = 20;
 let lastFirebaseFeedDoc: any = null;
 let firebaseFeedOrderSupported = true;
+let activeFeedFetchPromise: Promise<void> | null = null;
 
 const countUnreadMessages = (msgs: any[], userId: string): number => {
   return msgs.filter(
@@ -171,6 +211,23 @@ export const useGlobalStore = create<GlobalState>()(
       isSupabaseActive: true,
       isChatOpen: false,
       activeChatId: null,
+      pendingLiveProposals: readStoredLiveProposals(),
+      setPendingLiveProposal: (proposal) => {
+        if (!proposal?.senderId) return;
+        const current = get().pendingLiveProposals || {};
+        const next = { ...current, [proposal.senderId]: proposal };
+        writeStoredLiveProposals(next);
+        set({ pendingLiveProposals: next });
+      },
+      clearPendingLiveProposal: (senderId) => {
+        if (!senderId) return;
+        const current = get().pendingLiveProposals || {};
+        if (!current[senderId]) return;
+        const next = { ...current };
+        delete next[senderId];
+        writeStoredLiveProposals(next);
+        set({ pendingLiveProposals: next });
+      },
       isAuthModalOpen: false,
       authModalMessage: 'Join Next to like, comment and interact',
       authModalAction: null,
@@ -207,262 +264,307 @@ export const useGlobalStore = create<GlobalState>()(
       })),
 
       fetchHomeFeed: async (loadMore = false, forceRefresh = false) => {
-        const { feedPosts } = get();
+        if (!loadMore && !forceRefresh && activeFeedFetchPromise) {
+          return activeFeedFetchPromise;
+        }
 
-        // DELTA SYNC: No more 3-refresh logic. Just fetch smart incrementals if not loadMore.
-        // We will do a regular fetch, but we do NOT clear localDB on start.
-        try {
-          set({ postsLoading: true, postsError: null });
-          const activeDB = getActiveDB();
-          let fetchedDocs: any[] = [];
-          
-          const profileCache = new Map();
-          const getProfile = async (userId: string) => {
-             if (!userId) return null;
-             if (profileCache.has(userId)) return profileCache.get(userId);
-             try {
-               // STRICT ZERO-READ: Use Dexie if present!
-               const localUser = await localDB.users.get(userId);
-               if (localUser && (localUser.display_name || localUser.name)) {
-                  const normalized = {
-                    id: userId,
-                    display_name: localUser.display_name || localUser.name || 'User',
-                    name: localUser.display_name || localUser.name || 'User',
-                    username: localUser.username || userId,
-                    avatar_url: localUser.avatar_url || localUser.avatar || '',
-                    avatar: localUser.avatar_url || localUser.avatar || '',
-                    is_verified: !!localUser.is_verified,
-                    email: localUser.email
-                  };
-                  profileCache.set(userId, normalized);
-                  return normalized;
-               }
-               // Fetch from Firebase ONLY if completely missing
-               const userDoc = await getDoc(doc(db, 'profiles', userId));
-               const data = userDoc.exists() ? userDoc.data() : null;
-               
-               if (data) {
-                 const normalized = {
-                   id: userId,
-                   display_name: data.display_name || data.name || 'User',
-                   name: data.display_name || data.name || 'User',
-                   username: data.username || userId,
-                   avatar_url: data.avatar_url || data.avatar || '',
-                   avatar: data.avatar_url || data.avatar || '',
-                   is_verified: !!data.is_verified,
-                   email: data.email
-                 };
-                 profileCache.set(userId, normalized);
-                 localDB.users.put(normalized as any).catch(() => {});
-                 return normalized;
-               }
-               return null;
-             } catch (e) {
-               console.warn("Profile fetch error for user:", userId, e);
-               return { id: userId, display_name: 'User', name: 'User', avatar_url: '' };
-             }
-          };
+        const runFetch = async () => {
+          const { feedPosts, deletedPostIds } = get();
+          const deletedSet = new Set(deletedPostIds || []);
 
-          const fetchLimit = loadMore ? FEED_PAGE_SIZE : INITIAL_FEED_POOL;
+          try {
+            set({ postsLoading: true, postsError: null });
 
-          const fetchFromFirebase = async () => {
-             if (!loadMore) {
-               lastFirebaseFeedDoc = null;
-               firebaseFeedOrderSupported = true;
-             }
+            // 1. Instant hydration from Dexie on initial paint regardless of activeDB
+            if (!loadMore && !forceRefresh && feedPosts.length === 0) {
+              try {
+                const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(INITIAL_FEED_POOL).toArray();
+                const visibleLocal = localPosts.filter((p: any) => p?.id && !deletedSet.has(p.id));
+                if (visibleLocal.length > 0) {
+                  set({ feedPosts: visibleLocal as any, hasMorePosts: true });
+                }
+              } catch {}
+            }
 
-             // Instant hydration from Dexie for fast UI on first paint
-             if (!loadMore && !forceRefresh) {
-                try {
-                  const localPosts = await localDB.posts.orderBy('created_at').reverse().limit(INITIAL_FEED_POOL).toArray();
-                  if (localPosts.length > 0) {
-                     set({ feedPosts: localPosts as any, postsLoading: false, hasMorePosts: true });
-                  }
-                } catch (dexErr) {}
-             }
+            const activeDB = getActiveDB();
+            let fetchedDocs: any[] = [];
+            let usedDB: 'firebase' | 'supabase' = activeDB;
 
-             let snap: any;
-             try {
-               let q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(fetchLimit));
-               if (loadMore && lastFirebaseFeedDoc) {
-                 q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), startAfter(lastFirebaseFeedDoc), limit(fetchLimit));
-               }
-               snap = await getDocs(q);
-               if (snap.docs.length > 0) {
-                 lastFirebaseFeedDoc = snap.docs[snap.docs.length - 1];
-               }
-             } catch (e: any) {
-               console.warn("Error fetching paginated posts, falling back:", e);
-               firebaseFeedOrderSupported = false;
-               const fallbackQ = query(collection(db, 'posts'), limit(INITIAL_FEED_POOL));
-               snap = await getDocs(fallbackQ);
-             }
+            const profileCache = new Map();
+            const fetchLimit = loadMore ? FEED_PAGE_SIZE : INITIAL_FEED_POOL;
 
-             fetchedDocs = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
-          };
+            const fetchFromFirebase = async () => {
+              if (!loadMore) {
+                lastFirebaseFeedDoc = null;
+                firebaseFeedOrderSupported = true;
+              }
 
-          const fetchFromSupabase = async () => {
-             let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(fetchLimit);
-             if (loadMore && feedPosts.length > 0) {
+              let snap: any;
+              try {
+                let q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(fetchLimit));
+                if (loadMore && lastFirebaseFeedDoc) {
+                  q = query(collection(db, 'posts'), orderBy('created_at', 'desc'), startAfter(lastFirebaseFeedDoc), limit(fetchLimit));
+                }
+                snap = await getDocs(q);
+                // If local persistence cache returned empty on initial load, force a server fetch
+                if (!loadMore && snap.docs.length === 0) {
+                  snap = await getDocsFromServer(q).catch(() => snap);
+                }
+                if (snap.docs.length > 0) {
+                  lastFirebaseFeedDoc = snap.docs[snap.docs.length - 1];
+                }
+              } catch (e: any) {
+                console.warn("Error fetching ordered posts, falling back to unordered:", e);
+                firebaseFeedOrderSupported = false;
+                const fallbackQ = query(collection(db, 'posts'), limit(INITIAL_FEED_POOL));
+                snap = await getDocs(fallbackQ);
+                if (!loadMore && snap.docs.length === 0) {
+                  snap = await getDocsFromServer(fallbackQ).catch(() => snap);
+                }
+              }
+
+              fetchedDocs = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+            };
+
+            const fetchFromSupabase = async () => {
+              let supaQuery = supabase.from('posts').select('*').order('created_at', { ascending: false }).limit(fetchLimit);
+              if (loadMore && feedPosts.length > 0) {
                 const lastPost = feedPosts[feedPosts.length - 1];
                 let dateVal = new Date().toISOString();
                 if (lastPost.created_at) {
-                   dateVal = typeof lastPost.created_at === 'string' ? lastPost.created_at : 
-                     (lastPost.created_at.toDate ? lastPost.created_at.toDate().toISOString() : dateVal);
+                  dateVal = typeof lastPost.created_at === 'string'
+                    ? lastPost.created_at
+                    : (lastPost.created_at.toDate ? lastPost.created_at.toDate().toISOString() : dateVal);
                 }
                 supaQuery = supaQuery.lt('created_at', dateVal);
-             }
-             const { data, error } = await supaQuery;
-             if (error) throw error;
-             if (data) fetchedDocs = data;
-          };
+              }
+              const { data, error } = await supaQuery;
+              if (error) throw error;
+              fetchedDocs = Array.isArray(data) ? data : [];
+            };
 
-          const runWithTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
-            Promise.race([
-              promise,
-              new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)),
-            ]);
+            const runWithTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+              Promise.race([
+                promise,
+                new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)),
+              ]);
 
-          try {
             if (activeDB === 'firebase') {
               try {
-                await runWithTimeout(fetchFromFirebase(), 7000, 'Firebase feed');
-              } catch (err) {
-                console.warn("Firebase fetch failed/timed out, switching DB:", err);
+                await runWithTimeout(fetchFromFirebase(), 12000, 'Firebase feed');
+                if (!loadMore && fetchedDocs.length === 0) {
+                  await runWithTimeout(fetchFromSupabase(), 8000, 'Supabase feed empty fallback');
+                  if (fetchedDocs.length > 0) usedDB = 'supabase';
+                } else {
+                  usedDB = 'firebase';
+                  clearDBFallback();
+                }
+              } catch (fbErr) {
+                console.warn("Firebase fetch failed/timed out, trying Supabase:", fbErr);
                 switchDB('firebase');
-                await runWithTimeout(fetchFromSupabase(), 8000, 'Supabase feed fallback');
+                try {
+                  await runWithTimeout(fetchFromSupabase(), 8000, 'Supabase feed fallback');
+                  usedDB = 'supabase';
+                } catch (supaErr) {
+                  console.error("Both Firebase and Supabase feed fetches failed.", fbErr, supaErr);
+                  throw fbErr;
+                }
               }
             } else {
               try {
                 await runWithTimeout(fetchFromSupabase(), 7000, 'Supabase feed');
-              } catch (err) {
-                console.warn("Supabase fetch failed/timed out, switching DB:", err);
+                if (!loadMore && fetchedDocs.length === 0) {
+                  // Supabase has no posts yet — always fall back to Firebase so Home Feed is never stuck empty!
+                  await runWithTimeout(fetchFromFirebase(), 12000, 'Firebase feed empty fallback');
+                  if (fetchedDocs.length > 0) {
+                    usedDB = 'firebase';
+                    clearDBFallback();
+                  }
+                } else {
+                  usedDB = 'supabase';
+                }
+              } catch (supaErr) {
+                console.warn("Supabase fetch failed/timed out, switching back to Firebase:", supaErr);
                 switchDB('supabase');
-                await runWithTimeout(fetchFromFirebase(), 8000, 'Firebase feed fallback');
+                await runWithTimeout(fetchFromFirebase(), 12000, 'Firebase feed fallback');
+                usedDB = 'firebase';
+                if (fetchedDocs.length > 0) clearDBFallback();
               }
             }
-          } catch (err) {
-             console.error("Both databases failed.", err);
-             throw err;
-          }
 
-          if (fetchedDocs.length === 0 && loadMore) {
-             set({ hasMorePosts: false, postsLoading: false });
-             return;
-          }
-
-          // Batch fetch author profiles in 1 single network query (or Dexie cache) instead of 120 individual reads
-          const missingUserIds = Array.from(new Set(
-            fetchedDocs
-              .map(d => d.user_id)
-              .filter(id => id && !profileCache.has(id))
-          ));
-
-          if (missingUserIds.length > 0) {
-            try {
-              const batchProfiles = await fetchProfilesBatchSmart(missingUserIds);
-              batchProfiles.forEach((prof, uid) => {
-                profileCache.set(uid, prof);
-              });
-            } catch (err) {
-              console.warn("Batch profile fetch error in feed:", err);
+            if (deletedSet.size > 0) {
+              fetchedDocs = fetchedDocs.filter((d: any) => d?.id && !deletedSet.has(d.id));
             }
-          }
 
-          const populatedPosts = fetchedDocs.map((data) => {
-            let profiles = profileCache.get(data.user_id) || null;
-            if (!profiles && data.author_name) {
-              profiles = {
-                id: data.user_id,
-                display_name: data.author_name,
-                name: data.author_name,
-                avatar_url: data.author_photo || '',
-                username: data.author_username || 'user'
-              };
+            if (fetchedDocs.length === 0 && loadMore) {
+              set({ hasMorePosts: false, postsLoading: false });
+              return;
             }
-            return { 
-              ...data, 
-              profiles, 
-              comments: [], // Comments are lazy loaded on demand 
-              likes: []     // Likes are lazy loaded on demand
-            };
-          }) as Post[];
-          
-          // Batch Fetch Data Normalization: Dual Video Source
-          const feedVideos = populatedPosts.map(p => {
-             let videoType: 'CLOUDINARY' | 'YOUTUBE' | 'NONE' = 'NONE';
-             let youtubeId = '';
-             let mediaUrl = p.video_url || p.image_url || '';
-             
-             if (mediaUrl.includes('youtube.com') || mediaUrl.includes('youtu.be')) {
-               videoType = 'YOUTUBE';
-               const match = mediaUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
-               if (match) youtubeId = match[1];
-             } else if (p.video_url) {
-               videoType = 'CLOUDINARY';
-             }
 
-             return {
+            // If remote unexpectedly returned 0 docs on initial load when we already have cached posts, keep cached posts
+            if (!loadMore && fetchedDocs.length === 0 && get().feedPosts.length > 0) {
+              set({ postsLoading: false, hasMorePosts: false });
+              return;
+            }
+
+            // Fast local Dexie lookup first (<10ms) so authors appear immediately
+            const uniqueUserIds = Array.from(new Set(fetchedDocs.map((d) => d.user_id).filter(Boolean)));
+            if (uniqueUserIds.length > 0) {
+              try {
+                const cachedUsers = await localDB.users.where('id').anyOf(uniqueUserIds).toArray();
+                cachedUsers.forEach((u: any) => {
+                  if (u?.id) profileCache.set(u.id, u);
+                });
+              } catch {}
+            }
+
+            const missingUserIds = uniqueUserIds.filter((id) => !profileCache.has(id));
+            let backgroundProfilePromise: Promise<Map<string, any>> | null = null;
+
+            if (missingUserIds.length > 0) {
+              backgroundProfilePromise = fetchProfilesBatchSmart(missingUserIds).catch(() => new Map<string, any>());
+              try {
+                // Wait up to 2.5s for batch profiles, then render posts immediately even if network is slow
+                const fastProfiles = await Promise.race([
+                  backgroundProfilePromise,
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+                ]);
+                if (fastProfiles) {
+                  fastProfiles.forEach((prof, uid) => {
+                    profileCache.set(uid, prof);
+                  });
+                  backgroundProfilePromise = null;
+                }
+              } catch {}
+            }
+
+            const buildPopulatedPosts = (docsList: any[], profMap: Map<string, any>) =>
+              docsList.map((data) => {
+                let profiles = profMap.get(data.user_id) || null;
+                if (!profiles && data.author_name) {
+                  profiles = {
+                    id: data.user_id,
+                    display_name: data.author_name,
+                    name: data.author_name,
+                    avatar_url: data.author_avatar || data.author_photo || '',
+                    username: data.author_username || 'user',
+                    is_verified: Boolean(data.author_verified),
+                  };
+                }
+                return {
+                  ...data,
+                  profiles,
+                  comments: Array.isArray(data.comments) ? data.comments : [],
+                  likes: Array.isArray(data.likes) ? data.likes : [],
+                };
+              }) as Post[];
+
+            const populatedPosts = buildPopulatedPosts(fetchedDocs, profileCache);
+
+            // Batch Fetch Data Normalization: Dual Video Source
+            const feedVideos = populatedPosts.map((p) => {
+              let videoType: 'CLOUDINARY' | 'YOUTUBE' | 'NONE' = 'NONE';
+              let youtubeId = '';
+              const mediaUrl = p.video_url || p.image_url || p.media_url || '';
+
+              if (mediaUrl.includes('youtube.com') || mediaUrl.includes('youtu.be')) {
+                videoType = 'YOUTUBE';
+                const match = mediaUrl.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/);
+                if (match) youtubeId = match[1];
+              } else if (p.video_url || p.media_type === 'video') {
+                videoType = 'CLOUDINARY';
+              }
+
+              return {
                 id: p.id,
                 videoType,
                 mediaUrl,
                 youtubeId,
-                thumbnailUrl: p.image_url || '',
+                thumbnailUrl: p.thumbnail_url || p.image_url || '',
                 caption: p.content || '',
                 author: p.profiles?.display_name || 'Unknown',
-                timestamp: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
-             };
-          }).filter(v => v.videoType !== 'NONE');
+                timestamp: typeof p.created_at === 'string'
+                  ? p.created_at
+                  : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString()),
+              };
+            }).filter((v) => v.videoType !== 'NONE');
 
-          if (feedVideos.length > 0 || populatedPosts.length > 0) {
-             setTimeout(() => {
-               import('@/lib/dexie').then(async ({ localDB }) => {
-                 try {
-                   if (feedVideos.length > 0) {
-                     await localDB.feed_videos.bulkPut(feedVideos as any);
-                     const totalVideos = await localDB.feed_videos.count();
-                     if (totalVideos > 50) {
-                       const all = await localDB.feed_videos.orderBy('timestamp').toArray();
-                       const toRemove = all.slice(0, totalVideos - 50);
-                       const idsToRemove = toRemove.map(item => item.id).filter(Boolean);
-                       if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
-                     }
-                   }
-                   if (populatedPosts.length > 0) {
-                     const offlinePosts = populatedPosts.map(p => ({
-                       ...p,
-                       created_at: typeof p.created_at === 'string' ? p.created_at : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString())
-                     }));
-                     if (!loadMore) {
-                       await localDB.posts.clear();
-                     }
-                     await localDB.posts.bulkPut(offlinePosts as any);
-                   }
-                 } catch (e) {
-                   console.warn("feed cache bulkPut error", e);
-                 }
-               }).catch(() => {});
-             }, 250);
+            if (feedVideos.length > 0 || populatedPosts.length > 0) {
+              setTimeout(() => {
+                import('@/lib/dexie').then(async ({ localDB }) => {
+                  try {
+                    if (feedVideos.length > 0) {
+                      await localDB.feed_videos.bulkPut(feedVideos as any);
+                      const totalVideos = await localDB.feed_videos.count();
+                      if (totalVideos > 50) {
+                        const all = await localDB.feed_videos.orderBy('timestamp').toArray();
+                        const toRemove = all.slice(0, totalVideos - 50);
+                        const idsToRemove = toRemove.map((item) => item.id).filter(Boolean);
+                        if (idsToRemove.length > 0) await localDB.feed_videos.bulkDelete(idsToRemove);
+                      }
+                    }
+                    if (populatedPosts.length > 0) {
+                      const offlinePosts = populatedPosts.map((p) => ({
+                        ...p,
+                        created_at: typeof p.created_at === 'string'
+                          ? p.created_at
+                          : (p.created_at?.toDate ? p.created_at.toDate().toISOString() : new Date().toISOString()),
+                      }));
+                      if (!loadMore) {
+                        await localDB.posts.clear();
+                      }
+                      await localDB.posts.bulkPut(offlinePosts as any);
+                    }
+                  } catch (e) {
+                    console.warn("feed cache bulkPut error", e);
+                  }
+                }).catch(() => {});
+              }, 250);
+            }
+
+            const hasMore = usedDB === 'firebase'
+              ? (firebaseFeedOrderSupported && fetchedDocs.length >= fetchLimit)
+              : fetchedDocs.length >= fetchLimit;
+
+            set((state) => {
+              const combined = loadMore ? [...state.feedPosts, ...populatedPosts] : populatedPosts;
+              const deduped = Array.from(new Map(combined.map((p) => [p.id, p])).values());
+              return {
+                feedPosts: deduped,
+                lastFeedFetch: Date.now(),
+                hasMorePosts: hasMore,
+                postsLoading: false,
+                postsError: null,
+              };
+            });
+
+            // Finish enriching any slow profiles in the background without holding up the feed
+            if (backgroundProfilePromise) {
+              backgroundProfilePromise.then((lateProfiles) => {
+                if (!lateProfiles || lateProfiles.size === 0) return;
+                set((state) => ({
+                  feedPosts: state.feedPosts.map((p) => {
+                    const late = lateProfiles.get(p.user_id);
+                    return late ? { ...p, profiles: late } : p;
+                  }),
+                }));
+              }).catch(() => {});
+            }
+          } catch (error: any) {
+            console.error("Error fetching home feed:", error);
+            // Only show error screen if we have zero posts to display
+            const hasCached = get().feedPosts.length > 0;
+            set({ postsLoading: false, postsError: hasCached ? null : error });
           }
-          
-          const hasMore = activeDB === 'firebase'
-            ? (firebaseFeedOrderSupported && fetchedDocs.length >= fetchLimit)
-            : fetchedDocs.length >= fetchLimit;
+        };
 
-          set((state) => {
-            const combined = loadMore ? [...state.feedPosts, ...populatedPosts] : populatedPosts;
-            const deduped = Array.from(new Map(combined.map(p => [p.id, p])).values());
-            return {
-              feedPosts: deduped,
-              lastFeedFetch: Date.now(),
-              hasMorePosts: hasMore,
-              postsLoading: false
-            };
+        if (!loadMore && !forceRefresh) {
+          activeFeedFetchPromise = runFetch().finally(() => {
+            activeFeedFetchPromise = null;
           });
-        } catch (error: any) {
-          console.error("Error fetching home feed:", error);
-          set({ postsLoading: false, postsError: error });
+          return activeFeedFetchPromise;
         }
+        return runFetch();
       },
 
       initMessageListener: (userId: string) => {

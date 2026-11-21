@@ -116,7 +116,7 @@ const NextoRobot: React.FC = () => {
       >
         <div
           ref={nodeRef}
-          className="fixed bottom-[10vmin] right-[5vmin] z-[9999] touch-none select-none"
+          className="fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom))] right-3 md:bottom-8 md:right-6 z-[9999] touch-none select-none"
         >
           <motion.div
             whileHover={{ scale: 1.1 }}

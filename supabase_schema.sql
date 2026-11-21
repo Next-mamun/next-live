@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS public.reels (
 );
 
 
--- 5. ATOMIC "DELETE FOR ME" HELPER FUNCTIONS (Prevents overwriting other user's deletion)
+-- 5. ATOMIC "DELETE FOR ME" HELPER FUNCTIONS (Validated inputs; prevents overwriting other user's deletion)
 CREATE OR REPLACE FUNCTION public.mark_messages_deleted_for_user(msg_ids TEXT[], uid TEXT)
 RETURNS VOID
 LANGUAGE plpgsql
@@ -182,9 +182,17 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+    IF uid IS NULL OR length(trim(uid)) = 0 OR length(uid) > 128 THEN
+        RAISE EXCEPTION 'Invalid uid';
+    END IF;
+    IF msg_ids IS NULL OR array_length(msg_ids, 1) IS NULL OR array_length(msg_ids, 1) > 200 THEN
+        RETURN;
+    END IF;
+
     UPDATE public.messages
     SET deleted_for = array_append(COALESCE(deleted_for, '{}'), uid)
     WHERE id = ANY(msg_ids)
+      AND (sender_id = uid OR receiver_id = uid OR receiver_id LIKE 'group_%')
       AND NOT (COALESCE(deleted_for, '{}') @> ARRAY[uid]);
 END;
 $$;
@@ -196,6 +204,13 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+    IF uid IS NULL OR length(trim(uid)) = 0 OR length(uid) > 128 THEN
+        RAISE EXCEPTION 'Invalid uid';
+    END IF;
+    IF partner_id IS NULL OR length(trim(partner_id)) = 0 OR length(partner_id) > 128 THEN
+        RAISE EXCEPTION 'Invalid partner_id';
+    END IF;
+
     UPDATE public.messages
     SET deleted_for = array_append(COALESCE(deleted_for, '{}'), uid)
     WHERE (
@@ -207,8 +222,10 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.mark_messages_deleted_for_user(TEXT[], TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.mark_chat_deleted_for_user(TEXT, TEXT) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.mark_messages_deleted_for_user(TEXT[], TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mark_chat_deleted_for_user(TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.mark_messages_deleted_for_user(TEXT[], TEXT) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.mark_chat_deleted_for_user(TEXT, TEXT) TO authenticated, service_role;
 
 
 -- 6. ENABLE SUPABASE REALTIME FOR MESSAGES, FRIENDSHIPS & PROFILES
@@ -244,17 +261,56 @@ ALTER TABLE public.friendships REPLICA IDENTITY FULL;
 ALTER TABLE public.profiles REPLICA IDENTITY FULL;
 
 
--- 7. ROW LEVEL SECURITY (Open client access compatible with Firebase Auth;
---    can be tightened later using Supabase Third-Party Auth for Firebase)
+-- 7. HARDENED ROW LEVEL SECURITY
+-- NOTE: Configure Supabase Third-Party Auth for Firebase Auth (recommended), OR set SUPABASE_SERVICE_ROLE_KEY
+-- on the server proxy (/api/supabase-proxy) before running the strict policies below in Supabase SQL Editor.
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.friendships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reels ENABLE ROW LEVEL SECURITY;
 
+-- Public read-only access for feed posts/reels & basic profile discovery
+DROP POLICY IF EXISTS "posts_public_read" ON public.posts;
+CREATE POLICY "posts_public_read" ON public.posts FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "reels_public_read" ON public.reels;
+CREATE POLICY "reels_public_read" ON public.reels FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "profiles_public_read" ON public.profiles;
+CREATE POLICY "profiles_public_read" ON public.profiles FOR SELECT USING (true);
+
+-- Authenticated user policies (requires Supabase Third-Party Auth for Firebase JWT, or service_role via /api/supabase-proxy)
 DROP POLICY IF EXISTS "profiles_all_access" ON public.profiles;
-CREATE POLICY "profiles_all_access" ON public.profiles FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "profiles_owner_write" ON public.profiles;
+CREATE POLICY "profiles_owner_write" ON public.profiles
+    FOR ALL
+    USING (auth.role() = 'service_role' OR (auth.uid())::text = id OR (is_group = true AND admin_id = (auth.uid())::text))
+    WITH CHECK (auth.role() = 'service_role' OR (auth.uid())::text = id OR (is_group = true AND admin_id = (auth.uid())::text));
 
 DROP POLICY IF EXISTS "friendships_all_access" ON public.friendships;
-CREATE POLICY "friendships_all_access" ON public.friendships FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "friendships_participant_access" ON public.friendships;
+CREATE POLICY "friendships_participant_access" ON public.friendships
+    FOR ALL
+    USING (auth.role() = 'service_role' OR sender_id = (auth.uid())::text OR receiver_id = (auth.uid())::text)
+    WITH CHECK (auth.role() = 'service_role' OR sender_id = (auth.uid())::text OR receiver_id = (auth.uid())::text);
 
 DROP POLICY IF EXISTS "messages_all_access" ON public.messages;
-CREATE POLICY "messages_all_access" ON public.messages FOR ALL USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS "messages_participant_access" ON public.messages;
+CREATE POLICY "messages_participant_access" ON public.messages
+    FOR ALL
+    USING (auth.role() = 'service_role' OR sender_id = (auth.uid())::text OR receiver_id = (auth.uid())::text)
+    WITH CHECK (auth.role() = 'service_role' OR sender_id = (auth.uid())::text);
+
+DROP POLICY IF EXISTS "posts_owner_write" ON public.posts;
+CREATE POLICY "posts_owner_write" ON public.posts
+    FOR ALL
+    USING (auth.role() = 'service_role' OR user_id = (auth.uid())::text)
+    WITH CHECK (auth.role() = 'service_role' OR user_id = (auth.uid())::text);
+
+DROP POLICY IF EXISTS "reels_owner_write" ON public.reels;
+CREATE POLICY "reels_owner_write" ON public.reels
+    FOR ALL
+    USING (auth.role() = 'service_role' OR user_id = (auth.uid())::text)
+    WITH CHECK (auth.role() = 'service_role' OR user_id = (auth.uid())::text);
+

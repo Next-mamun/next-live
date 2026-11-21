@@ -10,6 +10,10 @@ import { registerSW } from 'virtual:pwa-register';
 // 1. Immediate Top-Level Chunk Loading Failure Handler (Prevents White Screen on deployment updates)
 const handleTopLevelChunkFailure = async (err: any) => {
   const msg = String(err?.message || err?.reason?.message || err || '');
+  const filename = String(err?.filename || '');
+  const isExternalScript = filename && !filename.startsWith(window.location.origin);
+  if (isExternalScript) return;
+
   const isChunkErr =
     msg.includes('Failed to fetch dynamically imported module') ||
     msg.includes('error loading dynamically imported module') ||
@@ -17,10 +21,17 @@ const handleTopLevelChunkFailure = async (err: any) => {
     msg.includes('Importing a module script failed');
 
   if (isChunkErr) {
+    // Never interrupt an active Cinema or Meet session with an automatic reload
+    const currentPath = window.location.pathname || '/';
+    if (currentPath.startsWith('/cinema') || currentPath.startsWith('/meet')) {
+      console.warn('⚠️ [Deploy Recovery] Chunk warning during active session, skipping auto-reload:', msg);
+      return;
+    }
+
     console.warn("⚠️ [Deploy Recovery] Chunk load failure intercepted. Cleaning transient script cache...", msg);
     const reloadKey = 'chunk_reload_lock_root';
     const lastReload = Number(sessionStorage.getItem(reloadKey) || '0');
-    if (Date.now() - lastReload > 8000) {
+    if (Date.now() - lastReload > 15000) {
       sessionStorage.setItem(reloadKey, String(Date.now()));
       if ('caches' in window) {
         try {
@@ -113,20 +124,26 @@ window.addEventListener('appinstalled', () => {
   handleAppInstalledForReinstallCheck().catch(() => {});
 });
 
+const isNativeWebView = typeof navigator !== 'undefined' && (
+  Boolean((window as any).AndroidApp) ||
+  navigator.userAgent.includes('Next') ||
+  navigator.userAgent.includes('wv') ||
+  /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
+);
+
 if (isStandaloneMode()) {
   markPwaInstalled();
-} else {
+} else if (!isNativeWebView) {
   checkRelatedAppsForUninstall().catch(() => {});
 }
 
 // Expose queryClient globally
 (window as any).queryClient = queryClient;
 
-// 3. Register PWA service worker with update notifications
-const updateSW = registerSW({
+// 3. Register PWA service worker without blind forced mid-session reload
+registerSW({
   onNeedRefresh() {
-    console.log("New version available, activating updated Service Worker...");
-    updateSW(true);
+    console.log("New version available; notifying OTAUpdateBanner without forced reload.");
     window.dispatchEvent(new CustomEvent('next_sw_updated'));
   },
   onOfflineReady() {

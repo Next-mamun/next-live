@@ -1,5 +1,5 @@
 import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/dexie";
-import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
 import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink, Loader2 } from 'lucide-react';
@@ -265,6 +265,266 @@ const CustomAudioPlayer = ({ src, isSender }: { src: string; isSender?: boolean 
   );
 };
 
+interface MemoizedChatMessagesProps {
+  messages: any[];
+  visibleLimit: number;
+  currentUserId?: string;
+  selectedChatId?: string;
+  selectedChatDisplayName?: string;
+  selectedMessages: string[];
+  reactionsMap: Record<string, Record<string, string[]>>;
+  activeReactionMsgId: string | null;
+  starredIds: Set<string>;
+  isOnlineOrLive: boolean;
+  onTouchStart: (id: string) => void;
+  onTouchEnd: () => void;
+  onTouchMove: () => void;
+  onMessageClick: (id: string) => void;
+  onReply: (msg: any) => void;
+  onToggleReactionPicker: (msgId: string) => void;
+  onToggleReaction: (msgId: string, emoji: string) => void;
+  onToggleStar: (msg: any) => void;
+  onDeleteMessage: (id: string) => void;
+  onViewOnce: (msg: any) => void;
+}
+
+const MemoizedChatMessages = React.memo<MemoizedChatMessagesProps>(({
+  messages,
+  visibleLimit,
+  currentUserId,
+  selectedChatDisplayName,
+  selectedMessages,
+  reactionsMap,
+  activeReactionMsgId,
+  starredIds,
+  isOnlineOrLive,
+  onTouchStart,
+  onTouchEnd,
+  onTouchMove,
+  onMessageClick,
+  onReply,
+  onToggleReactionPicker,
+  onToggleReaction,
+  onToggleStar,
+  onDeleteMessage,
+  onViewOnce,
+}) => {
+  const sliced = useMemo(
+    () => (messages.length > visibleLimit ? messages.slice(messages.length - visibleLimit) : messages),
+    [messages, visibleLimit]
+  );
+
+  const selectedSet = useMemo(() => new Set(selectedMessages), [selectedMessages]);
+
+  return (
+    <>
+      {sliced.map((msg: any) => {
+        const parentMsg = msg.parent_message_id ? messages.find((m: any) => m.id === msg.parent_message_id) : null;
+        const msgReactions = reactionsMap[msg.id] || {};
+        const reactionEntries = Object.entries(msgReactions).filter(([, users]) => users.length > 0);
+        const firstUrl = !msg.is_view_once ? extractFirstUrl(msg.content) : null;
+        const isStarred = starredIds.has(msg.id);
+        const isOwn = msg.sender_id === currentUserId;
+
+        return (
+          <motion.div
+            key={msg.id}
+            onTouchStart={() => onTouchStart(msg.id)}
+            onTouchEnd={onTouchEnd}
+            onTouchMove={onTouchMove}
+            onMouseDown={() => onTouchStart(msg.id)}
+            onMouseUp={onTouchEnd}
+            onMouseLeave={onTouchEnd}
+            onClick={() => onMessageClick(msg.id)}
+            className={`flex ${isOwn ? 'justify-end' : 'justify-start'} group relative w-full ${selectedSet.has(msg.id) ? 'bg-blue-50/50 dark:bg-blue-900/20 rounded-lg' : ''}`}
+            drag="x"
+            dragConstraints={{ left: 0, right: 0 }}
+            dragElastic={{ left: 0, right: 0.5 }}
+            onDragEnd={(_, info) => {
+              if (info.offset.x > 50) {
+                onReply(msg);
+              }
+            }}
+          >
+            <div className={`opacity-0 group-hover:opacity-100 transition-all self-center flex items-center gap-1 ${isOwn ? 'mr-1.5' : 'ml-1.5 order-last'}`}>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleReactionPicker(msg.id);
+                }}
+                className="p-1 text-gray-400 hover:text-[#1877F2] rounded-full"
+                title="React"
+              >
+                <Smile size={15} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleStar(msg);
+                }}
+                className={`p-1 rounded-full ${isStarred ? 'text-amber-500' : 'text-gray-400 hover:text-amber-500'}`}
+                title="Star message"
+              >
+                <Star size={15} className={isStarred ? 'fill-amber-400' : ''} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteMessage(msg.id);
+                }}
+                className="p-1 text-red-300 hover:text-red-500 rounded-full"
+                title={isOwn ? 'Delete for Everyone' : 'Delete for Me'}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+
+            {activeReactionMsgId === msg.id && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className={`absolute -top-10 z-30 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-full px-2 py-1 shadow-lg flex items-center gap-1 ${isOwn ? 'right-2' : 'left-2'}`}
+              >
+                {QUICK_REACTIONS.map(emoji => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => onToggleReaction(msg.id, emoji)}
+                    className="text-base hover:scale-125 transition-transform px-1"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col max-w-[75%]">
+              <div className={`p-3.5 rounded-2xl shadow-sm text-[15px] font-medium leading-relaxed ${isOwn ? 'bg-[#1877F2] text-white rounded-tr-none' : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-gray-800 dark:text-gray-200 rounded-tl-none'}`}>
+                {parentMsg && (
+                  <div className={`mb-2 p-2 rounded-xl text-xs opacity-80 border-l-4 ${isOwn ? 'bg-white/20 border-white/50 text-white' : 'bg-gray-100 dark:bg-gray-700 border-[#1877F2] text-gray-800 dark:text-gray-300'}`}>
+                    <p className="font-bold mb-0.5">{parentMsg.sender_id === currentUserId ? 'You' : selectedChatDisplayName}</p>
+                    <p className="line-clamp-1">{parentMsg.is_view_once ? '🔒 View Once message' : (parentMsg.content || (parentMsg.media_url ? 'Media' : ''))}</p>
+                  </div>
+                )}
+                {msg.is_view_once ? (
+                  isOwn ? (
+                    <div className="flex items-center gap-2 py-1 px-2.5 bg-black/15 dark:bg-white/15 rounded-xl text-xs font-semibold select-none">
+                      <div className="w-5 h-5 rounded-full border border-current flex items-center justify-center font-bold text-[10px]">1</div>
+                      <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => onViewOnce(msg)}
+                      className="flex items-center gap-2.5 px-3.5 py-2.5 bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 rounded-xl transition-all font-bold text-sm select-none active:scale-95 shadow-sm"
+                    >
+                      <div className="w-6 h-6 rounded-full border-2 border-current flex items-center justify-center font-black text-xs animate-pulse">1</div>
+                      {msg.media_type === 'audio' ? <Mic size={18} /> : <Eye size={18} />}
+                      <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
+                      <span className="text-[11px] font-normal opacity-75">(Tap to open)</span>
+                    </button>
+                  )
+                ) : msg.media_url ? (
+                  <div className={`mb-2 rounded-lg overflow-hidden relative ${msg.media_type === 'audio' ? 'bg-transparent overflow-visible' : 'bg-black/5 dark:bg-white/5'}`}>
+                    {msg.media_type === 'image' ? (
+                      <ZoomableImage src={msg.media_url} className="max-w-full h-auto rounded-lg" referrerPolicy="no-referrer" />
+                    ) : msg.media_type === 'audio' ? (
+                      <CustomAudioPlayer src={msg.media_url} isSender={isOwn} />
+                    ) : msg.media_type === 'video' ? (
+                      <VideoPlayer src={msg.media_url} className="max-w-full h-auto rounded-lg" />
+                    ) : (
+                      <div className="p-3 bg-black/10 dark:bg-white/10 rounded-xl flex items-center gap-3 border border-black/10 dark:border-white/10">
+                        <div className="p-2.5 rounded-lg bg-blue-500/20 text-blue-500 shrink-0">
+                          <FileText size={24} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold truncate text-gray-900 dark:text-white">
+                            {msg.filename || msg.media_url.split('/').pop()?.split('?')[0] || 'Attachment'}
+                          </p>
+                          {msg.file_size && (
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold">{(msg.file_size / (1024 * 1024)).toFixed(2)} MB</p>
+                          )}
+                          <a
+                            href={msg.media_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            download={msg.filename || 'download'}
+                            className="text-[11px] text-blue-500 hover:underline flex items-center gap-1 font-bold mt-1"
+                          >
+                            <Download size={12} /> Download File
+                          </a>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                {!msg.is_view_once && msg.content && <span>{msg.content}</span>}
+                {firstUrl && (() => {
+                  let host = firstUrl;
+                  try { host = new URL(firstUrl).hostname.replace(/^www\./, ''); } catch (_) {}
+                  return (
+                    <a
+                      href={firstUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className={`mt-2 flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs border transition-opacity hover:opacity-90 ${
+                        isOwn
+                          ? 'bg-white/15 border-white/25 text-white'
+                          : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <p className="font-bold truncate">{host}</p>
+                        <p className="text-[10px] opacity-75 truncate">{firstUrl}</p>
+                      </div>
+                      <ExternalLink size={14} className="shrink-0" />
+                    </a>
+                  );
+                })()}
+                <div className={`flex items-center justify-end gap-1 mt-1 ${isOwn ? 'text-blue-200' : 'text-gray-400'}`}>
+                  {isStarred && <Star size={10} className="fill-amber-400 text-amber-400" />}
+                  <p className="text-[10px] text-right opacity-80">
+                    {formatTime(msg.created_at)}
+                  </p>
+                  {isOwn && (
+                    msg.is_pending ? (
+                      <Clock size={12} className="opacity-70" />
+                    ) : msg.is_read || msg.p2p_seen ? (
+                      <CheckCheck size={12} className="text-red-500" />
+                    ) : isOnlineOrLive ? (
+                      <CheckCheck size={12} className="text-blue-200 opacity-60" />
+                    ) : (
+                      <Check size={12} className="text-blue-200 opacity-60" />
+                    )
+                  )}
+                </div>
+              </div>
+
+              {reactionEntries.length > 0 && (
+                <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                  {reactionEntries.map(([emoji, users]) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); onToggleReaction(msg.id, emoji); }}
+                      className="px-1.5 py-0.5 rounded-full text-xs bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm flex items-center gap-1"
+                    >
+                      <span>{emoji}</span>
+                      {users.length > 1 && <span className="text-[10px] font-bold text-gray-600 dark:text-gray-300">{users.length}</span>}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        );
+      })}
+    </>
+  );
+});
+
 const Messages: React.FC = () => {
   const { currentUser } = useAuth();
   const { addUpload } = useUpload();
@@ -363,41 +623,86 @@ const Messages: React.FC = () => {
   const activeChannelRef = useRef<any>(null);
 
   const [liveStatus, setLiveStatus] = useState<'inactive' | 'proposing' | 'receiving_proposal' | 'active' | 'failed'>('inactive');
+  const liveStatusRef = useRef<'inactive' | 'proposing' | 'receiving_proposal' | 'active' | 'failed'>('inactive');
+  useEffect(() => {
+    liveStatusRef.current = liveStatus;
+  }, [liveStatus]);
+
   const [liveText, setLiveText] = useState('');
   const liveProposalTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastInputLengthRef = useRef<number>(0);
   const activeLiveStreamTextRef = useRef<string>('');
+  const draftSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const sendSignalToReceiver = useCallback((receiverId: string, event: string, payload: any) => {
+    if (!receiverId) return;
+    try {
+      const ch: any = supabase.channel(`user_notifications_${receiverId}`);
+      if (typeof ch.httpSend === 'function') {
+        ch.httpSend(event, payload).catch(() => {});
+      } else {
+        ch.send({ type: 'broadcast', event, payload }).catch(() => {});
+      }
+    } catch (_) {}
+  }, []);
+
+  const pendingProposalForChat = useGlobalStore((state) =>
+    selectedChat?.id ? state.pendingLiveProposals[selectedChat.id] : undefined
+  );
+
+  useEffect(() => {
+    if (
+      selectedChat?.id &&
+      pendingProposalForChat &&
+      Date.now() - Number(pendingProposalForChat.timestamp || 0) < 120000
+    ) {
+      setLiveStatus((prev) => (prev === 'active' ? prev : 'receiving_proposal'));
+    }
+  }, [selectedChat?.id, pendingProposalForChat]);
 
   const startLiveProposal = () => {
     if (!selectedChat || !currentUser) return;
     setLiveStatus('proposing');
-    
+    const senderName = currentUser.display_name || currentUser.username || 'User';
+    const usernameTag = currentUser.username ? ` (@${currentUser.username})` : '';
+
     const signalPayload = {
       type: 'LIVE_PROPOSAL_REQUEST',
       sender_id: currentUser.id,
-      sender_name: currentUser.display_name || currentUser.username || 'User',
+      sender_name: senderName,
       sender_avatar: currentUser.avatar_url || '',
       chat_id: selectedChat.id,
       timestamp: Date.now()
     };
-    
+
     // 1. Broadcast over chat room channel
     sendP2PSignal(signalPayload);
-    
-    // 2. Broadcast over receiver's dedicated notification channel for 100% reach
-    try {
-      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
-      receiverChannel.send({
-        type: 'broadcast',
-        event: 'LIVE_PROPOSAL_SIGNAL',
-        payload: signalPayload
-      }).catch(() => {});
-    } catch (_) {}
-    
-    // 3. Clear existing proposal timer
+
+    // 2. Broadcast over receiver's dedicated notification channel via httpSend (works even without active subscription)
+    sendSignalToReceiver(selectedChat.id, 'LIVE_PROPOSAL_SIGNAL', signalPayload);
+
+    // 3. Send BOTH FCM Push Notification + In-App Notification so recipient is notified everywhere
+    triggerNotification(
+      selectedChat.id,
+      `⚡ ${senderName}${usernameTag}`,
+      'sent you a Live Typing request! Tap to accept.',
+      {
+        type: 'live_proposal',
+        action: 'LIVE_PROPOSAL_REQUEST',
+        sender_id: currentUser.id,
+        sender_name: senderName,
+        sender_username: currentUser.username || '',
+        sender_avatar: currentUser.avatar_url || '',
+        chat_id: selectedChat.id,
+        url: `/messages?user=${currentUser.id}&liveProposal=1`,
+        notif_id: `live_prop_${currentUser.id}_${Date.now()}`
+      }
+    );
+
+    // 4. Clear existing proposal timer
     if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
-    
-    // 4. Set 10-second timeout to transition to 'failed' (Retry) state
+
+    // 5. Set 30-second timeout so recipient has plenty of time to tap push notification and accept
     liveProposalTimerRef.current = setTimeout(() => {
       setLiveStatus(prev => {
         if (prev === 'proposing') {
@@ -406,23 +711,18 @@ const Messages: React.FC = () => {
         }
         return prev;
       });
-    }, 10000);
+    }, 30000);
   };
 
   const cancelLiveProposal = () => {
     if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
     setLiveStatus('inactive');
-    sendP2PSignal({ type: 'LIVE_PROPOSAL_CANCEL', sender_id: currentUser?.id });
-    try {
-      if (selectedChat) {
-        const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
-        receiverChannel.send({
-          type: 'broadcast',
-          event: 'LIVE_PROPOSAL_SIGNAL',
-          payload: { type: 'LIVE_PROPOSAL_CANCEL', sender_id: currentUser?.id }
-        }).catch(() => {});
-      }
-    } catch (_) {}
+    const cancelPayload = { type: 'LIVE_PROPOSAL_CANCEL', sender_id: currentUser?.id };
+    sendP2PSignal(cancelPayload);
+    if (selectedChat?.id) {
+      useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
+      sendSignalToReceiver(selectedChat.id, 'LIVE_PROPOSAL_SIGNAL', cancelPayload);
+    }
   };
 
   useEffect(() => {
@@ -651,29 +951,24 @@ const Messages: React.FC = () => {
   }, [isDraggingInput, inputOffset]);
 
   const longPressTimer = useRef<any>(null);
-  const handleTouchStart = (id: string) => {
+  const handleTouchStart = useCallback((id: string) => {
     longPressTimer.current = setTimeout(() => {
-      if (!selectedMessages.includes(id)) {
-        if ('vibrate' in navigator) navigator.vibrate(50);
-        setSelectedMessages(prev => [...prev, id]);
-      }
+      if ('vibrate' in navigator) navigator.vibrate(50);
+      setSelectedMessages(prev => (prev.includes(id) ? prev : [...prev, id]));
     }, 2500);
-  };
-  const handleTouchEnd = () => {
+  }, []);
+  const handleTouchEnd = useCallback(() => {
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  };
-  const handleTouchMove = () => {
+  }, []);
+  const handleTouchMove = useCallback(() => {
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
-  };
-  const handleMessageClick = (id: string) => {
-    if (selectedMessages.length > 0) {
-      if (selectedMessages.includes(id)) {
-        setSelectedMessages(prev => prev.filter(m => m !== id));
-      } else {
-        setSelectedMessages(prev => [...prev, id]);
-      }
-    }
-  };
+  }, []);
+  const handleMessageClick = useCallback((id: string) => {
+    setSelectedMessages(prev => {
+      if (prev.length === 0) return prev;
+      return prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id];
+    });
+  }, []);
 
   const handleInputDragStart = (e: React.TouchEvent | React.MouseEvent) => {
     setIsDraggingInput(true);
@@ -686,7 +981,7 @@ const Messages: React.FC = () => {
   };
 
   useEffect(() => {
-    if (selectedChat && currentUser) {
+    if (selectedChat?.id && currentUser?.id) {
       const draftKey = `message_draft_${currentUser.id}_${selectedChat.id}`;
       const draft = localStorage.getItem(draftKey);
       if (draft !== null) {
@@ -697,7 +992,7 @@ const Messages: React.FC = () => {
     } else {
       setMessageText('');
     }
-  }, [selectedChat, currentUser]);
+  }, [selectedChat?.id, currentUser?.id]);
 
   const sendP2PSignal = (payload: any) => {
     if (selectedChat) {
@@ -725,10 +1020,13 @@ const Messages: React.FC = () => {
     setMessageText(text);
     if (currentUser && selectedChat) {
       const draftKey = `message_draft_${currentUser.id}_${selectedChat.id}`;
+      if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
       if (text.trim() === '') {
         localStorage.removeItem(draftKey);
       } else {
-        localStorage.setItem(draftKey, text);
+        draftSaveTimeoutRef.current = setTimeout(() => {
+          try { localStorage.setItem(draftKey, text); } catch (_) {}
+        }, 350);
       }
       
       if (liveStatus === 'active') {
@@ -738,8 +1036,6 @@ const Messages: React.FC = () => {
 
         let streamToSend = text;
         if (currLen < prevLen) {
-          // Deletion occurred (e.g. Backspace pressed):
-          // Delete characters from the FRONT (index 0) so the reader finishes reading the end!
           const deletedCount = prevLen - currLen;
           if (text.trim() === '') {
             activeLiveStreamTextRef.current = '';
@@ -750,13 +1046,16 @@ const Messages: React.FC = () => {
             activeLiveStreamTextRef.current = streamToSend;
           }
         } else {
-          // Forward typing or paste
           activeLiveStreamTextRef.current = text;
           streamToSend = text;
         }
 
         const now = Date.now();
-        if (now - lastLiveTextSendTimeRef.current > 150) {
+        if (now - lastLiveTextSendTimeRef.current >= 30) {
+          if (liveTextTimeoutRef.current) {
+            clearTimeout(liveTextTimeoutRef.current);
+            liveTextTimeoutRef.current = null;
+          }
           sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text: streamToSend, sender_id: currentUser.id });
           lastLiveTextSendTimeRef.current = now;
         } else {
@@ -764,8 +1063,9 @@ const Messages: React.FC = () => {
           liveTextTimeoutRef.current = setTimeout(() => {
             sendP2PSignal({ type: 'LIVE_TEXT_STREAM', text: streamToSend, sender_id: currentUser.id });
             lastLiveTextSendTimeRef.current = Date.now();
-          }, 150);
+          }, 30);
         }
+        return;
       }
 
       if (!isTyping) {
@@ -782,7 +1082,7 @@ const Messages: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!currentUser || !selectedChat) {
+    if (!currentUser?.id || !selectedChat?.id) {
       setOtherUserTyping(false);
       return;
     }
@@ -800,14 +1100,16 @@ const Messages: React.FC = () => {
         } else if (data.type === 'SEEN') {
           setMessages(prev => prev.map(m => m.id === data.msgId ? { ...m, p2p_seen: true } : m));
         } else if (data.type === 'LIVE_PROPOSAL_REQUEST') {
-          setLiveStatus('receiving_proposal');
+          setLiveStatus(prev => (prev === 'active' ? prev : 'receiving_proposal'));
           sendP2PSignal({ type: 'LIVE_PROPOSAL_ACK', sender_id: currentUser?.id });
         } else if (data.type === 'LIVE_PROPOSAL_ACK') {
           // Packet acknowledged by recipient
         } else if (data.type === 'LIVE_PROPOSAL_CANCEL') {
+          useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
           setLiveStatus(prev => prev === 'receiving_proposal' ? 'inactive' : prev);
         } else if (data.type === 'LIVE_PROPOSAL_ACCEPTED') {
           if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
+          useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
           setLiveStatus('active');
           setLiveText('');
           activeLiveStreamTextRef.current = '';
@@ -815,6 +1117,7 @@ const Messages: React.FC = () => {
           toast.success('⚡ Live Typing Connected!');
         } else if (data.type === 'LIVE_PROPOSAL_REJECTED' || data.type === 'LIVE_STOP') {
           if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
+          useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
           setLiveStatus('inactive');
           setLiveText('');
           activeLiveStreamTextRef.current = '';
@@ -832,21 +1135,24 @@ const Messages: React.FC = () => {
     return () => {
        window.removeEventListener('P2P_SIGNAL' as any, handleSignal as any);
     };
-  }, [selectedChat, currentUser]);
+  }, [selectedChat?.id, currentUser?.id]);
 
-  // Clean up live typing when selectedChat changes
+  // Clean up live typing ONLY when switching away to a different conversation ID or closing chat
   useEffect(() => {
+    const activeId = selectedChat?.id;
     return () => {
       if (liveProposalTimerRef.current) clearTimeout(liveProposalTimerRef.current);
-      if (liveStatus !== 'inactive') {
+      if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
+      if (liveStatusRef.current !== 'inactive' && activeId) {
         sendP2PSignal({ type: 'LIVE_STOP', sender_id: currentUser?.id });
+        sendSignalToReceiver(activeId, 'LIVE_PROPOSAL_SIGNAL', { type: 'LIVE_STOP', sender_id: currentUser?.id });
       }
       setLiveStatus('inactive');
       setLiveText('');
       activeLiveStreamTextRef.current = '';
       lastInputLengthRef.current = 0;
     };
-  }, [selectedChat]);
+  }, [selectedChat?.id]);
 
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const { scanFile } = useContentFilter();
@@ -888,7 +1194,7 @@ const Messages: React.FC = () => {
   const docInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const openChatWithUserId = useCallback(async (targetUserId: string) => {
+  const openChatWithUserId = useCallback(async (targetUserId: string, hasLiveProposal = false) => {
     if (!targetUserId) return;
     try {
       // If user previously deleted this chat, opening it restores it (WhatsApp style)
@@ -931,6 +1237,23 @@ const Messages: React.FC = () => {
       );
       setIsChatOpen(true);
       setActiveChatId(targetUserId);
+
+      // Restore pending Live Typing proposal immediately if opened via notification or stored in global store
+      const storedProposal = useGlobalStore.getState().pendingLiveProposals[targetUserId];
+      const isProposalValid = hasLiveProposal || (storedProposal && Date.now() - Number(storedProposal.timestamp || 0) < 120000);
+      if (isProposalValid) {
+        if (!storedProposal) {
+          useGlobalStore.getState().setPendingLiveProposal({
+            senderId: targetUserId,
+            senderName: 'Friend',
+            timestamp: Date.now()
+          });
+        }
+        setLiveStatus((prev) => (prev === 'active' ? prev : 'receiving_proposal'));
+        if (currentUser?.id) {
+          sendSignalToReceiver(targetUserId, 'LIVE_PROPOSAL_SIGNAL', { type: 'LIVE_PROPOSAL_ACK', sender_id: currentUser.id });
+        }
+      }
 
       // Check existing local conversation or user
       const [localConv, localUser] = await Promise.all([
@@ -994,13 +1317,13 @@ const Messages: React.FC = () => {
     } catch (e) {
       console.warn("Failed to open chat with user:", e);
     }
-  }, [setIsChatOpen, setActiveChatId, currentUser, queryClient]);
+  }, [setIsChatOpen, setActiveChatId, currentUser, queryClient, sendSignalToReceiver]);
 
   useEffect(() => {
     const handleDirectOpen = (e: any) => {
       const uId = e.detail?.userId;
       if (uId) {
-        openChatWithUserId(uId);
+        openChatWithUserId(uId, Boolean(e.detail?.liveProposal));
       }
     };
     window.addEventListener('open_chat_direct', handleDirectOpen);
@@ -1016,13 +1339,14 @@ const Messages: React.FC = () => {
     const stateUserId = (location.state as any)?.userId || '';
     const queryUserId = searchParams.get('user') || searchParams.get('userId') || searchParams.get('chatId') || '';
     const targetUserId = routeChatId || stateUserId || queryUserId;
+    const hasLiveProposalParam = searchParams.get('liveProposal') === '1' || Boolean((location.state as any)?.liveProposal);
 
     if (!targetUserId) {
       handledDeepLinkRef.current = '';
       return;
     }
 
-    const linkSig = `${location.key}|${targetUserId}`;
+    const linkSig = `${location.key}|${targetUserId}|${hasLiveProposalParam}`;
     if (handledDeepLinkRef.current === linkSig) return;
     handledDeepLinkRef.current = linkSig;
 
@@ -1032,7 +1356,7 @@ const Messages: React.FC = () => {
       window.history.replaceState({ deepLinkHandled: targetUserId }, '', '/messages');
     }
 
-    openChatWithUserId(targetUserId);
+    openChatWithUserId(targetUserId, hasLiveProposalParam);
   }, [routeChatId, location.key, location.search, location.state, openChatWithUserId]);
 
   useEffect(() => {
@@ -2613,7 +2937,7 @@ const Messages: React.FC = () => {
     return () => window.removeEventListener('online', flushOutbox);
   }, [currentUser?.id, queryClient]);
 
-  const toggleReaction = (msgId: string, emoji: string) => {
+  const toggleReaction = useCallback((msgId: string, emoji: string) => {
     if (!currentUser?.id) return;
     let removed = false;
     setReactionsMap(prev => {
@@ -2628,14 +2952,14 @@ const Messages: React.FC = () => {
       if (users.size === 0) delete msgReacts[emoji];
       else msgReacts[emoji] = Array.from(users);
       const next = { ...prev, [msgId]: msgReacts };
-      localStorage.setItem('msg_reactions_' + currentUser.id, JSON.stringify(next));
+      try { localStorage.setItem('msg_reactions_' + currentUser.id, JSON.stringify(next)); } catch (_) {}
       return next;
     });
     setActiveReactionMsgId(null);
     sendP2PSignal({ type: 'MESSAGE_REACTION', msgId, emoji, userId: currentUser.id, removed });
-  };
+  }, [currentUser?.id]);
 
-  const toggleStarMessage = (msg: any) => {
+  const toggleStarMessage = useCallback((msg: any) => {
     if (!currentUser?.id || !msg?.id) return;
     setStarredItems(prev => {
       const exists = prev.some(s => s.id === msg.id);
@@ -2651,11 +2975,11 @@ const Messages: React.FC = () => {
             },
             ...prev
           ];
-      localStorage.setItem('starred_msgs_' + currentUser.id, JSON.stringify(next.slice(0, 100)));
+      try { localStorage.setItem('starred_msgs_' + currentUser.id, JSON.stringify(next.slice(0, 100))); } catch (_) {}
       toast.success(exists ? 'Removed from Starred' : 'Message starred');
       return next;
     });
-  };
+  }, [currentUser?.id, selectedChat?.display_name, selectedChat?.id]);
 
   const handleEmojiClick = (emojiData: any) => {
     setMessageText(prev => prev + emojiData.emoji);
@@ -2875,9 +3199,14 @@ const Messages: React.FC = () => {
     setIsMediaViewOnce(false);
   };
 
-  const triggerDeleteMessage = (id: string) => {
+  const triggerDeleteMessage = useCallback((id: string) => {
     setDeleteConfirmId(id);
-  };
+  }, []);
+
+  const starredIdSet = useMemo(() => new Set(starredItems.map(s => s.id)), [starredItems]);
+  const handleToggleReactionPicker = useCallback((msgId: string) => {
+    setActiveReactionMsgId(prev => (prev === msgId ? null : msgId));
+  }, []);
 
   const executeDeleteMessage = async () => {
     if (!deleteConfirmId || !currentUser) return;
@@ -3500,15 +3829,10 @@ const Messages: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <button onClick={() => {
                     setLiveStatus('inactive');
-                    sendP2PSignal({ type: 'LIVE_PROPOSAL_REJECTED', sender_id: currentUser?.id });
-                    try {
-                      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
-                      receiverChannel.send({
-                        type: 'broadcast',
-                        event: 'LIVE_PROPOSAL_SIGNAL',
-                        payload: { type: 'LIVE_PROPOSAL_REJECTED', sender_id: currentUser?.id }
-                      }).catch(() => {});
-                    } catch (_) {}
+                    useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
+                    const rejectPayload = { type: 'LIVE_PROPOSAL_REJECTED', sender_id: currentUser?.id };
+                    sendP2PSignal(rejectPayload);
+                    sendSignalToReceiver(selectedChat.id, 'LIVE_PROPOSAL_SIGNAL', rejectPayload);
                   }} className="px-3 py-1.5 rounded-full text-xs font-bold text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors">
                     Decline
                   </button>
@@ -3517,15 +3841,11 @@ const Messages: React.FC = () => {
                     setLiveText('');
                     activeLiveStreamTextRef.current = '';
                     lastInputLengthRef.current = 0;
-                    sendP2PSignal({ type: 'LIVE_PROPOSAL_ACCEPTED', sender_id: currentUser?.id });
-                    try {
-                      const receiverChannel = supabase.channel(`user_notifications_${selectedChat.id}`);
-                      receiverChannel.send({
-                        type: 'broadcast',
-                        event: 'LIVE_PROPOSAL_SIGNAL',
-                        payload: { type: 'LIVE_PROPOSAL_ACCEPTED', sender_id: currentUser?.id }
-                      }).catch(() => {});
-                    } catch (_) {}
+                    useGlobalStore.getState().clearPendingLiveProposal(selectedChat.id);
+                    const acceptPayload = { type: 'LIVE_PROPOSAL_ACCEPTED', sender_id: currentUser?.id };
+                    sendP2PSignal(acceptPayload);
+                    sendSignalToReceiver(selectedChat.id, 'LIVE_PROPOSAL_SIGNAL', acceptPayload);
+                    toast.success('⚡ Live Typing Connected!');
                   }} className="px-3 py-1.5 rounded-full text-xs font-bold bg-blue-500 hover:bg-blue-600 text-white shadow-sm transition-colors">
                     Accept
                   </button>
@@ -3533,7 +3853,7 @@ const Messages: React.FC = () => {
               </div>
             )}
 
-            {liveStatus === 'active' && liveText && (
+            {liveStatus === 'active' && (
               <div className="bg-green-50 dark:bg-green-900/10 border-b border-green-100 dark:border-green-900/20 p-3 px-6 flex items-start gap-3 z-10">
                 <ProfileAvatar userId={selectedChat.id} defaultAvatar={selectedChat.avatar_url} name={selectedChat.display_name} className="w-8 h-8 rounded-full shadow-sm" />
                 <div className="flex-1 min-w-0">
@@ -3542,8 +3862,16 @@ const Messages: React.FC = () => {
                     Live Typing
                   </p>
                   <p className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed font-medium break-words">
-                    {liveText}
-                    <span className="ml-1 inline-block w-1.5 h-3.5 bg-green-500 animate-pulse align-middle"></span>
+                    {liveText ? (
+                      <>
+                        {liveText}
+                        <span className="ml-1 inline-block w-1.5 h-3.5 bg-green-500 animate-pulse align-middle"></span>
+                      </>
+                    ) : (
+                      <span className="text-xs text-green-700/70 dark:text-green-400/70 italic">
+                        Connected — type to stream keystrokes live...
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
@@ -3587,206 +3915,28 @@ const Messages: React.FC = () => {
                     <div className="text-center py-2 text-xs font-semibold text-gray-400">Loading older messages...</div>
                   )}
 
-                  {(messages.length > visibleLimit ? messages.slice(messages.length - visibleLimit) : messages).map((msg: any) => {
-                    const parentMsg = msg.parent_message_id ? messages.find((m: any) => m.id === msg.parent_message_id) : null;
-                    const msgReactions = reactionsMap[msg.id] || {};
-                    const reactionEntries = Object.entries(msgReactions).filter(([, users]) => users.length > 0);
-                    const firstUrl = !msg.is_view_once ? extractFirstUrl(msg.content) : null;
-                    const isStarred = starredItems.some(s => s.id === msg.id);
-                    return (
-                    <motion.div 
-                      key={msg.id} 
-                      onTouchStart={() => handleTouchStart(msg.id)}
-                      onTouchEnd={handleTouchEnd}
-                      onTouchMove={handleTouchMove}
-                      onMouseDown={() => handleTouchStart(msg.id)}
-                      onMouseUp={handleTouchEnd}
-                      onMouseLeave={handleTouchEnd}
-                      onClick={() => handleMessageClick(msg.id)}
-                      className={`flex ${msg.sender_id === currentUser?.id ? 'justify-end' : 'justify-start'} group relative animate-in fade-in slide-in-from-bottom-2 duration-300 w-full ${selectedMessages.includes(msg.id) ? 'bg-blue-50/50 dark:bg-blue-900/20 rounded-lg' : ''}`}
-                      drag="x"
-                      dragConstraints={{ left: 0, right: 0 }}
-                      dragElastic={{ left: 0, right: 0.5 }}
-                      onDragEnd={(e, info) => {
-                        if (info.offset.x > 50) {
-                          setReplyingTo(msg);
-                        }
-                      }}
-                    >
-                      <div className={`opacity-0 group-hover:opacity-100 transition-all self-center flex items-center gap-1 ${msg.sender_id === currentUser?.id ? 'mr-1.5' : 'ml-1.5 order-last'}`}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveReactionMsgId(activeReactionMsgId === msg.id ? null : msg.id);
-                          }}
-                          className="p-1 text-gray-400 hover:text-[#1877F2] rounded-full"
-                          title="React"
-                        >
-                          <Smile size={15} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleStarMessage(msg);
-                          }}
-                          className={`p-1 rounded-full ${isStarred ? 'text-amber-500' : 'text-gray-400 hover:text-amber-500'}`}
-                          title="Star message"
-                        >
-                          <Star size={15} className={isStarred ? 'fill-amber-400' : ''} />
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            triggerDeleteMessage(msg.id);
-                          }} 
-                          className="p-1 text-red-300 hover:text-red-500 rounded-full"
-                          title={msg.sender_id === currentUser?.id ? "Delete for Everyone" : "Delete for Me"}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-
-                      {activeReactionMsgId === msg.id && (
-                        <div
-                          onClick={(e) => e.stopPropagation()}
-                          className={`absolute -top-10 z-30 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-full px-2 py-1 shadow-lg flex items-center gap-1 ${msg.sender_id === currentUser?.id ? 'right-2' : 'left-2'}`}
-                        >
-                          {QUICK_REACTIONS.map(emoji => (
-                            <button
-                              key={emoji}
-                              type="button"
-                              onClick={() => toggleReaction(msg.id, emoji)}
-                              className="text-base hover:scale-125 transition-transform px-1"
-                            >
-                              {emoji}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      
-                      <div className="flex flex-col max-w-[75%]">
-                        <div className={`p-3.5 rounded-2xl shadow-sm text-[15px] font-medium leading-relaxed ${msg.sender_id === currentUser?.id ? 'bg-[#1877F2] text-white rounded-tr-none' : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-gray-800 dark:text-gray-200 rounded-tl-none'}`}>
-                          {parentMsg && (
-                            <div className={`mb-2 p-2 rounded-xl text-xs opacity-80 border-l-4 ${msg.sender_id === currentUser?.id ? 'bg-white/20 border-white/50 text-white' : 'bg-gray-100 dark:bg-gray-700 border-[#1877F2] text-gray-800 dark:text-gray-300'}`}>
-                              <p className="font-bold mb-0.5">{parentMsg.sender_id === currentUser?.id ? 'You' : selectedChat.display_name}</p>
-                              <p className="line-clamp-1">{parentMsg.is_view_once ? '🔒 View Once message' : (parentMsg.content || (parentMsg.media_url ? 'Media' : ''))}</p>
-                            </div>
-                          )}
-                          {msg.is_view_once ? (
-                            msg.sender_id === currentUser?.id ? (
-                              <div className="flex items-center gap-2 py-1 px-2.5 bg-black/15 dark:bg-white/15 rounded-xl text-xs font-semibold select-none">
-                                <div className="w-5 h-5 rounded-full border border-current flex items-center justify-center font-bold text-[10px]">1</div>
-                                <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
-                              </div>
-                            ) : (
-                              <button 
-                                onClick={() => handleViewOnce(msg)} 
-                                className="flex items-center gap-2.5 px-3.5 py-2.5 bg-black/10 dark:bg-white/10 hover:bg-black/20 dark:hover:bg-white/20 rounded-xl transition-all font-bold text-sm select-none active:scale-95 shadow-sm"
-                              >
-                                <div className="w-6 h-6 rounded-full border-2 border-current flex items-center justify-center font-black text-xs animate-pulse">1</div>
-                                {msg.media_type === 'audio' ? <Mic size={18} /> : <Eye size={18} />}
-                                <span>View Once {msg.media_url ? (msg.media_type === 'audio' ? 'Voice' : msg.media_type === 'video' ? 'Video' : 'Photo') : 'Message'}</span>
-                                <span className="text-[11px] font-normal opacity-75">(Tap to open)</span>
-                              </button>
-                            )
-                          ) : msg.media_url ? (
-                            <div className={`mb-2 rounded-lg overflow-hidden relative ${msg.media_type === 'audio' ? 'bg-transparent overflow-visible' : 'bg-black/5 dark:bg-white/5'}`}>
-                              {msg.media_type === 'image' ? (
-                                <ZoomableImage src={msg.media_url} className="max-w-full h-auto rounded-lg" referrerPolicy="no-referrer" />
-                              ) : msg.media_type === 'audio' ? (
-                                <CustomAudioPlayer src={msg.media_url} isSender={msg.sender_id === currentUser?.id} />
-                              ) : msg.media_type === 'video' ? (
-                                <VideoPlayer src={msg.media_url} className="max-w-full h-auto rounded-lg" />
-                              ) : (
-                                <div className="p-3 bg-black/10 dark:bg-white/10 rounded-xl flex items-center gap-3 border border-black/10 dark:border-white/10">
-                                  <div className="p-2.5 rounded-lg bg-blue-500/20 text-blue-500 shrink-0">
-                                    <FileText size={24} />
-                                  </div>
-                                  <div className="min-w-0 flex-1">
-                                    <p className="text-xs font-bold truncate text-gray-900 dark:text-white">
-                                      {msg.filename || msg.media_url.split('/').pop()?.split('?')[0] || 'Attachment'}
-                                    </p>
-                                    {msg.file_size && (
-                                      <p className="text-[10px] text-gray-500 dark:text-gray-400 font-semibold">{(msg.file_size / (1024 * 1024)).toFixed(2)} MB</p>
-                                    )}
-                                    <a 
-                                      href={msg.media_url} 
-                                      target="_blank" 
-                                      rel="noreferrer" 
-                                      download={msg.filename || 'download'} 
-                                      className="text-[11px] text-blue-500 hover:underline flex items-center gap-1 font-bold mt-1"
-                                    >
-                                      <Download size={12} /> Download File
-                                    </a>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          ) : null}
-                          {!msg.is_view_once && msg.content && <span>{msg.content}</span>}
-                          {firstUrl && (() => {
-                            let host = firstUrl;
-                            try { host = new URL(firstUrl).hostname.replace(/^www\./, ''); } catch (_) {}
-                            return (
-                              <a
-                                href={firstUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className={`mt-2 flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs border transition-opacity hover:opacity-90 ${
-                                  msg.sender_id === currentUser?.id
-                                    ? 'bg-white/15 border-white/25 text-white'
-                                    : 'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200'
-                                }`}
-                              >
-                                <div className="min-w-0">
-                                  <p className="font-bold truncate">{host}</p>
-                                  <p className="text-[10px] opacity-75 truncate">{firstUrl}</p>
-                                </div>
-                                <ExternalLink size={14} className="shrink-0" />
-                              </a>
-                            );
-                          })()}
-                          <div className={`flex items-center justify-end gap-1 mt-1 ${msg.sender_id === currentUser?.id ? 'text-blue-200' : 'text-gray-400'}`}>
-                            {isStarred && <Star size={10} className="fill-amber-400 text-amber-400" />}
-                            <p className="text-[10px] text-right opacity-80">
-                               {formatTime(msg.created_at)}
-                            </p>
-                            {msg.sender_id === currentUser?.id && (
-                              msg.is_pending ? (
-                                <Clock size={12} className="opacity-70" />
-                              ) : msg.is_read || msg.p2p_seen ? (
-                                <CheckCheck size={12} className="text-red-500" />
-                              ) : onlineUsers.has(selectedChat.id) || liveStatus === 'active' ? (
-                                <CheckCheck size={12} className="text-blue-200 opacity-60" />
-                              ) : (
-                                <Check size={12} className="text-blue-200 opacity-60" />
-                              )
-                            )}
-                          </div>
-                        </div>
-
-                        {reactionEntries.length > 0 && (
-                          <div className={`flex flex-wrap gap-1 mt-1 ${msg.sender_id === currentUser?.id ? 'justify-end' : 'justify-start'}`}>
-                            {reactionEntries.map(([emoji, users]) => (
-                              <button
-                                key={emoji}
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); toggleReaction(msg.id, emoji); }}
-                                className="px-1.5 py-0.5 rounded-full text-xs bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm flex items-center gap-1"
-                              >
-                                <span>{emoji}</span>
-                                {users.length > 1 && <span className="text-[10px] font-bold text-gray-600 dark:text-gray-300">{users.length}</span>}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  )})}
+                  <MemoizedChatMessages
+                    messages={messages}
+                    visibleLimit={visibleLimit}
+                    currentUserId={currentUser?.id}
+                    selectedChatId={selectedChat.id}
+                    selectedChatDisplayName={selectedChat.display_name}
+                    selectedMessages={selectedMessages}
+                    reactionsMap={reactionsMap}
+                    activeReactionMsgId={activeReactionMsgId}
+                    starredIds={starredIdSet}
+                    isOnlineOrLive={onlineUsers.has(selectedChat.id) || liveStatus === 'active'}
+                    onTouchStart={handleTouchStart}
+                    onTouchEnd={handleTouchEnd}
+                    onTouchMove={handleTouchMove}
+                    onMessageClick={handleMessageClick}
+                    onReply={setReplyingTo}
+                    onToggleReactionPicker={handleToggleReactionPicker}
+                    onToggleReaction={toggleReaction}
+                    onToggleStar={toggleStarMessage}
+                    onDeleteMessage={triggerDeleteMessage}
+                    onViewOnce={handleViewOnce}
+                  />
                   {otherUserTyping && (
                     <motion.div 
                       initial={{ opacity: 0, y: 10 }} 

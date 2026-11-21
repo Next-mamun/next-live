@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { useAuth } from '@/contexts/AuthContext';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { auth, db } from '@/lib/firebase';
 import { 
   signInWithPopup, 
@@ -20,15 +20,15 @@ export const AuthBottomSheet: React.FC = () => {
   const authModalAction = useGlobalStore((state) => state.authModalAction);
   const closeAuthModal = useGlobalStore((state) => state.closeAuthModal);
   const { setCurrentUser } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  if (!isAuthModalOpen) return null;
+  if (!isAuthModalOpen || location.pathname === '/login' || location.pathname === '/register') return null;
 
   const currentPath = location.pathname + location.search;
+  const returnParam = currentPath && currentPath !== '/' ? `?returnUrl=${encodeURIComponent(currentPath)}` : '';
 
   const handleSuccess = (user: any) => {
     setCurrentUser(user);
@@ -124,16 +124,6 @@ export const AuthBottomSheet: React.FC = () => {
     }
   };
 
-  const goToLogin = () => {
-    closeAuthModal();
-    navigate(`/login?returnUrl=${encodeURIComponent(currentPath)}`);
-  };
-
-  const goToRegister = () => {
-    closeAuthModal();
-    navigate(`/register?returnUrl=${encodeURIComponent(currentPath)}`);
-  };
-
   return (
     <div className="fixed inset-0 z-[1000] flex flex-col justify-end sm:justify-center sm:items-center">
       {/* Dimmed backdrop */}
@@ -179,24 +169,24 @@ export const AuthBottomSheet: React.FC = () => {
 
           <div className="w-full flex flex-col gap-3 mt-6">
             {/* Direct to original Login Page */}
-            <button
-              type="button"
-              onClick={goToLogin}
+            <Link
+              to={`/login${returnParam}`}
+              onClick={() => closeAuthModal()}
               className="w-full flex items-center justify-center gap-2.5 py-3.5 px-4 bg-[#1877F2] hover:bg-[#166fe5] text-white rounded-2xl font-bold text-sm tracking-wide shadow-md shadow-blue-500/20 transition-all active:scale-[0.98]"
             >
               <LogIn size={18} />
               Log In to Existing Account
-            </button>
+            </Link>
 
             {/* Direct to original Register Page */}
-            <button
-              type="button"
-              onClick={goToRegister}
+            <Link
+              to={`/register${returnParam}`}
+              onClick={() => closeAuthModal()}
               className="w-full flex items-center justify-center gap-2.5 py-3 px-4 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl font-bold text-sm transition-all active:scale-[0.98]"
             >
               <UserPlus size={18} />
               Create New Account
-            </button>
+            </Link>
 
             <div className="flex items-center gap-3 my-1">
               <div className="h-px bg-gray-200 dark:bg-gray-800 flex-1" />

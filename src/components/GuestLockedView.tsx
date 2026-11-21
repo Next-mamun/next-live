@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Lock, LogIn, Compass, ArrowLeft, UserPlus } from 'lucide-react';
 
 interface GuestLockedViewProps {
@@ -31,23 +31,21 @@ export const GuestLockedView: React.FC<GuestLockedViewProps> = ({ title, descrip
       </p>
 
       <div className="flex flex-col gap-3 w-full max-w-xs">
-        <button
-          type="button"
-          onClick={() => navigate(`/login${returnParam}`)}
+        <Link
+          to={`/login${returnParam}`}
           className="w-full flex items-center justify-center gap-2 py-3.5 px-6 bg-[#1877F2] hover:bg-[#166fe5] text-white rounded-2xl font-bold text-sm tracking-wide shadow-lg shadow-blue-500/25 transition-all active:scale-[0.98]"
         >
           <LogIn size={18} />
           Log In
-        </button>
+        </Link>
 
-        <button
-          type="button"
-          onClick={() => navigate(`/register${returnParam}`)}
+        <Link
+          to={`/register${returnParam}`}
           className="w-full flex items-center justify-center gap-2 py-3 px-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750 text-gray-700 dark:text-gray-200 rounded-2xl font-bold text-sm transition-all active:scale-[0.98]"
         >
           <UserPlus size={18} />
           Create New Account
-        </button>
+        </Link>
 
         <button
           type="button"

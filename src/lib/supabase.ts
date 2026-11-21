@@ -27,8 +27,32 @@ const supabaseAnonKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpkcnVieHR1eG90cXlhc21zdXF6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0MjYwMjUsImV4cCI6MjA4NzAwMjAyNX0.bmabhbjLx_ZUmW0wJRx9fUY8Noiv9dz8i-pzWe-PEyI';
 
+const PROXY_STORAGE_KEY = 'next_supa_proxy_until';
 const PROXYABLE_PREFIXES = ['/rest/v1/', '/auth/v1/', '/storage/v1/'];
-let proxyFallbackUntil = 0;
+
+const getProxyFallbackUntil = (): number => {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return Number(window.localStorage.getItem(PROXY_STORAGE_KEY) || '0') || 0;
+    }
+  } catch {}
+  return proxyFallbackUntilMem;
+};
+
+const setProxyFallbackUntil = (ts: number) => {
+  proxyFallbackUntilMem = ts;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (ts > 0) {
+        window.localStorage.setItem(PROXY_STORAGE_KEY, String(ts));
+      } else {
+        window.localStorage.removeItem(PROXY_STORAGE_KEY);
+      }
+    }
+  } catch {}
+};
+
+let proxyFallbackUntilMem = 0;
 
 const fetchWithTimeout = async (
   url: string,
@@ -110,25 +134,40 @@ const resilientSupabaseFetch: typeof fetch = async (input, init) => {
     }
   }
 
-  // If direct domain recently stalled/blocked on this carrier, use same-origin proxy immediately
-  if (Date.now() < proxyFallbackUntil) {
+  const attachFirebaseProxyHeader = async (baseInit: RequestInit): Promise<RequestInit> => {
     try {
-      return await fetchWithTimeout(proxyUrl, normalizedInit, 12000);
+      const { getFirebaseIdToken } = await import('./clientAuth');
+      const fbToken = await getFirebaseIdToken(1200);
+      if (!fbToken) return baseInit;
+      const mergedHeaders = new Headers(baseInit.headers || undefined);
+      mergedHeaders.set('x-firebase-token', fbToken);
+      return { ...baseInit, headers: mergedHeaders };
+    } catch {
+      return baseInit;
+    }
+  };
+
+  // If direct domain recently stalled/blocked on this carrier, use same-origin proxy immediately
+  if (Date.now() < getProxyFallbackUntil()) {
+    try {
+      const proxyInit = await attachFirebaseProxyHeader(normalizedInit);
+      return await fetchWithTimeout(proxyUrl, proxyInit, 12000);
     } catch {
       // If proxy itself hiccupped, clear flag and fall through to direct try
-      proxyFallbackUntil = 0;
+      setProxyFallbackUntil(0);
     }
   }
 
   try {
-    return await fetchWithTimeout(rawUrl, normalizedInit, 6500);
+    return await fetchWithTimeout(rawUrl, normalizedInit, 3500);
   } catch (err: any) {
     if (err?._externalAbort) {
       throw err;
     }
-    // BD carrier / restricted Wi-Fi likely blocking/dropping *.supabase.co -> fail over cleanly to /api/supabase-proxy
-    proxyFallbackUntil = Date.now() + 5 * 60 * 1000;
-    return await fetchWithTimeout(proxyUrl, normalizedInit, 12000);
+    // BD carrier / restricted Wi-Fi likely blocking/dropping *.supabase.co -> fail over cleanly to /api/supabase-proxy for 30m
+    setProxyFallbackUntil(Date.now() + 30 * 60 * 1000);
+    const proxyInit = await attachFirebaseProxyHeader(normalizedInit);
+    return await fetchWithTimeout(proxyUrl, proxyInit, 12000);
   }
 };
 

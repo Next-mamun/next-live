@@ -1,18 +1,16 @@
 import React, { useMemo } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Home, PlusSquare, MessageCircle, User, Users, BookOpen } from 'lucide-react';
 import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
 
 const BottomNav: React.FC = () => {
   const location = useLocation();
-  const navigate = useNavigate();
   const { currentUser } = useAuth();
   const { bottomBarSize, iconColor, darkMode } = useTheme();
   const isActive = (path: string) => location.pathname === path;
   
   const messages = useGlobalStore((state) => state.messages);
-  const openAuthModal = useGlobalStore((state) => state.openAuthModal);
   
   const totalUnread = useMemo(() => {
     if (!currentUser) return 0;
@@ -80,17 +78,15 @@ const BottomNav: React.FC = () => {
       </Link>
 
       {!currentUser ? (
-        <button
-          type="button"
-          onClick={() => navigate('/login')}
-          onPointerDown={() => handlePreload('login')}
+        <Link
+          to="/login"
           className="flex flex-col items-center justify-center w-full h-full"
           style={{ color: darkMode ? '#ffffff' : '#1A2933' }}
         >
           <div className="p-2 rounded-xl shadow-lg hover:scale-105 transition-transform" style={{ backgroundColor: activeColor, color: 'white' }}>
             <PlusSquare size={iconSize} />
           </div>
-        </button>
+        </Link>
       ) : (
         <Link 
           to="/create-post" 
@@ -127,16 +123,14 @@ const BottomNav: React.FC = () => {
       </Link>
 
       {!currentUser ? (
-        <button
-          type="button"
-          onClick={() => navigate('/login')}
-          onPointerDown={() => handlePreload('login')}
+        <Link
+          to="/login"
           className="flex flex-col items-center justify-center w-full h-full"
           style={{ color: inactiveColor }}
         >
           <User size={iconSize} strokeWidth={2} />
           <span className="text-[10px] font-bold mt-1 text-[#1877F2]">Log In</span>
-        </button>
+        </Link>
       ) : (
         <Link 
           to={`/profile/${currentUser?.username || currentUser?.id}`} 
