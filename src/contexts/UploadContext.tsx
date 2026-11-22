@@ -101,20 +101,21 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Check if paused before starting
       if (uploadsRef.current.find(u => u.id === id)?.status === 'paused') return;
 
-      // If it's a File or a base64 string, we need to process it
-      if (file instanceof File || typeof file === 'string') {
-        const isExplicitVideo = metadata?.payload?.media_type === 'video' || metadata?.media_type === 'video';
-        const isExplicitAudio = metadata?.payload?.media_type === 'audio' || metadata?.media_type === 'audio';
-        const isExplicitDoc = metadata?.payload?.media_type === 'document' || metadata?.media_type === 'document';
+      // If it's a non-empty File or data/blob/url string, process it
+      if (file instanceof File || (typeof file === 'string' && file.trim().length > 0)) {
+        const isExplicitVideo = metadata?.payload?.media_type === 'video' || metadata?.media_type === 'video' || metadata?.mediaType === 'video';
+        const isExplicitAudio = metadata?.payload?.media_type === 'audio' || metadata?.media_type === 'audio' || metadata?.mediaType === 'audio';
+        const isExplicitImage = metadata?.payload?.media_type === 'image' || metadata?.media_type === 'image' || metadata?.mediaType === 'image';
+        const isExplicitDoc = metadata?.payload?.media_type === 'document' || metadata?.media_type === 'document' || metadata?.mediaType === 'document';
 
         const isVideo = isExplicitVideo || (file instanceof File && (file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm|3gp|flv|wmv|m4v)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:video/') || file.includes('/video/')));
         const isAudio = isExplicitAudio || (file instanceof File && (file.type.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|aac|opus|flac)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:audio/') || file.includes('/audio/')));
-        const isImage = !isVideo && !isAudio && !isExplicitDoc && ((file instanceof File && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp|svg)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:image/') || file.includes('/image/'))));
+        const isImage = !isVideo && !isAudio && !isExplicitDoc && (isExplicitImage || (file instanceof File && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|heic|bmp|svg)$/i.test(file.name))) || (typeof file === 'string' && (file.startsWith('data:image/') || file.includes('/image/'))));
         const isDoc = isExplicitDoc || (!isVideo && !isAudio && !isImage && file instanceof File);
 
         mediaType = isVideo ? 'video' : isAudio ? 'audio' : isImage ? 'image' : 'document';
 
-        console.log('Processing upload:', { id, mediaType, isVideo, isImage, isAudio, isDoc, fileType: file instanceof File ? file.type : 'base64' });
+        console.log('Processing upload:', { id, mediaType, isVideo, isImage, isAudio, isDoc, fileType: file instanceof File ? file.type : 'base64/url' });
 
         if (isVideo || isImage || isAudio || isDoc) {
           try {
@@ -383,13 +384,55 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const postDoc = await dualWritePost(postData);
         await invalidatePostsCache();
       } else if (type === 'story') {
-        await addDoc(collection(db, 'stories'), {
+        const safeHours = Math.min(168, Math.max(24, Number(metadata?.durationHours) || 24));
+        const createdAtMs = Date.now();
+        const expiresAtMs = createdAtMs + safeHours * 60 * 60 * 1000;
+        const vis = metadata.visibility || 'friends';
+        const cleanExcluded: string[] = Array.isArray(metadata.excludedUserIds)
+          ? Array.from(new Set(metadata.excludedUserIds.filter((uid: string) => uid && uid !== metadata.userId))).slice(0, 200) as string[]
+          : [];
+        let cleanAllowed: string[] = Array.isArray(metadata.allowedUserIds)
+          ? Array.from(new Set(metadata.allowedUserIds.filter((uid: string) => uid && uid !== metadata.userId))).slice(0, 200) as string[]
+          : [];
+
+        if (vis === 'friends_except' && cleanAllowed.length === 0) {
+          try {
+            const { fetchStatusAudienceContacts } = await import('@/services/statusService');
+            const { friends } = await fetchStatusAudienceContacts(metadata.userId);
+            const excludedSet = new Set(cleanExcluded);
+            cleanAllowed = friends
+              .map((f) => f.id)
+              .filter((fid) => fid && !excludedSet.has(fid))
+              .slice(0, 200);
+          } catch {}
+        }
+
+        const storyPayload: Record<string, any> = {
           user_id: metadata.userId,
-          media_url: mediaUrl,
-          media_type: mediaType,
-          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          created_at: serverTimestamp()
-        });
+          author_name: (metadata.authorName || '').slice(0, 120),
+          author_username: (metadata.authorUsername || '').slice(0, 64),
+          author_avatar: (metadata.authorAvatar || '').slice(0, 2048),
+          author_verified: Boolean(metadata.authorVerified),
+          media_url: (mediaUrl || '').slice(0, 800000),
+          media_type: metadata.mediaType === 'text' ? 'text' : mediaType === 'video' ? 'video' : 'image',
+          caption: (metadata.caption || '').trim().slice(0, 1000),
+          text_content: (metadata.textContent || '').trim().slice(0, 1000),
+          bg_style: (metadata.bgStyle || 'emerald').slice(0, 128),
+          font_style: metadata.fontStyle || 'bold',
+          visibility: vis,
+          allowed_user_ids: cleanAllowed,
+          excluded_user_ids: cleanExcluded,
+          duration_hours: safeHours,
+          expires_at: new Date(expiresAtMs).toISOString(),
+          expires_at_ms: expiresAtMs,
+          created_at: new Date(createdAtMs).toISOString(),
+          created_at_ms: createdAtMs,
+          edit_metadata: metadata.editMetadata || null,
+        };
+        await addDoc(collection(db, 'stories'), storyPayload);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('next_status_updated'));
+        }
       } else if (type === 'reel') {
         const payload = {
           user_id: metadata.userId,

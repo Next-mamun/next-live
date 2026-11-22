@@ -251,24 +251,89 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(reelId) && existing().user_id == request.auth.uid;
     }
 
-    match /stories/{storyId} {
+    function isValidStoryPayload(data) {
+      return data.user_id is string &&
+        data.user_id.size() > 0 &&
+        data.user_id.size() <= 128 &&
+        data.get('media_type', 'image') in ['image', 'video', 'text'] &&
+        (!('media_url' in data) || data.media_url == null || (data.media_url is string && data.media_url.size() <= 800000)) &&
+        (!('caption' in data) || data.caption == null || (data.caption is string && data.caption.size() <= 1000)) &&
+        (!('text_content' in data) || data.text_content == null || (data.text_content is string && data.text_content.size() <= 1000)) &&
+        (!('bg_style' in data) || data.bg_style == null || (data.bg_style is string && data.bg_style.size() <= 128)) &&
+        (!('font_style' in data) || data.font_style == null || (data.font_style is string && data.font_style.size() <= 32)) &&
+        data.get('visibility', 'friends') in ['public', 'friends', 'friends_except', 'only_share'] &&
+        (!('allowed_user_ids' in data) || (data.allowed_user_ids is list && data.allowed_user_ids.size() <= 200)) &&
+        (!('excluded_user_ids' in data) || (data.excluded_user_ids is list && data.excluded_user_ids.size() <= 200)) &&
+        (!('duration_hours' in data) || (data.duration_hours is number && data.duration_hours >= 24 && data.duration_hours <= 168)) &&
+        (!('author_name' in data) || data.author_name == null || (data.author_name is string && data.author_name.size() <= 120)) &&
+        (!('author_username' in data) || data.author_username == null || (data.author_username is string && data.author_username.size() <= 64)) &&
+        (!('author_avatar' in data) || data.author_avatar == null || (data.author_avatar is string && data.author_avatar.size() <= 2048));
+    }
+
+    match /test/connection {
       allow read: if true;
+      allow write: if false;
+    }
+
+    match /stories/{storyId} {
+      allow read: if existing().get('visibility', 'public') == 'public' || (
+        isSignedIn() && (
+          existing().user_id == request.auth.uid ||
+          existing().get('visibility', 'friends') == 'friends' ||
+          (
+            existing().get('visibility', '') in ['friends_except', 'only_share'] &&
+            request.auth.uid in existing().get('allowed_user_ids', []) &&
+            !(request.auth.uid in existing().get('excluded_user_ids', []))
+          )
+        )
+      );
       allow create: if isSignedIn() &&
         isValidId(storyId) &&
-        incoming().user_id == request.auth.uid &&
-        (!('media_url' in incoming()) || (incoming().media_url is string && incoming().media_url.size() <= 2048));
+        isValidStoryPayload(incoming()) &&
+        incoming().user_id == request.auth.uid;
       allow update: if isSignedIn() &&
         isValidId(storyId) &&
+        isValidStoryPayload(incoming()) &&
         existing().user_id == request.auth.uid &&
-        incoming().user_id == existing().user_id;
+        incoming().user_id == existing().user_id &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'visibility',
+          'allowed_user_ids',
+          'excluded_user_ids',
+          'caption',
+          'duration_hours',
+          'expires_at',
+          'expires_at_ms'
+        ]);
       allow delete: if isSignedIn() && isValidId(storyId) && existing().user_id == request.auth.uid;
     }
 
     match /story_views/{viewId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(viewId) && incoming().user_id == request.auth.uid;
-      allow update: if isSignedIn() && isValidId(viewId) && existing().user_id == request.auth.uid && incoming().user_id == existing().user_id;
-      allow delete: if isSignedIn() && isValidId(viewId) && existing().user_id == request.auth.uid;
+      allow read: if isSignedIn() && (
+        existing().user_id == request.auth.uid ||
+        existing().get('owner_id', '') == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        isValidId(viewId) &&
+        incoming().user_id == request.auth.uid &&
+        incoming().story_id is string &&
+        incoming().story_id.size() > 0 &&
+        incoming().story_id.size() <= 128 &&
+        incoming().owner_id is string &&
+        incoming().owner_id.size() > 0 &&
+        incoming().owner_id.size() <= 128 &&
+        (!('reaction' in incoming()) || incoming().reaction == null || (incoming().reaction is string && incoming().reaction.size() <= 32));
+      allow update: if isSignedIn() &&
+        isValidId(viewId) &&
+        existing().user_id == request.auth.uid &&
+        incoming().user_id == existing().user_id &&
+        incoming().story_id == existing().story_id &&
+        incoming().owner_id == existing().owner_id &&
+        (!('reaction' in incoming()) || incoming().reaction == null || (incoming().reaction is string && incoming().reaction.size() <= 32));
+      allow delete: if isSignedIn() && isValidId(viewId) && (
+        existing().user_id == request.auth.uid ||
+        existing().get('owner_id', '') == request.auth.uid
+      );
     }
 
     match /typing_status/{statusId} {

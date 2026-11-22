@@ -17,6 +17,7 @@ import {
 } from '@/lib/profileSync';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
+import { AvatarWithStatusMenu } from '@/components/status/AvatarWithStatusMenu';
 import ZoomableImage from '@/components/ZoomableImage';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -415,8 +416,14 @@ const Profile: React.FC = () => {
       {/* Photo Modal */}
       {showPhotoModal && (
         <div className="fixed inset-0 bg-black/90 z-[200] flex items-center justify-center p-4 animate-in fade-in duration-200" onClick={() => setShowPhotoModal(false)}>
-          <button className="absolute top-6 right-6 text-white hover:scale-110 transition-transform"><X size={32} /></button>
-          <img src={profile.avatar_url || undefined} className="max-w-full max-h-full rounded-lg shadow-2xl animate-in zoom-in duration-300" onClick={(e) => e.stopPropagation()} />
+          <button type="button" className="absolute top-6 right-6 text-white hover:scale-110 transition-transform"><X size={32} /></button>
+          {profile.avatar_url && !profile.avatar_url.includes('dicebear') ? (
+            <img src={profile.avatar_url} alt={profile.display_name} className="max-w-full max-h-[85vh] rounded-lg shadow-2xl animate-in zoom-in duration-300" onClick={(e) => e.stopPropagation()} />
+          ) : (
+            <div onClick={(e) => e.stopPropagation()} className="w-56 h-56 rounded-full bg-gradient-to-tr from-[#1877F2] to-sky-400 text-white text-6xl font-black flex items-center justify-center shadow-2xl border-4 border-white/20">
+              {(profile.display_name || 'U').trim().charAt(0).toUpperCase()}
+            </div>
+          )}
         </div>
       )}
 
@@ -465,12 +472,21 @@ const Profile: React.FC = () => {
           </div>
           
           <div className="pointer-events-none relative -mt-16 px-4 flex flex-col items-center gap-4 md:gap-6 md:mt-0 md:px-0 md:flex-row md:items-end md:absolute md:-bottom-20 md:left-10 md:w-[calc(100%-5rem)] z-20">
-            <div className="pointer-events-auto relative group cursor-pointer" onClick={() => !isEditing && setShowPhotoModal(true)}>
-              <ProfileAvatar userId={profile.id} defaultAvatar={isEditing ? editData.avatar_url : profile.avatar_url} name={profile.display_name} className="w-32 h-32 md:w-44 md:h-44 rounded-full border-4 border-white dark:border-black shadow-2xl object-cover bg-white dark:bg-gray-800 hover:brightness-90 transition-all" />
+            <div className="pointer-events-auto relative group">
+              <AvatarWithStatusMenu
+                userId={profile.id}
+                avatarUrl={isEditing ? editData.avatar_url : profile.avatar_url}
+                displayName={profile.display_name}
+                ringThickness="lg"
+                disabled={isEditing}
+                avatarClassName="w-32 h-32 md:w-44 md:h-44 rounded-full border-4 border-white dark:border-black shadow-2xl object-cover bg-white dark:bg-gray-800 hover:brightness-90 transition-all"
+                onNoStatusClick={() => !isEditing && setShowPhotoModal(true)}
+                onViewProfilePhoto={() => setShowPhotoModal(true)}
+              />
               {isOwnProfile && (
                 <>
                   <input type="file" ref={avatarInputRef} hidden onChange={(e) => handleFileUpload(e, 'avatar')} accept="image/*" />
-                  <button type="button" onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }} className="absolute bottom-2 right-2 bg-gray-100 dark:bg-gray-800 p-2.5 rounded-full border-2 border-white dark:border-black shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={isUploading}>
+                  <button type="button" onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }} className="absolute bottom-2 right-2 z-10 bg-gray-100 dark:bg-gray-800 p-2.5 rounded-full border-2 border-white dark:border-black shadow-md hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors disabled:opacity-50" disabled={isUploading}>
                     <Camera size={18} className="text-gray-600 dark:text-gray-300" />
                   </button>
                 </>

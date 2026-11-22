@@ -10,6 +10,7 @@ import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import ZoomableImage from '@/components/ZoomableImage';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
+import { AvatarWithStatusMenu } from '@/components/status/AvatarWithStatusMenu';
 import VideoPlayer from '@/components/VideoPlayer';
 import EmbedPlayer from '@/components/EmbedPlayer';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -436,17 +437,23 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
   return (
     <div ref={cardRef} data-post-id={post.id} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden transition-all">
       <div className="p-4 flex justify-between items-center">
-        <Link to={`/profile/${post.profiles?.username || post.user_id || 'unknown'}`} className="flex gap-3 hover:opacity-80 transition-opacity">
-          <ProfileAvatar userId={post.user_id} defaultAvatar={post.profiles?.avatar_url || post.profiles?.avatar} name={post.profiles?.display_name || post.profiles?.name} className="w-[40px] h-[40px] rounded-full object-cover border border-gray-200 dark:border-gray-800" />
-          <div>
+        <div className="flex items-center gap-3">
+          <AvatarWithStatusMenu
+            userId={post.user_id}
+            avatarUrl={post.profiles?.avatar_url || post.profiles?.avatar}
+            displayName={post.profiles?.display_name || post.profiles?.name || 'User'}
+            avatarClassName="w-[40px] h-[40px] rounded-full object-cover border border-gray-200 dark:border-gray-800"
+            onNoStatusClick={() => navigate(`/profile/${post.profiles?.username || post.user_id || 'unknown'}`)}
+          />
+          <Link to={`/profile/${post.profiles?.username || post.user_id || 'unknown'}`} className="hover:opacity-80 transition-opacity">
             <p className="font-bold text-[15px] text-gray-900 dark:text-white leading-tight flex items-center gap-2">
               {post.profiles?.display_name || post.profiles?.name || 'User'}
               {post.profiles?.is_verified && <VerifiedBadge />}
               {post.category && <span className="text-[10px] bg-orange-50 dark:bg-orange-900/20 text-orange-600 dark:text-orange-400 px-2 py-0.5 rounded-full border border-orange-100 dark:border-orange-800">{post.category}</span>}
             </p>
             <p className="text-[12px] text-gray-500 dark:text-gray-400 font-medium">{formatTime(post.created_at || new Date().toISOString(), { showYear: true })}</p>
-          </div>
-        </Link>
+          </Link>
+        </div>
         
         <div className="relative">
           <button onClick={() => setShowMenu(!showMenu)} className="p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors">

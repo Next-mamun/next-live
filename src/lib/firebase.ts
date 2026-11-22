@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { initializeFirestore, enableMultiTabIndexedDbPersistence } from 'firebase/firestore';
+import { initializeFirestore, enableMultiTabIndexedDbPersistence, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { getMessaging, isSupported } from 'firebase/messaging';
 
@@ -22,15 +22,26 @@ export const db = initializeFirestore(app, {
   experimentalAutoDetectLongPolling: true,
 }, databaseId);
 
-// Enable offline persistence
+// Enable offline persistence & validate initial server connectivity
 if (typeof window !== 'undefined') {
   enableMultiTabIndexedDbPersistence(db).catch((err) => {
     if (err.code === 'failed-precondition') {
-      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a a time.');
+      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
     } else if (err.code === 'unimplemented') {
       console.warn('The current browser does not support all of the features required to enable persistence');
     }
   });
+
+  // Non-blocking boot connection probe per Firebase SDK guidelines
+  (async function testConnection() {
+    try {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.error('Please check your Firebase configuration (client is offline).');
+      }
+    }
+  })();
 }
 
 export const auth = getAuth(app);

@@ -2,7 +2,7 @@ import { localDB, saveLocalConversation, removeLocalConversation } from "@/lib/d
 import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, Sparkles, Clock, Pin, Star, ExternalLink, Loader2 } from 'lucide-react';
+import { Flag, Users, Search, Trash2, Send, Smile, Paperclip, MessageSquare, ArrowLeft, Check, CheckCheck, Ban, RefreshCw, X, CornerUpLeft, EyeOff, Mic, Eye, Play, Pause, BellOff, Bell, Activity, Zap, LogOut, FileText, Music, Camera, Download, Plus, Video as VideoIcon, Image as ImageIcon, Folder, Film, SlidersHorizontal, Clock, Pin, Star, ExternalLink, Loader2 } from 'lucide-react';
 
 const EmojiPicker = lazy(() => import('emoji-picker-react'));
 import { useAuth } from '@/contexts/AuthContext';
@@ -39,6 +39,8 @@ import { triggerNotification } from '@/services/notificationService';
 import { useGlobalStore } from '@/store/useGlobalStore';
 import { toast } from 'sonner';
 import { useContentFilter } from '@/hooks/useContentFilter';
+import { StatusRibbon } from '@/components/status/StatusRibbon';
+import { AvatarWithStatusMenu } from '@/components/status/AvatarWithStatusMenu';
 
 const safeFormatChatTime = (val: any) => {
   if (!val) return '';
@@ -546,6 +548,7 @@ const Messages: React.FC = () => {
   const [groupAvatarFile, setGroupAvatarFile] = useState<File | null>(null);
   const [groupAvatarPreview, setGroupAvatarPreview] = useState('');
   const [chatViewMode, setChatViewMode] = useState<'active' | 'unread' | 'archived' | 'groups'>('active');
+  const [showStatusUpdates, setShowStatusUpdates] = useState(false);
   const [groupMembers, setGroupMembers] = useState<any[]>([]);
 
   // 100% Client-Side Unread Counter Map (WhatsApp-style instant UI)
@@ -3431,7 +3434,7 @@ const Messages: React.FC = () => {
             <>
               <div className="flex justify-between items-center mb-3">
                 <h1 className="text-2xl font-black text-gray-900 dark:text-white flex items-center gap-2">
-                  {showNewFriends ? 'New Friends' : chatViewMode === 'archived' ? 'Archived' : chatViewMode === 'groups' ? 'Groups' : chatViewMode === 'unread' ? 'Unread' : 'Chats'}
+                  {showStatusUpdates ? 'Status Updates' : showNewFriends ? 'New Friends' : chatViewMode === 'archived' ? 'Archived' : chatViewMode === 'groups' ? 'Groups' : chatViewMode === 'unread' ? 'Unread' : 'Chats'}
                 </h1>
                 <button
                   type="button"
@@ -3459,41 +3462,49 @@ const Messages: React.FC = () => {
                   <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
                     <button
                       type="button"
-                      onClick={() => { setShowNewFriends(false); setChatViewMode('active'); }}
-                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'active' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                      onClick={() => { setShowNewFriends(false); setShowStatusUpdates(false); setChatViewMode('active'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showStatusUpdates && !showNewFriends && chatViewMode === 'active' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     >
                       All
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'unread' ? 'active' : 'unread'); }}
-                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${!showNewFriends && chatViewMode === 'unread' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                      onClick={() => { setShowNewFriends(false); setShowStatusUpdates(!showStatusUpdates); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${showStatusUpdates ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${showStatusUpdates ? 'bg-white' : 'bg-[#1877F2]'}`} />
+                      Status
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewFriends(false); setShowStatusUpdates(false); setChatViewMode(chatViewMode === 'unread' ? 'active' : 'unread'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${!showStatusUpdates && !showNewFriends && chatViewMode === 'unread' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     >
                       <span>Unread</span>
                       {totalUnreadChats > 0 && (
-                        <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${!showNewFriends && chatViewMode === 'unread' ? 'bg-white text-[#1877F2]' : 'bg-[#1877F2] text-white'}`}>
+                        <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${!showStatusUpdates && !showNewFriends && chatViewMode === 'unread' ? 'bg-white text-[#1877F2]' : 'bg-[#1877F2] text-white'}`}>
                           {totalUnreadChats}
                         </span>
                       )}
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'groups' ? 'active' : 'groups'); }}
-                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'groups' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                      onClick={() => { setShowNewFriends(false); setShowStatusUpdates(false); setChatViewMode(chatViewMode === 'groups' ? 'active' : 'groups'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showStatusUpdates && !showNewFriends && chatViewMode === 'groups' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     >
                       Groups
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setShowNewFriends(false); setChatViewMode(chatViewMode === 'archived' ? 'active' : 'archived'); }}
-                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showNewFriends && chatViewMode === 'archived' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                      onClick={() => { setShowNewFriends(false); setShowStatusUpdates(false); setChatViewMode(chatViewMode === 'archived' ? 'active' : 'archived'); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showStatusUpdates && !showNewFriends && chatViewMode === 'archived' ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     >
                       Archived
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowNewFriends(!showNewFriends)}
-                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${showNewFriends ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                      onClick={() => { setShowStatusUpdates(false); setShowNewFriends(!showNewFriends); }}
+                      className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all ${!showStatusUpdates && showNewFriends ? 'bg-[#1877F2] text-white shadow-sm' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     >
                       New Friends
                     </button>
@@ -3503,7 +3514,9 @@ const Messages: React.FC = () => {
             </>
           )}
         </div>
-        {(() => {
+        {showStatusUpdates ? (
+          <StatusRibbon variant="list" />
+        ) : (() => {
           const filteredContacts = sortContactsWhatsApp(
             contacts.filter((c: any) => {
               const name = (c.display_name || c.name || '').toLowerCase();
@@ -3577,8 +3590,14 @@ const Messages: React.FC = () => {
                 }`}
               >
                 <div className="relative flex-shrink-0">
-                  <ProfileAvatar userId={c.id} defaultAvatar={c.avatar_url || c.avatar} name={c.display_name || c.name} className="w-14 h-14 rounded-full object-cover border-2 border-white dark:border-gray-700 shadow-sm" />
-                  {isOnline && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-green-500 border-2 border-white dark:border-black rounded-full"></div>}
+                  <AvatarWithStatusMenu
+                    userId={c.id}
+                    avatarUrl={c.avatar_url || c.avatar}
+                    displayName={c.display_name || c.name}
+                    disabled={Boolean(c.is_group)}
+                    avatarClassName="w-14 h-14 rounded-full object-cover border-2 border-white dark:border-gray-700 shadow-sm"
+                  />
+                  {isOnline && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-green-500 border-2 border-white dark:border-black rounded-full pointer-events-none"></div>}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-0.5">
@@ -3678,12 +3697,25 @@ const Messages: React.FC = () => {
                 <>
                   <div className="flex items-center gap-3">
                     <button onClick={handleBackToSidebar} className="md:hidden p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800"><ArrowLeft size={20} className="text-gray-600 dark:text-gray-300" /></button>
-                    <div className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => {
-                      if (selectedChat.is_group) setShowGroupDetails(true);
-                      else navigate(`/profile/${selectedChat.username || selectedChat.id}`);
-                    }}>
-                      <ProfileAvatar userId={selectedChat.id} defaultAvatar={selectedChat.avatar_url} name={selectedChat.display_name} className="w-10 h-10 rounded-full object-cover shadow-sm border border-gray-100 dark:border-gray-700" />
-                      <div>
+                    <div className="flex items-center gap-3">
+                      <AvatarWithStatusMenu
+                        userId={selectedChat.id}
+                        avatarUrl={selectedChat.avatar_url}
+                        displayName={selectedChat.display_name}
+                        disabled={Boolean(selectedChat.is_group)}
+                        avatarClassName="w-10 h-10 rounded-full object-cover shadow-sm border border-gray-100 dark:border-gray-700"
+                        onNoStatusClick={() => {
+                          if (selectedChat.is_group) setShowGroupDetails(true);
+                          else navigate(`/profile/${selectedChat.username || selectedChat.id}`);
+                        }}
+                      />
+                      <div
+                        className="cursor-pointer hover:opacity-80 transition-opacity"
+                        onClick={() => {
+                          if (selectedChat.is_group) setShowGroupDetails(true);
+                          else navigate(`/profile/${selectedChat.username || selectedChat.id}`);
+                        }}
+                      >
                         <p className="font-bold leading-none text-gray-900 dark:text-white flex items-center gap-1">
                           {selectedChat.display_name}
                           {selectedChat.is_verified && <VerifiedBadge />}
@@ -4349,7 +4381,7 @@ const Messages: React.FC = () => {
                       }}
                       className="mt-3 px-4 py-1.5 bg-[#1877F2] hover:bg-blue-600 text-white rounded-full font-bold text-xs flex items-center gap-1.5 shadow-md transition-all"
                     >
-                      <Sparkles size={14} />
+                      <SlidersHorizontal size={14} />
                       <span>Edit / Filter / Draw</span>
                     </button>
                   </div>

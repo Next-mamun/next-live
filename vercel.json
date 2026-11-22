@@ -39,7 +39,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!api/|\\.well-known/|assets/|sw\\.js|workbox-|version\\.json|manifest\\.json).*)",
+      "source": "/((?!api/|\\.well-known/|assets/|playstore/|sw\\.js|workbox-|version\\.json|manifest\\.json).*)",
       "destination": "/index.html"
     }
   ]
