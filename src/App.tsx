@@ -14,7 +14,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { localDB, getBase64Image } from '@/lib/dexie';
 import { syncProfileToSupabase, ensureUniqueUsername, backfillPublicProfilesOnce, fetchProfileSmart, cacheUserInDexie } from '@/lib/profileSync';
 import { useWakeLock } from '@/hooks/useWakeLock';
-import { requestNotificationPermission, flushPendingFCMToken, playNotificationSound, showInAppNotificationToast, listenForegroundMessages } from '@/services/notificationService';
+import { requestNotificationPermission, flushPendingFCMToken, playNotificationSound, showInAppNotificationToast, listenForegroundMessages, isMessageAlertsEnabled, isMentionAlertsEnabled } from '@/services/notificationService';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
@@ -216,7 +216,8 @@ const AppLayout: React.FC = () => {
     listenForegroundMessages((payload) => {
       const senderId = payload.data?.sender_id;
       const msgType = payload.data?.type;
-      if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
+      if (msgType === 'message' && (!isMessageAlertsEnabled() || (senderId && isChatMuted(senderId)))) return;
+      if (msgType === 'mention' && !isMentionAlertsEnabled()) return;
 
       const isLiveProposal = msgType === 'live_proposal' || payload.data?.action === 'LIVE_PROPOSAL_REQUEST';
       if (isLiveProposal && senderId) {
@@ -292,7 +293,8 @@ const AppLayout: React.FC = () => {
           const { isChatOpen, activeChatId } = useGlobalStore.getState();
           const senderId = payload.data?.sender_id;
           const msgType = payload.data?.type;
-          if (msgType === 'message' && senderId && isChatMuted(senderId)) return;
+          if (msgType === 'message' && (!isMessageAlertsEnabled() || (senderId && isChatMuted(senderId)))) return;
+          if (msgType === 'mention' && !isMentionAlertsEnabled()) return;
 
           const isLiveProposal = msgType === 'live_proposal' || payload.data?.action === 'LIVE_PROPOSAL_REQUEST';
           if (isLiveProposal && senderId) {
@@ -859,6 +861,31 @@ const App: React.FC = () => {
     setAutoLoginOnReinstallEnabled(val);
   };
 
+  const [textSize, setTextSizeState] = useState<'normal' | 'large' | 'extra-large'>(() => {
+    const saved = localStorage.getItem('next_media_textsize');
+    return (saved === 'large' || saved === 'extra-large') ? saved : 'normal';
+  });
+  const setTextSize = (size: 'normal' | 'large' | 'extra-large') => {
+    setTextSizeState(size);
+    localStorage.setItem('next_media_textsize', size);
+  };
+
+  const [messageAlerts, setMessageAlertsState] = useState<boolean>(() => {
+    return localStorage.getItem('next_media_msg_alerts') !== 'false';
+  });
+  const setMessageAlerts = (val: boolean) => {
+    setMessageAlertsState(val);
+    localStorage.setItem('next_media_msg_alerts', String(val));
+  };
+
+  const [mentionAlerts, setMentionAlertsState] = useState<boolean>(() => {
+    return localStorage.getItem('next_media_mention_alerts') !== 'false';
+  });
+  const setMentionAlerts = (val: boolean) => {
+    setMentionAlertsState(val);
+    localStorage.setItem('next_media_mention_alerts', String(val));
+  };
+
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
@@ -868,6 +895,11 @@ const App: React.FC = () => {
       localStorage.setItem('next_media_theme', 'light');
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize =
+      textSize === 'extra-large' ? '19px' : textSize === 'large' ? '17.5px' : '16px';
+  }, [textSize]);
 
   useEffect(() => {
     if (highContrastMode) {
@@ -955,6 +987,9 @@ const App: React.FC = () => {
     const keyboardHeight = localStorage.getItem('saved_keyboard_height');
     const autoLoginReinstall = localStorage.getItem(AUTO_LOGIN_REINSTALL_KEY);
     const pwaInstalled = localStorage.getItem('next_pwa_installed');
+    const savedTextSize = localStorage.getItem('next_media_textsize');
+    const savedMsgAlerts = localStorage.getItem('next_media_msg_alerts');
+    const savedMentionAlerts = localStorage.getItem('next_media_mention_alerts');
 
     // Clear local storage and session storage
     localStorage.clear();
@@ -968,6 +1003,9 @@ const App: React.FC = () => {
     if (keyboardHeight) localStorage.setItem('saved_keyboard_height', keyboardHeight);
     if (autoLoginReinstall !== null) localStorage.setItem(AUTO_LOGIN_REINSTALL_KEY, autoLoginReinstall);
     if (pwaInstalled !== null) localStorage.setItem('next_pwa_installed', pwaInstalled);
+    if (savedTextSize) localStorage.setItem('next_media_textsize', savedTextSize);
+    if (savedMsgAlerts !== null) localStorage.setItem('next_media_msg_alerts', savedMsgAlerts);
+    if (savedMentionAlerts !== null) localStorage.setItem('next_media_mention_alerts', savedMentionAlerts);
 
     setCurrentUser(null);
     window.location.href = '/login';
@@ -1243,7 +1281,10 @@ const App: React.FC = () => {
         soundEffects, setSoundEffects,
         compactFeed, setCompactFeed,
         showAllReels, setShowAllReels,
-        autoLoginOnReinstall, setAutoLoginOnReinstall
+        autoLoginOnReinstall, setAutoLoginOnReinstall,
+        textSize, setTextSize,
+        messageAlerts, setMessageAlerts,
+        mentionAlerts, setMentionAlerts
       }}>
         <BrowserRouter>
           <DeepLinkRouterGuard>

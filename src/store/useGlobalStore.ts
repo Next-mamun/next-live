@@ -7,7 +7,7 @@ import { collection, query, where, onSnapshot, orderBy, limit, getDocs, getDocsF
 import { toast } from 'sonner';
 import { clearDBFallback, getActiveDB, switchDB } from '@/lib/dbHelper';
 import { supabase } from '@/lib/supabase';
-import { playNotificationSound, showNotification, showInAppNotificationToast } from '@/services/notificationService';
+import { playNotificationSound, showNotification, showInAppNotificationToast, isMessageAlertsEnabled, isMentionAlertsEnabled } from '@/services/notificationService';
 import { fetchProfileSmart, fetchProfilesBatchSmart, migrateUserMessagesOnce } from '@/lib/profileSync';
 import { getSafeMessagePreview, isChatMuted } from '@/lib/utils';
 
@@ -131,6 +131,7 @@ const handleIncomingMessageNotification = async (
   if (msg.sender_id === currentUserId || msg.receiver_id !== currentUserId) return;
   if (msg.is_read) return;
   if (isChatMuted(msg.sender_id)) return;
+  if (!isMessageAlertsEnabled()) return;
 
   const msgTime = msg.created_at ? new Date(msg.created_at).getTime() : Date.now();
   if (Math.abs(Date.now() - msgTime) > 15 * 60 * 1000) return;
@@ -792,9 +793,13 @@ export const useGlobalStore = create<GlobalState>()(
               let targetUrl = '/';
 
               if (n.type === 'message') {
-                if (isChatMuted(n.sender_id)) return;
+                if (isChatMuted(n.sender_id) || !isMessageAlertsEnabled()) return;
                 body = getSafeMessagePreview(n);
                 targetUrl = `/messages?user=${n.sender_id}`;
+              } else if (n.type === 'mention') {
+                if (!isMentionAlertsEnabled()) return;
+                body = n.content ? `mentioned you: "${n.content.slice(0, 35)}..."` : 'mentioned you in a post';
+                targetUrl = n.post_id ? `/post/${n.post_id}` : '/';
               } else if (n.type === 'like') {
                 body = 'liked your post';
                 targetUrl = n.post_id ? `/post/${n.post_id}` : '/';

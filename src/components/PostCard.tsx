@@ -27,7 +27,7 @@ interface PostCardProps {
 
 const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCardProps) => {
   const { currentUser } = useAuth();
-  const { soundEffects, hapticFeedback, autoplayVideos, saveDataMode } = useTheme();
+  const { soundEffects, hapticFeedback, autoplayVideos, saveDataMode, compactFeed } = useTheme();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [comment, setComment] = useState('');
@@ -436,7 +436,7 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
 
   return (
     <div ref={cardRef} data-post-id={post.id} className="bg-white dark:bg-black rounded-xl shadow-sm border border-gray-200 dark:border-gray-800 overflow-hidden transition-all">
-      <div className="p-4 flex justify-between items-center">
+      <div className={`${compactFeed ? 'px-3 py-2.5' : 'p-4'} flex justify-between items-center`}>
         <div className="flex items-center gap-3">
           <AvatarWithStatusMenu
             userId={post.user_id}
@@ -517,15 +517,15 @@ const PostCard = React.memo(({ post, onObserve, isProfileView = false }: PostCar
         </div>
 
       </div>
-      <p className="px-4 pb-3 text-[15px] text-gray-800 dark:text-gray-200 leading-relaxed font-medium">{post.content}</p>
+      <p className={`${compactFeed ? 'px-3 pb-2 text-[14px] leading-snug' : 'px-4 pb-3 text-[15px] leading-relaxed'} text-gray-800 dark:text-gray-200 font-medium`}>{post.content}</p>
       {resolvedMediaUrl && (
         <div className="bg-black flex items-center justify-center">
           {resolvedMediaUrl.includes('/embed/') || resolvedMediaUrl.includes('plugins/video.php') || resolvedMediaUrl.includes('youtube.com/watch') || resolvedMediaUrl.includes('youtu.be/') ? (
             <EmbedPlayer src={resolvedMediaUrl} />
           ) : resolvedMediaType === 'image' ? (
-            <ZoomableImage src={resolvedMediaUrl} className="w-full max-h-[600px] object-contain" referrerPolicy="no-referrer" />
+            <ZoomableImage src={resolvedMediaUrl} className={`w-full ${compactFeed ? 'max-h-[340px]' : 'max-h-[600px]'} object-contain`} referrerPolicy="no-referrer" />
           ) : (
-            <VideoPlayer src={resolvedMediaUrl} className="w-full max-h-[600px]" />
+            <VideoPlayer src={resolvedMediaUrl} className={`w-full ${compactFeed ? 'max-h-[340px]' : 'max-h-[600px]'}`} />
           )}
         </div>
       )}

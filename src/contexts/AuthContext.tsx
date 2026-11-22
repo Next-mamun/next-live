@@ -49,6 +49,12 @@ export interface ThemeContextType {
   setShowAllReels: (val: boolean) => void;
   autoLoginOnReinstall: boolean;
   setAutoLoginOnReinstall: (val: boolean) => void;
+  textSize: 'normal' | 'large' | 'extra-large';
+  setTextSize: (size: 'normal' | 'large' | 'extra-large') => void;
+  messageAlerts: boolean;
+  setMessageAlerts: (val: boolean) => void;
+  mentionAlerts: boolean;
+  setMentionAlerts: (val: boolean) => void;
 }
 
 export const ThemeContext = createContext<ThemeContextType>({ 
@@ -84,6 +90,12 @@ export const ThemeContext = createContext<ThemeContextType>({
   setShowAllReels: () => {},
   autoLoginOnReinstall: false,
   setAutoLoginOnReinstall: () => {},
+  textSize: 'normal',
+  setTextSize: () => {},
+  messageAlerts: true,
+  setMessageAlerts: () => {},
+  mentionAlerts: true,
+  setMentionAlerts: () => {},
 });
 
 export const useTheme = () => useContext(ThemeContext);

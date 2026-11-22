@@ -6,7 +6,25 @@ import { doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
 import { normalizeAppRoute } from '@/lib/utils';
 
 const PENDING_FCM_TOKEN_KEY = 'pending_android_fcm_token';
+const MSG_ALERTS_KEY = 'next_media_msg_alerts';
+const MENTION_ALERTS_KEY = 'next_media_mention_alerts';
 const shownNotifKeys = new Map<string, number>();
+
+export const isMessageAlertsEnabled = (): boolean => {
+  try {
+    return localStorage.getItem(MSG_ALERTS_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+};
+
+export const isMentionAlertsEnabled = (): boolean => {
+  try {
+    return localStorage.getItem(MENTION_ALERTS_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+};
 
 const getActiveUserIdFallback = (): string | null => {
   if (auth.currentUser?.uid) return auth.currentUser.uid;

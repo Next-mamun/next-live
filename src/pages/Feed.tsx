@@ -56,7 +56,7 @@ const getPostKind = (p: any): 'image' | 'text' | 'nativeVideo' | 'youtube' => {
 const Feed: React.FC = () => {
   const { id: sharedPostId } = useParams();
   const { currentUser } = useAuth();
-  const { showAllReels } = useTheme();
+  const { showAllReels, compactFeed } = useTheme();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { addUpload, uploads } = useUpload();
@@ -924,9 +924,9 @@ const Feed: React.FC = () => {
             </div>
           ))}
 
-          <div className="flex flex-col gap-4">
+          <div className={`flex flex-col ${compactFeed ? 'gap-2' : 'gap-4'}`}>
             {visiblePosts.map((post, index) => (
-              <div key={post.id} className="flex flex-col gap-4">
+              <div key={post.id} className={`flex flex-col ${compactFeed ? 'gap-2' : 'gap-4'}`}>
                 <PostCard 
                   post={post} 
                   onObserve={handleObserve}
