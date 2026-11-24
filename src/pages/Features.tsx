@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { 
-  Tv, Users, MessageCircle, Bot, Sparkles, BookOpen, 
+  Tv, Users, MessageCircle, Sparkles, BookOpen, 
   Youtube, ShieldCheck, Sliders, Mic, ShoppingBag, 
   GraduationCap, ArrowRight, ExternalLink, CheckCircle2, 
   ChevronDown, Search, Heart, Share2, Eye, Shield, Laptop, 
   Zap, Globe, Award, Lock, Smartphone, Copy, Check, Mail, MessageSquare
 } from 'lucide-react';
+import NextoRobotStatic from '@/components/NextoRobotStatic';
 
 interface FeatureItem {
   id: string;
@@ -109,7 +110,7 @@ const ALL_FEATURES: FeatureItem[] = [
     title: 'Nexto AI',
     tagline: 'Draggable 3D Floating Robot, Smart Chatbot & Voice Tutor',
     category: 'AI & Intelligence',
-    icon: <Bot className="w-6 h-6 text-indigo-500" />,
+    icon: <NextoRobotStatic size={34} />,
     iconBg: 'bg-indigo-100 dark:bg-indigo-950/40 text-indigo-600',
     description: 'An interactive 3D robot that floats over your screen and can be dragged and placed anywhere. Tapping Nexto opens a modern AI Assistant capable of smart conversations, creative writing, programming code assistance, and visual generation. Most notably, Nexto Voice Assistant conducts voice conversations to help users practice spoken English, prepare for interviews, and learn new skills interactively.',
     howItWorks: [

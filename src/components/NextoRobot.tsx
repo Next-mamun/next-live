@@ -3,14 +3,24 @@ import { motion, AnimatePresence } from 'motion/react';
 import { X, Maximize2, Minimize2, RefreshCw, Loader2 } from 'lucide-react';
 import { useTheme } from '@/contexts/AuthContext';
 import Draggable from 'react-draggable';
+import NextoRobot3D from './NextoRobot3D';
+import NextoRobotStatic from './NextoRobotStatic';
 
 const NextoRobot: React.FC = () => {
-  const { robotSize } = useTheme();
+  const {
+    robotSize,
+    robotBrightness,
+    robotEmote,
+    robotEmoteEnabled,
+    robotEmoteNonce,
+    animationsEnabled,
+  } = useTheme();
   const [showWindow, setShowWindow] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [hasOpenedOnce, setHasOpenedOnce] = useState(false);
+  const [lookTarget, setLookTarget] = useState<{ x: number; y: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const dragStartPos = useRef({ x: 0, y: 0 });
 
@@ -91,38 +101,56 @@ const NextoRobot: React.FC = () => {
       {/* Draggable Robot */}
       <Draggable
         nodeRef={nodeRef}
-        onStart={(e, data) => {
+        onStart={(_e, data) => {
           setIsDragging(false);
+          setLookTarget(null);
           dragStartPos.current = { x: data.x, y: data.y };
           document.body.style.overflow = 'hidden';
         }}
         onDrag={() => {
           setIsDragging(true);
         }}
-        onStop={(e, data) => {
+        onStop={(_e, data) => {
           document.body.style.overflow = '';
           // If the movement is less than 5px, consider it a click
           const distance = Math.sqrt(
-            Math.pow(data.x - dragStartPos.current.x, 2) + 
+            Math.pow(data.x - dragStartPos.current.x, 2) +
             Math.pow(data.y - dragStartPos.current.y, 2)
           );
-          
+
           if (distance < 5) {
             handleRobotClick();
           }
-          
+
           setTimeout(() => setIsDragging(false), 50);
         }}
       >
         <div
           ref={nodeRef}
           className="fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom))] right-3 md:bottom-8 md:right-6 z-[9999] touch-none select-none"
+          onMouseMove={(e) => {
+            if (isDragging) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            const nx = ((e.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+            const ny = ((e.clientY - rect.top) / Math.max(rect.height, 1)) * 2 - 1;
+            setLookTarget({ x: nx, y: ny });
+          }}
+          onMouseLeave={() => setLookTarget(null)}
         >
           <motion.div
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
+            whileHover={{ scale: 1.08 }}
+            whileTap={{ scale: 0.92 }}
           >
-            {robotSvg}
+            <NextoRobot3D
+              size={robotSize}
+              brightness={robotBrightness}
+              emote={robotEmote}
+              emoteEnabled={robotEmoteEnabled}
+              emoteNonce={robotEmoteNonce}
+              animationsEnabled={animationsEnabled}
+              lookTarget={lookTarget}
+              fallback={robotSvg}
+            />
           </motion.div>
         </div>
       </Draggable>
@@ -144,7 +172,10 @@ const NextoRobot: React.FC = () => {
             >
               {/* Header */}
               <div className="bg-gray-100 dark:bg-gray-800 p-2 flex items-center justify-between border-b border-gray-200 dark:border-gray-700 gap-2">
-                <span className="text-xs font-bold text-gray-400 px-2 uppercase tracking-widest">Nexto</span>
+                <div className="flex items-center gap-1.5 px-2">
+                  <NextoRobotStatic size={22} />
+                  <span className="text-xs font-bold text-gray-500 dark:text-gray-300 uppercase tracking-widest">Nexto</span>
+                </div>
                 <div className="flex items-center gap-2">
                   <button 
                     onClick={() => {

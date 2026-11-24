@@ -28,6 +28,11 @@ import {
 } from '@/lib/profileSync';
 import { updatePassword, signOut, signInWithEmailAndPassword } from 'firebase/auth';
 import { VerifiedBadge } from '@/components/VerifiedBadge';
+import NextoRobotStatic from '@/components/NextoRobotStatic';
+import {
+  DEFAULT_ROBOT_BRIGHTNESS,
+  NEXTO_EMOTES,
+} from '@/lib/nextoModel';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useContentFilter } from '@/hooks/useContentFilter';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -328,6 +333,13 @@ const Settings: React.FC = () => {
     toggleNexto,
     robotSize,
     setRobotSize,
+    robotBrightness,
+    setRobotBrightness,
+    robotEmote,
+    setRobotEmote,
+    robotEmoteEnabled,
+    setRobotEmoteEnabled,
+    triggerRobotEmote,
     bottomBarSize,
     setBottomBarSize,
     iconColor,
@@ -466,6 +478,10 @@ const Settings: React.FC = () => {
     savedTheme: localStorage.getItem('next_media_theme'),
     savedDesktop: localStorage.getItem('next_media_desktop'),
     savedNexto: localStorage.getItem('next_media_nexto'),
+    savedRobotSize: localStorage.getItem('next_media_robot_size'),
+    savedRobotBrightness: localStorage.getItem('next_media_robot_brightness'),
+    savedRobotEmote: localStorage.getItem('next_media_robot_emote'),
+    savedRobotEmoteEnabled: localStorage.getItem('next_media_robot_emote_enabled'),
     savedKeyboard: localStorage.getItem('saved_keyboard_height'),
     savedAutoLoginReinstall: localStorage.getItem('next_auto_login_reinstall'),
     savedPwaInstalled: localStorage.getItem('next_pwa_installed'),
@@ -478,6 +494,12 @@ const Settings: React.FC = () => {
     if (p.savedTheme) localStorage.setItem('next_media_theme', p.savedTheme);
     if (p.savedDesktop) localStorage.setItem('next_media_desktop', p.savedDesktop);
     if (p.savedNexto) localStorage.setItem('next_media_nexto', p.savedNexto);
+    if (p.savedRobotSize) localStorage.setItem('next_media_robot_size', p.savedRobotSize);
+    if (p.savedRobotBrightness)
+      localStorage.setItem('next_media_robot_brightness', p.savedRobotBrightness);
+    if (p.savedRobotEmote) localStorage.setItem('next_media_robot_emote', p.savedRobotEmote);
+    if (p.savedRobotEmoteEnabled !== null)
+      localStorage.setItem('next_media_robot_emote_enabled', p.savedRobotEmoteEnabled);
     if (p.savedKeyboard) localStorage.setItem('saved_keyboard_height', p.savedKeyboard);
     if (p.savedAutoLoginReinstall !== null)
       localStorage.setItem('next_auto_login_reinstall', p.savedAutoLoginReinstall);
@@ -790,6 +812,9 @@ const Settings: React.FC = () => {
         'text size',
         'nexto',
         'robot',
+        'brightness',
+        'emote',
+        'flip',
         'viewport',
         'compact',
         'autoplay',
@@ -869,22 +894,6 @@ const Settings: React.FC = () => {
       setActiveTab(filteredTabs[0].id);
     }
   }, [searchQuery, filteredTabs, activeTab]);
-
-  const nextoRobotSvg = (
-    <svg viewBox="0 0 1024 1024" width="24" height="24" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="settingsRobotBody" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#5ee0fd" />
-          <stop offset="100%" stopColor="#258be7" />
-        </linearGradient>
-      </defs>
-      <ellipse cx="512" cy="320" rx="220" ry="200" fill="url(#settingsRobotBody)" />
-      <ellipse cx="440" cy="260" rx="35" ry="35" fill="#000" />
-      <ellipse cx="585" cy="260" rx="35" ry="35" fill="#000" />
-      <path d="M450,330 Q512,380 575,330" fill="#d21c2c" />
-      <ellipse cx="512" cy="600" rx="230" ry="280" fill="url(#settingsRobotBody)" />
-    </svg>
-  );
 
   const [notificationPermission, setNotificationPermission] = useState(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied'
@@ -1202,7 +1211,7 @@ const Settings: React.FC = () => {
                   </div>
 
                   <Row
-                    icon={nextoRobotSvg}
+                    icon={<NextoRobotStatic size={26} />}
                     title="Nexto"
                     description="Enable the floating robot assistant overlay."
                     action={
@@ -1211,40 +1220,162 @@ const Settings: React.FC = () => {
                     border={nextoEnabled}
                   />
                   {nextoEnabled && (
-                    <div className="p-3.5 sm:p-4 bg-gray-50/60 dark:bg-gray-950/50">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="font-bold text-gray-900 dark:text-white text-sm">
-                          Robot Size
-                        </p>
-                        <span className="text-xs font-black text-[#1877F2] tabular-nums">
-                          {robotSize}px
-                        </span>
+                    <div className="divide-y divide-gray-100 dark:divide-gray-800 bg-gray-50/60 dark:bg-gray-950/50">
+                      {/* Robot Size */}
+                      <div className="p-3.5 sm:p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="font-bold text-gray-900 dark:text-white text-sm">
+                            Robot Size
+                          </p>
+                          <span className="text-xs font-black text-[#1877F2] tabular-nums">
+                            {robotSize}px
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setRobotSize(Math.max(40, robotSize - 5))}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                            aria-label="Decrease robot size"
+                          >
+                            <Minimize2 size={18} />
+                          </button>
+                          <input
+                            type="range"
+                            min="40"
+                            max="150"
+                            value={robotSize}
+                            onChange={(e) => setRobotSize(parseInt(e.target.value, 10))}
+                            className="flex-1 min-w-0 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setRobotSize(Math.min(150, robotSize + 5))}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                            aria-label="Increase robot size"
+                          >
+                            <Maximize2 size={18} />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => setRobotSize(Math.max(40, robotSize - 5))}
-                          className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
-                          aria-label="Decrease robot size"
-                        >
-                          <Minimize2 size={18} />
-                        </button>
-                        <input
-                          type="range"
-                          min="40"
-                          max="150"
-                          value={robotSize}
-                          onChange={(e) => setRobotSize(parseInt(e.target.value, 10))}
-                          className="flex-1 min-w-0 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setRobotSize(Math.min(150, robotSize + 5))}
-                          className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
-                          aria-label="Increase robot size"
-                        >
-                          <Maximize2 size={18} />
-                        </button>
+
+                      {/* Robot Brightness / Color Tone */}
+                      <div className="p-3.5 sm:p-4">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div>
+                            <p className="font-bold text-gray-900 dark:text-white text-sm">
+                              Robot Brightness & Color
+                            </p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                              Adjust how light or deep the 3D robot appears.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {robotBrightness !== DEFAULT_ROBOT_BRIGHTNESS && (
+                              <button
+                                type="button"
+                                onClick={() => setRobotBrightness(DEFAULT_ROBOT_BRIGHTNESS)}
+                                className="text-[11px] font-bold text-gray-500 hover:text-[#1877F2] underline transition-colors"
+                              >
+                                Reset
+                              </button>
+                            )}
+                            <span className="text-xs font-black text-[#1877F2] tabular-nums">
+                              {robotBrightness}%
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setRobotBrightness(Math.max(60, robotBrightness - 5))}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                            aria-label="Decrease robot brightness"
+                          >
+                            <Moon size={17} />
+                          </button>
+                          <input
+                            type="range"
+                            min="60"
+                            max="155"
+                            value={robotBrightness}
+                            onChange={(e) => setRobotBrightness(parseInt(e.target.value, 10))}
+                            className="flex-1 min-w-0 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setRobotBrightness(Math.min(155, robotBrightness + 5))}
+                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                            aria-label="Increase robot brightness"
+                          >
+                            <Sun size={17} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Idle Emote Toggle + 16 Emote Selector */}
+                      <div className="p-3.5 sm:p-4">
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                          <div className="min-w-0">
+                            <p className="font-bold text-gray-900 dark:text-white text-sm">
+                              Robot Idle Emotes
+                            </p>
+                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                              Play animations when Nexto sits idle on screen (tap any emote to preview).
+                            </p>
+                          </div>
+                          <Toggle
+                            checked={robotEmoteEnabled}
+                            onChange={() => setRobotEmoteEnabled(!robotEmoteEnabled)}
+                            label="Toggle robot idle emotes"
+                          />
+                        </div>
+
+                        {robotEmoteEnabled && (
+                          <div className="space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                                Choose Emote (16 Animations)
+                              </span>
+                              <button
+                                type="button"
+                                onClick={triggerRobotEmote}
+                                className="inline-flex items-center gap-1 text-xs font-bold text-[#1877F2] hover:underline"
+                              >
+                                <RefreshCw size={12} />
+                                <span>Preview</span>
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                              {NEXTO_EMOTES.map((em) => {
+                                const isSelected = robotEmote === em.id;
+                                return (
+                                  <button
+                                    type="button"
+                                    key={em.id}
+                                    onClick={() => {
+                                      setRobotEmote(em.id);
+                                      triggerRobotEmote();
+                                    }}
+                                    className={`min-h-[42px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 transition-all ${
+                                      isSelected
+                                        ? 'border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2] dark:bg-[#1877F2]/20 dark:text-blue-300 shadow-xs'
+                                        : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-700'
+                                    }`}
+                                  >
+                                    <span className="text-base leading-none shrink-0" aria-hidden="true">
+                                      {em.emoji}
+                                    </span>
+                                    <span className="text-xs font-bold truncate">
+                                      {em.label}
+                                      {em.id === 'flip' ? ' (Default)' : ''}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}

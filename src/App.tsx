@@ -5,6 +5,12 @@ import Navbar from '@/components/Navbar';
 import Sidebar from '@/components/Sidebar';
 import BottomNav from '@/components/BottomNav';
 import NextoRobot from '@/components/NextoRobot';
+import {
+  DEFAULT_ROBOT_BRIGHTNESS,
+  DEFAULT_ROBOT_EMOTE,
+  isValidNextoEmote,
+  NextoEmoteId,
+} from '@/lib/nextoModel';
 import OTAUpdateBanner from '@/components/OTAUpdateBanner';
 import { UserProfile as User } from '@/types';
 import { auth, db } from '@/lib/firebase';
@@ -756,6 +762,41 @@ const App: React.FC = () => {
     localStorage.setItem('next_media_robot_size', String(size));
   };
 
+  const [robotBrightness, setRobotBrightnessState] = useState(() => {
+    const saved = localStorage.getItem('next_media_robot_brightness');
+    const parsed = saved ? parseInt(saved, 10) : NaN;
+    return Number.isFinite(parsed) ? Math.min(155, Math.max(60, parsed)) : DEFAULT_ROBOT_BRIGHTNESS;
+  });
+
+  const setRobotBrightness = (brightness: number) => {
+    const clamped = Math.min(155, Math.max(60, brightness));
+    setRobotBrightnessState(clamped);
+    localStorage.setItem('next_media_robot_brightness', String(clamped));
+  };
+
+  const [robotEmote, setRobotEmoteState] = useState<NextoEmoteId>(() => {
+    const saved = localStorage.getItem('next_media_robot_emote');
+    return isValidNextoEmote(saved) ? saved : DEFAULT_ROBOT_EMOTE;
+  });
+
+  const setRobotEmote = (emote: NextoEmoteId) => {
+    setRobotEmoteState(emote);
+    localStorage.setItem('next_media_robot_emote', emote);
+  };
+
+  const [robotEmoteEnabled, setRobotEmoteEnabledState] = useState(() => {
+    const saved = localStorage.getItem('next_media_robot_emote_enabled');
+    return saved === null ? true : saved === 'true';
+  });
+
+  const setRobotEmoteEnabled = (enabled: boolean) => {
+    setRobotEmoteEnabledState(enabled);
+    localStorage.setItem('next_media_robot_emote_enabled', String(enabled));
+  };
+
+  const [robotEmoteNonce, setRobotEmoteNonce] = useState(0);
+  const triggerRobotEmote = () => setRobotEmoteNonce((n) => n + 1);
+
   const [bottomBarSize, setBottomBarSizeState] = useState<'small'|'medium'|'large'>(() => {
     return (localStorage.getItem('next_media_bottombarsize') as 'small'|'medium'|'large') || 'medium';
   });
@@ -984,6 +1025,10 @@ const App: React.FC = () => {
     const theme = localStorage.getItem('next_media_theme');
     const desktop = localStorage.getItem('next_media_desktop');
     const nexto = localStorage.getItem('next_media_nexto');
+    const robotSizeSaved = localStorage.getItem('next_media_robot_size');
+    const robotBrightnessSaved = localStorage.getItem('next_media_robot_brightness');
+    const robotEmoteSaved = localStorage.getItem('next_media_robot_emote');
+    const robotEmoteEnabledSaved = localStorage.getItem('next_media_robot_emote_enabled');
     const keyboardHeight = localStorage.getItem('saved_keyboard_height');
     const autoLoginReinstall = localStorage.getItem(AUTO_LOGIN_REINSTALL_KEY);
     const pwaInstalled = localStorage.getItem('next_pwa_installed');
@@ -1000,6 +1045,10 @@ const App: React.FC = () => {
     if (theme) localStorage.setItem('next_media_theme', theme);
     if (desktop) localStorage.setItem('next_media_desktop', desktop);
     if (nexto) localStorage.setItem('next_media_nexto', nexto);
+    if (robotSizeSaved) localStorage.setItem('next_media_robot_size', robotSizeSaved);
+    if (robotBrightnessSaved) localStorage.setItem('next_media_robot_brightness', robotBrightnessSaved);
+    if (robotEmoteSaved) localStorage.setItem('next_media_robot_emote', robotEmoteSaved);
+    if (robotEmoteEnabledSaved) localStorage.setItem('next_media_robot_emote_enabled', robotEmoteEnabledSaved);
     if (keyboardHeight) localStorage.setItem('saved_keyboard_height', keyboardHeight);
     if (autoLoginReinstall !== null) localStorage.setItem(AUTO_LOGIN_REINSTALL_KEY, autoLoginReinstall);
     if (pwaInstalled !== null) localStorage.setItem('next_pwa_installed', pwaInstalled);
@@ -1270,6 +1319,10 @@ const App: React.FC = () => {
         desktopMode, toggleDesktopMode, 
         nextoEnabled, toggleNexto,
         robotSize, setRobotSize,
+        robotBrightness, setRobotBrightness,
+        robotEmote, setRobotEmote,
+        robotEmoteEnabled, setRobotEmoteEnabled,
+        robotEmoteNonce, triggerRobotEmote,
         bottomBarSize, setBottomBarSize,
         iconColor, setIconColor,
         autoplayVideos, setAutoplayVideos,

@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext } from 'react';
 import { UserProfile as User } from '@/types';
+import { DEFAULT_ROBOT_BRIGHTNESS, DEFAULT_ROBOT_EMOTE, NextoEmoteId } from '@/lib/nextoModel';
 
 export interface AuthContextType {
   currentUser: User | null;
@@ -25,6 +26,14 @@ export interface ThemeContextType {
   toggleNexto: () => void;
   robotSize: number;
   setRobotSize: (size: number) => void;
+  robotBrightness: number;
+  setRobotBrightness: (brightness: number) => void;
+  robotEmote: NextoEmoteId;
+  setRobotEmote: (emote: NextoEmoteId) => void;
+  robotEmoteEnabled: boolean;
+  setRobotEmoteEnabled: (enabled: boolean) => void;
+  robotEmoteNonce: number;
+  triggerRobotEmote: () => void;
   bottomBarSize: 'small' | 'medium' | 'large';
   setBottomBarSize: (size: 'small' | 'medium' | 'large') => void;
   iconColor: string;
@@ -66,6 +75,14 @@ export const ThemeContext = createContext<ThemeContextType>({
   toggleNexto: () => {},
   robotSize: 80,
   setRobotSize: () => {},
+  robotBrightness: DEFAULT_ROBOT_BRIGHTNESS,
+  setRobotBrightness: () => {},
+  robotEmote: DEFAULT_ROBOT_EMOTE,
+  setRobotEmote: () => {},
+  robotEmoteEnabled: true,
+  setRobotEmoteEnabled: () => {},
+  robotEmoteNonce: 0,
+  triggerRobotEmote: () => {},
   bottomBarSize: 'medium',
   setBottomBarSize: () => {},
   iconColor: '#1877F2',
