@@ -1,20 +1,23 @@
 
-import React, { useState, useEffect, createContext, useContext, Suspense, lazy, useRef } from 'react';
+import React, { useState, useEffect, Suspense, lazy, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import Navbar from '@/components/Navbar';
 import Sidebar from '@/components/Sidebar';
 import BottomNav from '@/components/BottomNav';
-import NextoRobot from '@/components/NextoRobot';
 import {
+  AnyNextoEmoteId,
   DEFAULT_ROBOT_BRIGHTNESS,
   DEFAULT_ROBOT_EMOTE,
+  DEFAULT_ROBOT_MODE,
   isValidNextoEmote,
-  NextoEmoteId,
+  MAX_ROBOT_BRIGHTNESS,
+  MIN_ROBOT_BRIGHTNESS,
+  NextoRobotMode,
+  preloadNextoGlbBuffer,
 } from '@/lib/nextoModel';
 import OTAUpdateBanner from '@/components/OTAUpdateBanner';
 import { UserProfile as User } from '@/types';
 import { auth, db } from '@/lib/firebase';
-import { generateBio } from '@/services/geminiService';
 import { onAuthStateChanged, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { localDB, getBase64Image } from '@/lib/dexie';
@@ -25,6 +28,15 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { normalizeAppRoute, isChatMuted } from '@/lib/utils';
+import {
+  safeLocalClear,
+  safeLocalGet,
+  safeLocalRemove,
+  safeLocalSet,
+  safeSessionClear,
+  safeSessionGet,
+  safeSessionSet,
+} from '@/lib/safeStorage';
 import {
   AUTO_LOGIN_REINSTALL_KEY,
   consumePendingReinstallLogout,
@@ -37,18 +49,18 @@ import {
 
 const safeGetStoredUser = (): User | null => {
   try {
-    const saved = localStorage.getItem('next_media_user');
+    const saved = safeLocalGet('next_media_user');
     if (!saved || saved === 'undefined' || saved === 'null') return null;
     const parsed = JSON.parse(saved);
     if (!parsed || typeof parsed !== 'object' || !parsed.id) return null;
     if ('password' in parsed) {
       const { password: _removed, ...clean } = parsed;
-      localStorage.setItem('next_media_user', JSON.stringify(clean));
+      safeLocalSet('next_media_user', JSON.stringify(clean));
       return clean as User;
     }
     return parsed as User;
   } catch (_) {
-    try { localStorage.removeItem('next_media_user'); } catch {}
+    safeLocalRemove('next_media_user');
     return null;
   }
 };
@@ -84,58 +96,72 @@ const AuthRouteRedirect: React.FC = () => {
 
 // Note: Chunk loading recovery is handled safely in src/index.tsx with external script & protected-route guards.
 
-// Primary core navigation routes imported directly for instant 0ms switching regardless of Home Feed state
+// Keep Home Feed & shell components eager for 0ms first paint; lazy-load all secondary routes & 3D robot
 import Feed from '@/pages/Feed';
-import Messages from '@/pages/Messages';
-import Friends from '@/pages/Friends';
-import Profile from '@/pages/Profile';
-import Notifications from '@/pages/Notifications';
-import CreatePost from '@/pages/CreatePost';
-import Lab from '@/pages/Lab';
-import Cinema from '@/pages/Cinema';
-import Settings from '@/pages/Settings';
-import Login from '@/pages/Login';
-import Register from '@/pages/Register';
 import DeepLinkRouterGuard from '@/components/DeepLinkRouterGuard';
 import { AuthBottomSheet } from '@/components/AuthBottomSheet';
 import { GuestLockedView } from '@/components/GuestLockedView';
 
-// Safe lazy loader for secondary routes
+// Safe lazy loader for routes & heavy modules
 const safeLazy = (importFn: () => Promise<any>) =>
   lazy(async () => {
     try {
       return await importFn();
     } catch (err: any) {
-      console.warn('⚠️ [SafeLazy] Chunk loading failed, auto-cleaning cache and reloading...', err);
-      if ('caches' in window) {
+      console.warn('⚠️ [SafeLazy] Chunk loading failed, attempting recovery...', err);
+      if ('caches' in window && window.caches) {
         try {
           const names = await caches.keys();
           await Promise.all(names.map(n => caches.delete(n)));
         } catch (_) {}
       }
       const reloadKey = 'safe_lazy_reload_' + window.location.pathname;
-      const lastReload = Number(sessionStorage.getItem(reloadKey) || '0');
-      if (Date.now() - lastReload > 10000) {
-        sessionStorage.setItem(reloadKey, String(Date.now()));
+      const lastReload = Number(safeSessionGet(reloadKey) || '0');
+      const alreadyBusted = window.location.search.includes('_bust=');
+      if (navigator.onLine && !alreadyBusted && Date.now() - lastReload > 15000) {
+        safeSessionSet(reloadKey, String(Date.now()));
         window.location.reload();
-        return new Promise(() => {}); // Hold execution until reload
+        return new Promise(() => {});
       }
       throw err;
     }
   });
 
+import Login from '@/pages/Login';
+import Register from '@/pages/Register';
+
+const NextoRobot = safeLazy(() => import('@/components/NextoRobot'));
+const Messages = safeLazy(() => import('@/pages/Messages'));
+const Friends = safeLazy(() => import('@/pages/Friends'));
+const Profile = safeLazy(() => import('@/pages/Profile'));
+const Notifications = safeLazy(() => import('@/pages/Notifications'));
+const CreatePost = safeLazy(() => import('@/pages/CreatePost'));
+const Lab = safeLazy(() => import('@/pages/Lab'));
+const Cinema = safeLazy(() => import('@/pages/Cinema'));
+const Settings = safeLazy(() => import('@/pages/Settings'));
 const Reels = safeLazy(() => import('@/pages/Reels'));
 const Meet = safeLazy(() => import('@/pages/Meet'));
 const ChildSafety = safeLazy(() => import('@/pages/ChildSafety'));
 const Features = safeLazy(() => import('@/pages/Features'));
 
-// Preload helper for secondary lazy routes on hover/pointer-down
+// Preload helper for lazy routes on hover/pointer-down
 export const preloadAppRoute = (route: string) => {
   const clean = route.replace(/^\//, '').split('/')[0];
   switch (clean) {
+    case 'messages': import('@/pages/Messages'); break;
+    case 'friends': import('@/pages/Friends'); break;
+    case 'profile': import('@/pages/Profile'); break;
+    case 'notifications': import('@/pages/Notifications'); break;
+    case 'create-post': import('@/pages/CreatePost'); break;
+    case 'lab': import('@/pages/Lab'); break;
+    case 'cinema': import('@/pages/Cinema'); break;
+    case 'settings': import('@/pages/Settings'); break;
     case 'reels': import('@/pages/Reels'); break;
     case 'meet': import('@/pages/Meet'); break;
-    case 'features': import('@/pages/Features'); break;
+    case 'features':
+    case 'about':
+      import('@/pages/Features');
+      break;
     case 'child-safety': import('@/pages/ChildSafety'); break;
   }
 };
@@ -611,8 +637,9 @@ const AppLayout: React.FC = () => {
 
           <div className={isLockedViewportPage ? 'flex-1 w-full flex flex-col min-h-0 max-h-full overflow-hidden' : 'w-full'}>
           <Suspense fallback={
-            <div className="h-full flex items-center justify-center min-h-[50vh]">
+            <div className="h-full flex flex-col items-center justify-center min-h-[50vh] gap-3">
               <div className="fast-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[#1877F2]"></div>
+              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">Loading Next...</span>
             </div>
           }>
             <Routes>
@@ -706,9 +733,9 @@ const App: React.FC = () => {
     const isProd = Boolean((import.meta as any).env?.PROD);
     const currentVersion = (import.meta as any).env?.VITE_BUILD_TIME;
     if (isProd && typeof window !== 'undefined' && currentVersion) {
-      const storedVersion = localStorage.getItem('app_build_version');
+      const storedVersion = safeLocalGet('app_build_version');
       if (storedVersion !== currentVersion) {
-        localStorage.setItem('app_build_version', currentVersion);
+        safeLocalSet('app_build_version', currentVersion);
         if ('caches' in window && (window as any).caches) {
           (window as any).caches.keys().then((names: string[]) => {
             names.forEach((name) => {
@@ -740,158 +767,179 @@ const App: React.FC = () => {
   });
 
   const [darkMode, setDarkMode] = useState(() => {
-    return localStorage.getItem('next_media_theme') === 'dark';
+    return safeLocalGet('next_media_theme') === 'dark';
   });
 
   const [desktopMode, setDesktopMode] = useState(() => {
-    return localStorage.getItem('next_media_desktop') === 'true';
+    return safeLocalGet('next_media_desktop') === 'true';
   });
 
   const [nextoEnabled, setNextoEnabled] = useState(() => {
-    const saved = localStorage.getItem('next_media_nexto');
+    const saved = safeLocalGet('next_media_nexto');
     return saved === null ? true : saved === 'true';
   });
 
+  const [robotMode, setRobotModeState] = useState<NextoRobotMode>(() => {
+    const saved = safeLocalGet('next_media_robot_mode');
+    return saved === '2d' ? '2d' : DEFAULT_ROBOT_MODE;
+  });
+
+  const setRobotMode = (mode: NextoRobotMode) => {
+    setRobotModeState(mode);
+    safeLocalSet('next_media_robot_mode', mode);
+  };
+
   const [robotSize, setRobotSizeState] = useState(() => {
-    const saved = localStorage.getItem('next_media_robot_size');
+    const saved = safeLocalGet('next_media_robot_size');
     return saved ? parseInt(saved, 10) : 80;
   });
 
   const setRobotSize = (size: number) => {
     setRobotSizeState(size);
-    localStorage.setItem('next_media_robot_size', String(size));
+    safeLocalSet('next_media_robot_size', String(size));
   };
 
   const [robotBrightness, setRobotBrightnessState] = useState(() => {
-    const saved = localStorage.getItem('next_media_robot_brightness');
+    const versionKey = 'next_media_robot_brightness_v2';
+    const migrated = safeLocalGet(versionKey);
+    const saved = safeLocalGet('next_media_robot_brightness');
+    if (!migrated) {
+      safeLocalSet(versionKey, '1');
+      if (!saved || saved === '100') {
+        return DEFAULT_ROBOT_BRIGHTNESS;
+      }
+    }
     const parsed = saved ? parseInt(saved, 10) : NaN;
-    return Number.isFinite(parsed) ? Math.min(155, Math.max(60, parsed)) : DEFAULT_ROBOT_BRIGHTNESS;
+    return Number.isFinite(parsed)
+      ? Math.min(MAX_ROBOT_BRIGHTNESS, Math.max(MIN_ROBOT_BRIGHTNESS, parsed))
+      : DEFAULT_ROBOT_BRIGHTNESS;
   });
 
   const setRobotBrightness = (brightness: number) => {
-    const clamped = Math.min(155, Math.max(60, brightness));
+    const clamped = Math.min(MAX_ROBOT_BRIGHTNESS, Math.max(MIN_ROBOT_BRIGHTNESS, brightness));
     setRobotBrightnessState(clamped);
-    localStorage.setItem('next_media_robot_brightness', String(clamped));
+    safeLocalSet('next_media_robot_brightness', String(clamped));
+    safeLocalSet('next_media_robot_brightness_v2', '1');
   };
 
-  const [robotEmote, setRobotEmoteState] = useState<NextoEmoteId>(() => {
-    const saved = localStorage.getItem('next_media_robot_emote');
+  const [robotEmote, setRobotEmoteState] = useState<AnyNextoEmoteId>(() => {
+    const saved = safeLocalGet('next_media_robot_emote');
     return isValidNextoEmote(saved) ? saved : DEFAULT_ROBOT_EMOTE;
   });
 
-  const setRobotEmote = (emote: NextoEmoteId) => {
+  const setRobotEmote = (emote: AnyNextoEmoteId) => {
     setRobotEmoteState(emote);
-    localStorage.setItem('next_media_robot_emote', emote);
+    safeLocalSet('next_media_robot_emote', emote);
   };
 
   const [robotEmoteEnabled, setRobotEmoteEnabledState] = useState(() => {
-    const saved = localStorage.getItem('next_media_robot_emote_enabled');
+    const saved = safeLocalGet('next_media_robot_emote_enabled');
     return saved === null ? true : saved === 'true';
   });
 
   const setRobotEmoteEnabled = (enabled: boolean) => {
     setRobotEmoteEnabledState(enabled);
-    localStorage.setItem('next_media_robot_emote_enabled', String(enabled));
+    safeLocalSet('next_media_robot_emote_enabled', String(enabled));
   };
 
   const [robotEmoteNonce, setRobotEmoteNonce] = useState(0);
   const triggerRobotEmote = () => setRobotEmoteNonce((n) => n + 1);
 
   const [bottomBarSize, setBottomBarSizeState] = useState<'small'|'medium'|'large'>(() => {
-    return (localStorage.getItem('next_media_bottombarsize') as 'small'|'medium'|'large') || 'medium';
+    return (safeLocalGet('next_media_bottombarsize') as 'small'|'medium'|'large') || 'medium';
   });
   const setBottomBarSize = (size: 'small'|'medium'|'large') => {
     setBottomBarSizeState(size);
-    localStorage.setItem('next_media_bottombarsize', size);
+    safeLocalSet('next_media_bottombarsize', size);
   };
 
   const [iconColor, setIconColorState] = useState(() => {
-    return localStorage.getItem('next_media_iconcolor') || '#1877F2';
+    return safeLocalGet('next_media_iconcolor') || '#1877F2';
   });
   const setIconColor = (color: string) => {
     setIconColorState(color);
-    localStorage.setItem('next_media_iconcolor', color);
+    safeLocalSet('next_media_iconcolor', color);
   };
 
   const [autoplayVideos, setAutoplayVideosState] = useState(() => {
-    const saved = localStorage.getItem('next_media_autoplay');
+    const saved = safeLocalGet('next_media_autoplay');
     return saved === null ? true : saved === 'true';
   });
   const setAutoplayVideos = (val: boolean) => {
     setAutoplayVideosState(val);
-    localStorage.setItem('next_media_autoplay', String(val));
+    safeLocalSet('next_media_autoplay', String(val));
   };
 
   const [saveDataMode, setSaveDataModeState] = useState(() => {
-    const saved = localStorage.getItem('next_media_savedata');
+    const saved = safeLocalGet('next_media_savedata');
     return saved === 'true';
   });
   const setSaveDataMode = (val: boolean) => {
     setSaveDataModeState(val);
-    localStorage.setItem('next_media_savedata', String(val));
+    safeLocalSet('next_media_savedata', String(val));
   };
 
   const [highContrastMode, setHighContrastModeState] = useState(() => {
-    const saved = localStorage.getItem('next_media_highcontrast');
+    const saved = safeLocalGet('next_media_highcontrast');
     return saved === 'true';
   });
   const setHighContrastMode = (val: boolean) => {
     setHighContrastModeState(val);
-    localStorage.setItem('next_media_highcontrast', String(val));
+    safeLocalSet('next_media_highcontrast', String(val));
   };
 
   const [hapticFeedback, setHapticFeedbackState] = useState(() => {
-    const saved = localStorage.getItem('next_media_haptic');
+    const saved = safeLocalGet('next_media_haptic');
     return saved === null ? true : saved === 'true';
   });
   const setHapticFeedback = (val: boolean) => {
     setHapticFeedbackState(val);
-    localStorage.setItem('next_media_haptic', String(val));
+    safeLocalSet('next_media_haptic', String(val));
   };
 
   const [animationsEnabled, setAnimationsEnabledState] = useState(() => {
-    const saved = localStorage.getItem('next_media_animations');
+    const saved = safeLocalGet('next_media_animations');
     return saved === null ? true : saved === 'true';
   });
   const setAnimationsEnabled = (val: boolean) => {
     setAnimationsEnabledState(val);
-    localStorage.setItem('next_media_animations', String(val));
+    safeLocalSet('next_media_animations', String(val));
   };
 
   const [incognitoMode, setIncognitoModeState] = useState(() => {
-    const saved = localStorage.getItem('next_media_incognito');
+    const saved = safeLocalGet('next_media_incognito');
     return saved === 'true';
   });
   const setIncognitoMode = (val: boolean) => {
     setIncognitoModeState(val);
-    localStorage.setItem('next_media_incognito', String(val));
+    safeLocalSet('next_media_incognito', String(val));
   };
 
   const [soundEffects, setSoundEffectsState] = useState(() => {
-    const saved = localStorage.getItem('next_media_sound');
+    const saved = safeLocalGet('next_media_sound');
     return saved === 'true';
   });
   const setSoundEffects = (val: boolean) => {
     setSoundEffectsState(val);
-    localStorage.setItem('next_media_sound', String(val));
+    safeLocalSet('next_media_sound', String(val));
   };
 
   const [compactFeed, setCompactFeedState] = useState(() => {
-    const saved = localStorage.getItem('next_media_compactfeed');
+    const saved = safeLocalGet('next_media_compactfeed');
     return saved === 'true';
   });
   const setCompactFeed = (val: boolean) => {
     setCompactFeedState(val);
-    localStorage.setItem('next_media_compactfeed', String(val));
+    safeLocalSet('next_media_compactfeed', String(val));
   };
 
   const [showAllReels, setShowAllReelsState] = useState(() => {
-    const saved = localStorage.getItem('next_media_showallreels');
+    const saved = safeLocalGet('next_media_showallreels');
     return saved === 'true'; // Default is false to show only uploaded
   });
   const setShowAllReels = (val: boolean) => {
     setShowAllReelsState(val);
-    localStorage.setItem('next_media_showallreels', String(val));
+    safeLocalSet('next_media_showallreels', String(val));
   };
 
   const [autoLoginOnReinstall, setAutoLoginOnReinstallState] = useState<boolean>(() => {
@@ -903,37 +951,37 @@ const App: React.FC = () => {
   };
 
   const [textSize, setTextSizeState] = useState<'normal' | 'large' | 'extra-large'>(() => {
-    const saved = localStorage.getItem('next_media_textsize');
+    const saved = safeLocalGet('next_media_textsize');
     return (saved === 'large' || saved === 'extra-large') ? saved : 'normal';
   });
   const setTextSize = (size: 'normal' | 'large' | 'extra-large') => {
     setTextSizeState(size);
-    localStorage.setItem('next_media_textsize', size);
+    safeLocalSet('next_media_textsize', size);
   };
 
   const [messageAlerts, setMessageAlertsState] = useState<boolean>(() => {
-    return localStorage.getItem('next_media_msg_alerts') !== 'false';
+    return safeLocalGet('next_media_msg_alerts') !== 'false';
   });
   const setMessageAlerts = (val: boolean) => {
     setMessageAlertsState(val);
-    localStorage.setItem('next_media_msg_alerts', String(val));
+    safeLocalSet('next_media_msg_alerts', String(val));
   };
 
   const [mentionAlerts, setMentionAlertsState] = useState<boolean>(() => {
-    return localStorage.getItem('next_media_mention_alerts') !== 'false';
+    return safeLocalGet('next_media_mention_alerts') !== 'false';
   });
   const setMentionAlerts = (val: boolean) => {
     setMentionAlertsState(val);
-    localStorage.setItem('next_media_mention_alerts', String(val));
+    safeLocalSet('next_media_mention_alerts', String(val));
   };
 
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('next_media_theme', 'dark');
+      safeLocalSet('next_media_theme', 'dark');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('next_media_theme', 'light');
+      safeLocalSet('next_media_theme', 'light');
     }
   }, [darkMode]);
 
@@ -958,7 +1006,13 @@ const App: React.FC = () => {
     }
   }, [animationsEnabled]);
 
-
+  useEffect(() => {
+    if (!nextoEnabled || robotMode === '2d') return;
+    const timer = setTimeout(() => {
+      preloadNextoGlbBuffer().catch(() => {});
+    }, 1800);
+    return () => clearTimeout(timer);
+  }, [nextoEnabled, robotMode]);
 
   useEffect(() => {
     let viewportMeta = document.querySelector('meta[name="viewport"]');
@@ -970,17 +1024,17 @@ const App: React.FC = () => {
     
     if (desktopMode) {
       viewportMeta.setAttribute('content', 'width=1024');
-      localStorage.setItem('next_media_desktop', 'true');
+      safeLocalSet('next_media_desktop', 'true');
     } else {
       viewportMeta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content');
-      localStorage.setItem('next_media_desktop', 'false');
+      safeLocalSet('next_media_desktop', 'false');
     }
   }, [desktopMode]);
 
   const toggleDarkMode = () => {
     const newVal = !darkMode;
     setDarkMode(newVal);
-    localStorage.setItem('next_media_theme', newVal ? 'dark' : 'light');
+    safeLocalSet('next_media_theme', newVal ? 'dark' : 'light');
     if (newVal) {
       document.documentElement.classList.add('dark');
     } else {
@@ -991,12 +1045,12 @@ const App: React.FC = () => {
   const toggleDesktopMode = () => {
     const newVal = !desktopMode;
     setDesktopMode(newVal);
-    localStorage.setItem('next_media_desktop', String(newVal));
+    safeLocalSet('next_media_desktop', String(newVal));
   };
   const toggleNexto = () => {
     const newVal = !nextoEnabled;
     setNextoEnabled(newVal);
-    localStorage.setItem('next_media_nexto', String(newVal));
+    safeLocalSet('next_media_nexto', String(newVal));
   };
 
   const logout = async () => {
@@ -1021,40 +1075,42 @@ const App: React.FC = () => {
     }
 
     // Preserve critical settings and saved accounts
-    const savedAccounts = localStorage.getItem('next_saved_accounts');
-    const theme = localStorage.getItem('next_media_theme');
-    const desktop = localStorage.getItem('next_media_desktop');
-    const nexto = localStorage.getItem('next_media_nexto');
-    const robotSizeSaved = localStorage.getItem('next_media_robot_size');
-    const robotBrightnessSaved = localStorage.getItem('next_media_robot_brightness');
-    const robotEmoteSaved = localStorage.getItem('next_media_robot_emote');
-    const robotEmoteEnabledSaved = localStorage.getItem('next_media_robot_emote_enabled');
-    const keyboardHeight = localStorage.getItem('saved_keyboard_height');
-    const autoLoginReinstall = localStorage.getItem(AUTO_LOGIN_REINSTALL_KEY);
-    const pwaInstalled = localStorage.getItem('next_pwa_installed');
-    const savedTextSize = localStorage.getItem('next_media_textsize');
-    const savedMsgAlerts = localStorage.getItem('next_media_msg_alerts');
-    const savedMentionAlerts = localStorage.getItem('next_media_mention_alerts');
+    const savedAccounts = safeLocalGet('next_saved_accounts');
+    const theme = safeLocalGet('next_media_theme');
+    const desktop = safeLocalGet('next_media_desktop');
+    const nexto = safeLocalGet('next_media_nexto');
+    const robotModeSaved = safeLocalGet('next_media_robot_mode');
+    const robotSizeSaved = safeLocalGet('next_media_robot_size');
+    const robotBrightnessSaved = safeLocalGet('next_media_robot_brightness');
+    const robotEmoteSaved = safeLocalGet('next_media_robot_emote');
+    const robotEmoteEnabledSaved = safeLocalGet('next_media_robot_emote_enabled');
+    const keyboardHeight = safeLocalGet('saved_keyboard_height');
+    const autoLoginReinstall = safeLocalGet(AUTO_LOGIN_REINSTALL_KEY);
+    const pwaInstalled = safeLocalGet('next_pwa_installed');
+    const savedTextSize = safeLocalGet('next_media_textsize');
+    const savedMsgAlerts = safeLocalGet('next_media_msg_alerts');
+    const savedMentionAlerts = safeLocalGet('next_media_mention_alerts');
 
     // Clear local storage and session storage
-    localStorage.clear();
-    sessionStorage.clear();
+    safeLocalClear();
+    safeSessionClear();
 
     // Restore preserved values
-    if (savedAccounts) localStorage.setItem('next_saved_accounts', savedAccounts);
-    if (theme) localStorage.setItem('next_media_theme', theme);
-    if (desktop) localStorage.setItem('next_media_desktop', desktop);
-    if (nexto) localStorage.setItem('next_media_nexto', nexto);
-    if (robotSizeSaved) localStorage.setItem('next_media_robot_size', robotSizeSaved);
-    if (robotBrightnessSaved) localStorage.setItem('next_media_robot_brightness', robotBrightnessSaved);
-    if (robotEmoteSaved) localStorage.setItem('next_media_robot_emote', robotEmoteSaved);
-    if (robotEmoteEnabledSaved) localStorage.setItem('next_media_robot_emote_enabled', robotEmoteEnabledSaved);
-    if (keyboardHeight) localStorage.setItem('saved_keyboard_height', keyboardHeight);
-    if (autoLoginReinstall !== null) localStorage.setItem(AUTO_LOGIN_REINSTALL_KEY, autoLoginReinstall);
-    if (pwaInstalled !== null) localStorage.setItem('next_pwa_installed', pwaInstalled);
-    if (savedTextSize) localStorage.setItem('next_media_textsize', savedTextSize);
-    if (savedMsgAlerts !== null) localStorage.setItem('next_media_msg_alerts', savedMsgAlerts);
-    if (savedMentionAlerts !== null) localStorage.setItem('next_media_mention_alerts', savedMentionAlerts);
+    if (savedAccounts) safeLocalSet('next_saved_accounts', savedAccounts);
+    if (theme) safeLocalSet('next_media_theme', theme);
+    if (desktop) safeLocalSet('next_media_desktop', desktop);
+    if (nexto) safeLocalSet('next_media_nexto', nexto);
+    if (robotModeSaved) safeLocalSet('next_media_robot_mode', robotModeSaved);
+    if (robotSizeSaved) safeLocalSet('next_media_robot_size', robotSizeSaved);
+    if (robotBrightnessSaved) safeLocalSet('next_media_robot_brightness', robotBrightnessSaved);
+    if (robotEmoteSaved) safeLocalSet('next_media_robot_emote', robotEmoteSaved);
+    if (robotEmoteEnabledSaved) safeLocalSet('next_media_robot_emote_enabled', robotEmoteEnabledSaved);
+    if (keyboardHeight) safeLocalSet('saved_keyboard_height', keyboardHeight);
+    if (autoLoginReinstall !== null) safeLocalSet(AUTO_LOGIN_REINSTALL_KEY, autoLoginReinstall);
+    if (pwaInstalled !== null) safeLocalSet('next_pwa_installed', pwaInstalled);
+    if (savedTextSize) safeLocalSet('next_media_textsize', savedTextSize);
+    if (savedMsgAlerts !== null) safeLocalSet('next_media_msg_alerts', savedMsgAlerts);
+    if (savedMentionAlerts !== null) safeLocalSet('next_media_mention_alerts', savedMentionAlerts);
 
     setCurrentUser(null);
     window.location.href = '/login';
@@ -1063,7 +1119,7 @@ const App: React.FC = () => {
   useEffect(() => {
     if (currentUser?.id) {
       const { password: _removedPwd, ...cleanCurrentUser } = currentUser as any;
-      localStorage.setItem('next_media_user', JSON.stringify(cleanCurrentUser));
+      safeLocalSet('next_media_user', JSON.stringify(cleanCurrentUser));
       useGlobalStore.getState().setCurrentUser(cleanCurrentUser);
       flushPendingFCMToken(currentUser.id).catch(() => {});
 
@@ -1093,8 +1149,8 @@ const App: React.FC = () => {
       // One-time background sync of current user & public legacy profiles to Supabase (deferred so startup stays 100% responsive)
       const syncKey = `supa_self_synced_${currentUser.id}`;
       let backfillTimer: any;
-      if (!sessionStorage.getItem(syncKey)) {
-        sessionStorage.setItem(syncKey, '1');
+      if (!safeSessionGet(syncKey)) {
+        safeSessionSet(syncKey, '1');
         backfillTimer = setTimeout(() => {
           syncProfileToSupabase(currentUser).catch(() => {});
           backfillPublicProfilesOnce().catch(() => {});
@@ -1140,6 +1196,7 @@ const App: React.FC = () => {
           if (!userDoc || !userDoc.exists()) {
             const emailBase = result.user.email?.split('@')[0] || result.user.uid.substring(0, 8);
             const uniqueUsername = await withTimeout(ensureUniqueUsername(emailBase, result.user.uid), 2500, emailBase);
+            const { generateBio } = await import('@/services/geminiService');
             const bio = await withTimeout(generateBio(uniqueUsername), 2500, 'Exploring Next.');
             const newProfile = {
                username: uniqueUsername,
@@ -1222,8 +1279,8 @@ const App: React.FC = () => {
         setCurrentUser(localUser as any);
         setLoadingAuth(false);
         const syncKey = `supa_self_synced_${userId}`;
-        if (!sessionStorage.getItem(syncKey)) {
-          sessionStorage.setItem(syncKey, '1');
+        if (!safeSessionGet(syncKey)) {
+          safeSessionSet(syncKey, '1');
           syncProfileToSupabase(localUser).catch(() => {});
         }
         return;
@@ -1259,7 +1316,7 @@ const App: React.FC = () => {
         cacheUserInDexie(cachedCopy).catch(() => {});
 
         setCurrentUser(cachedCopy as User);
-        localStorage.setItem('next_media_user', JSON.stringify(cachedCopy));
+        safeLocalSet('next_media_user', JSON.stringify(cachedCopy));
       } else {
         console.warn("Profile not found or DB unreachable. Falling back to local/auth data.");
         const parsedSaved = safeGetStoredUser();
@@ -1294,30 +1351,13 @@ const App: React.FC = () => {
     }
   };
 
-  if (loadingAuth) {
-    return (
-      <div className="min-h-screen bg-[#f0f2f5] dark:bg-[#000000] flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative flex items-center justify-center">
-            <div className="fast-spin rounded-full h-16 w-16 border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2]" />
-            <img
-              src="/Next-AppLogo.jpg"
-              alt="Next"
-              className="absolute w-11 h-11 rounded-full object-cover shadow-sm"
-            />
-          </div>
-          <p className="text-gray-500 dark:text-gray-400 font-bold animate-pulse">Loading Next...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <AuthContext.Provider value={{ currentUser, setCurrentUser, logout }}>
       <ThemeContext.Provider value={{ 
         darkMode, toggleDarkMode, 
         desktopMode, toggleDesktopMode, 
         nextoEnabled, toggleNexto,
+        robotMode, setRobotMode,
         robotSize, setRobotSize,
         robotBrightness, setRobotBrightness,
         robotEmote, setRobotEmote,
@@ -1339,13 +1379,33 @@ const App: React.FC = () => {
         messageAlerts, setMessageAlerts,
         mentionAlerts, setMentionAlerts
       }}>
-        <BrowserRouter>
-          <DeepLinkRouterGuard>
-            <AppLayout />
-            {nextoEnabled && <NextoRobot />}
-            <OTAUpdateBanner />
-          </DeepLinkRouterGuard>
-        </BrowserRouter>
+        {loadingAuth ? (
+          <div className="min-h-screen bg-[#f0f2f5] dark:bg-[#000000] flex items-center justify-center">
+            <div className="flex flex-col items-center gap-4">
+              <div className="relative flex items-center justify-center">
+                <div className="fast-spin rounded-full h-16 w-16 border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2]" />
+                <img
+                  src="/Next-AppLogo.jpg"
+                  alt="Next"
+                  className="absolute w-11 h-11 rounded-full object-cover shadow-sm"
+                />
+              </div>
+              <p className="text-gray-500 dark:text-gray-400 font-bold animate-pulse">Loading Next...</p>
+            </div>
+          </div>
+        ) : (
+          <BrowserRouter>
+            <DeepLinkRouterGuard>
+              <AppLayout />
+              <OTAUpdateBanner />
+            </DeepLinkRouterGuard>
+          </BrowserRouter>
+        )}
+        {nextoEnabled && !loadingAuth && (
+          <Suspense fallback={null}>
+            <NextoRobot />
+          </Suspense>
+        )}
       </ThemeContext.Provider>
     </AuthContext.Provider>
   );

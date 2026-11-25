@@ -2,19 +2,20 @@ import { addDoc, collection } from 'firebase/firestore';
 import { db } from './firebase';
 import { supabase } from './supabase';
 import { localDB, saveLocalConversation } from './dexie';
+import { safeLocalGet, safeLocalRemove, safeLocalSet } from './safeStorage';
 
 const DB_SWITCH_KEY = 'next_media_db_fallback';
 const DB_SWITCH_EXPIRY = 2 * 60 * 1000; // 2 minutes temporary fallback only
 
 export const getActiveDB = (): 'firebase' | 'supabase' => {
   try {
-    const data = localStorage.getItem(DB_SWITCH_KEY);
+    const data = safeLocalGet(DB_SWITCH_KEY);
     if (data) {
       const parsed = JSON.parse(data);
       if (Date.now() - parsed.timestamp < DB_SWITCH_EXPIRY) {
         return parsed.db;
       } else {
-        localStorage.removeItem(DB_SWITCH_KEY);
+        safeLocalRemove(DB_SWITCH_KEY);
       }
     }
   } catch (e) {
@@ -24,9 +25,7 @@ export const getActiveDB = (): 'firebase' | 'supabase' => {
 };
 
 export const clearDBFallback = () => {
-  try {
-    localStorage.removeItem(DB_SWITCH_KEY);
-  } catch {}
+  safeLocalRemove(DB_SWITCH_KEY);
 };
 
 export const switchDB = (from: 'firebase' | 'supabase') => {
@@ -34,14 +33,12 @@ export const switchDB = (from: 'firebase' | 'supabase') => {
   if (currentDB === from) {
     const nextDB = currentDB === 'firebase' ? 'supabase' : 'firebase';
     try {
-      localStorage.setItem(DB_SWITCH_KEY, JSON.stringify({
+      safeLocalSet(DB_SWITCH_KEY, JSON.stringify({
         db: nextDB,
         timestamp: Date.now()
       }));
       console.warn(`Switched active database to: ${nextDB}`);
-    } catch (e) {
-      console.error("Failed to save DB fallback state", e);
-    }
+    } catch (e) {}
   }
 };
 

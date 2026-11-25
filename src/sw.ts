@@ -38,7 +38,7 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// Purge stale precaches from legacy versions and rescue stuck white-screen clients once
+// Purge stale caches from legacy versions without touching active Workbox precache or forcing reloads
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     try {
@@ -47,13 +47,8 @@ self.addEventListener('activate', (event) => {
       const prevVer = prevVerResp ? await prevVerResp.text() : null;
 
       const allKeys = await caches.keys();
-      let hadLegacyPrecache = false;
       await Promise.all(
         allKeys.map((key) => {
-          if (key.includes('workbox-precache') || key.includes('precache-v')) {
-            hadLegacyPrecache = true;
-            return caches.delete(key);
-          }
           if (
             key !== HTML_SHELL_CACHE &&
             key !== ASSETS_CACHE &&
@@ -69,19 +64,13 @@ self.addEventListener('activate', (event) => {
       await metaCache.put('/__sw_version', new Response(SW_VERSION));
       await self.clients.claim();
 
-      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      for (const client of clients) {
-        try {
-          const isProtectedClient =
-            client.url.includes('/cinema') ||
-            client.url.includes('/meet') ||
-            client.url.includes('/messages');
-          if (!prevVer && hadLegacyPrecache && !isProtectedClient && 'navigate' in client) {
-            await (client as WindowClient).navigate(client.url).catch(() => {});
-          } else {
+      if (prevVer && prevVer !== SW_VERSION) {
+        const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of clients) {
+          try {
             client.postMessage({ type: 'SW_UPDATED', version: SW_VERSION });
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
     } catch (_) {}
   })());
@@ -143,6 +132,28 @@ registerRoute(
       new ExpirationPlugin({
         maxEntries: 60,
         maxAgeSeconds: 14 * 24 * 60 * 60,
+      }),
+    ],
+  })
+);
+
+// Cache 3D Nexto GLB model so the floating 3D robot loads instantaneously on repeat opens
+registerRoute(
+  ({ url }) => url.pathname.endsWith('.glb'),
+  new CacheFirst({
+    cacheName: ASSETS_CACHE,
+    plugins: [
+      {
+        cacheWillUpdate: async ({ response }) => {
+          if (!response || response.status !== 200) return null;
+          const ct = String(response.headers.get('content-type') || '').toLowerCase();
+          if (ct.includes('text/html')) return null;
+          return response;
+        },
+      },
+      new ExpirationPlugin({
+        maxEntries: 6,
+        maxAgeSeconds: 30 * 24 * 60 * 60,
       }),
     ],
   })

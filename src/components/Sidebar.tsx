@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { useQueryClient } from '@tanstack/react-query';
+import { safeLocalSet } from '@/lib/safeStorage';
 
 const SidebarItem = React.memo<{ icon: React.ReactNode, label: string | React.ReactNode, to: string, badge?: number, onClick?: () => void }>(({ icon, label, to, badge, onClick }) => {
   const location = useLocation();
@@ -76,7 +77,7 @@ const Sidebar: React.FC = () => {
         to="/messages" 
         badge={totalUnread} 
         onClick={() => {
-          localStorage.setItem('inbox_cleared_at', Date.now().toString());
+          safeLocalSet('inbox_cleared_at', Date.now().toString());
           queryClient.setQueryData(['totalUnread'], 0);
         }}
       />

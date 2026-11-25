@@ -22,15 +22,36 @@ export const db = initializeFirestore(app, {
   experimentalAutoDetectLongPolling: true,
 }, databaseId);
 
-// Enable offline persistence & validate initial server connectivity
-if (typeof window !== 'undefined') {
-  enableMultiTabIndexedDbPersistence(db).catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
-    } else if (err.code === 'unimplemented') {
-      console.warn('The current browser does not support all of the features required to enable persistence');
+// Enable offline persistence ONLY when browser storage & IndexedDB are permitted
+// (prevents Firestore b815 INTERNAL ASSERTION FAILED when localStorage throws SecurityError in Safari Private / strict WebViews)
+const isBrowserPersistenceSupported = (): boolean => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage || !window.indexedDB) {
+      return false;
     }
-  });
+    const testKey = '__next_fb_storage_test__';
+    window.localStorage.setItem(testKey, '1');
+    window.localStorage.removeItem(testKey);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+if (typeof window !== 'undefined') {
+  if (isBrowserPersistenceSupported()) {
+    try {
+      enableMultiTabIndexedDbPersistence(db).catch((err) => {
+        if (err?.code === 'failed-precondition') {
+          console.warn('Multiple tabs open, persistence can only be enabled in one tab at a time.');
+        } else if (err?.code === 'unimplemented') {
+          console.warn('The current browser does not support all of the features required to enable persistence');
+        }
+      });
+    } catch (_) {}
+  } else {
+    console.info('Firestore running in memory-only mode (browser storage restricted).');
+  }
 
   // Non-blocking boot connection probe per Firebase SDK guidelines
   (async function testConnection() {
@@ -49,11 +70,13 @@ export const storage = getStorage(app);
 
 let messagingInstance: any = null;
 if (typeof window !== 'undefined') {
-  isSupported().then((supported) => {
-    if (supported) {
-      messagingInstance = getMessaging(app);
-    }
-  });
+  isSupported()
+    .then((supported) => {
+      if (supported) {
+        messagingInstance = getMessaging(app);
+      }
+    })
+    .catch(() => {});
 }
 
 export const messaging = async () => {

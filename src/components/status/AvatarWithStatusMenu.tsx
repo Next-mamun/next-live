@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, Image as ImageIcon, X, CircleDot } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -7,7 +7,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useActiveStatuses } from '@/hooks/useActiveStatuses';
 import { StatusViewerModal } from './StatusViewerModal';
-import { StatusCreatorModal } from './StatusCreatorModal';
+
+const StatusCreatorModal = lazy(() =>
+  import('./StatusCreatorModal').then((m) => ({ default: m.StatusCreatorModal }))
+);
 
 interface AvatarWithStatusMenuProps {
   userId?: string;
@@ -305,12 +308,14 @@ export const AvatarWithStatusMenu: React.FC<AvatarWithStatusMenuProps> = ({
             onMouseDown={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
-            <StatusCreatorModal
-              isOpen={showCreator}
-              initialMode="picker"
-              onClose={() => setShowCreator(false)}
-              onCreated={() => refetch()}
-            />
+            <Suspense fallback={null}>
+              <StatusCreatorModal
+                isOpen={showCreator}
+                initialMode="picker"
+                onClose={() => setShowCreator(false)}
+                onCreated={() => refetch()}
+              />
+            </Suspense>
           </div>,
           document.body
         )}

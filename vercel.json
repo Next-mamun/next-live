@@ -31,6 +31,12 @@
       ]
     },
     {
+      "source": "/(.*)\\.(png|jpg|jpeg|svg|ico|webp)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, stale-while-revalidate=86400" }
+      ]
+    },
+    {
       "source": "/version.json",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
@@ -45,7 +51,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!api/|\\.well-known/|assets/|playstore/|sw\\.js|workbox-|version\\.json|manifest\\.json|.*\\.glb$).*)",
+      "source": "/((?!api/|\\.well-known/|assets/|playstore/|sw\\.js|workbox-|version\\.json|manifest\\.json|robots\\.txt|sitemap\\.xml|ads\\.txt|favicon|.*\\.(?:glb|png|jpg|jpeg|svg|ico|webp|js|css|json|wasm|txt|xml)$).*)",
       "destination": "/index.html"
     }
   ]

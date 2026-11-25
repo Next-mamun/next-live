@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 import { db } from './firebase';
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit, query, updateDoc, where } from 'firebase/firestore';
 import { localDB } from './dexie';
+import { safeLocalGet, safeLocalSet } from './safeStorage';
 
 const toIsoStringSafe = (val: any): string => {
   if (!val) return new Date().toISOString();
@@ -273,19 +274,19 @@ const BACKFILL_PROFILES_KEY = 'supa_profiles_backfill_v1';
  */
 export const backfillPublicProfilesOnce = async (): Promise<boolean> => {
   if (typeof window === 'undefined') return false;
-  if (localStorage.getItem(BACKFILL_PROFILES_KEY) === 'done') return false;
+  if (safeLocalGet(BACKFILL_PROFILES_KEY) === 'done') return false;
 
   try {
     const { count } = await supabase.from('profiles').select('id', { count: 'exact', head: true });
     const snap = await getDocs(query(collection(db, 'profiles'), limit(300)));
     if (snap.empty) {
-      localStorage.setItem(BACKFILL_PROFILES_KEY, 'done');
+      safeLocalSet(BACKFILL_PROFILES_KEY, 'done');
       return false;
     }
 
     const fbProfiles = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     if (count !== null && count >= fbProfiles.length) {
-      localStorage.setItem(BACKFILL_PROFILES_KEY, 'done');
+      safeLocalSet(BACKFILL_PROFILES_KEY, 'done');
       return false;
     }
 
@@ -312,7 +313,7 @@ export const backfillPublicProfilesOnce = async (): Promise<boolean> => {
       }
     }
 
-    localStorage.setItem(BACKFILL_PROFILES_KEY, 'done');
+    safeLocalSet(BACKFILL_PROFILES_KEY, 'done');
     return syncedAny;
   } catch (err) {
     console.warn('Background profile backfill warning:', err);
@@ -327,7 +328,7 @@ export const backfillPublicProfilesOnce = async (): Promise<boolean> => {
 export const migrateUserFriendshipsOnce = async (userId: string): Promise<boolean> => {
   if (!userId || typeof window === 'undefined') return false;
   const flagKey = `supa_friends_migrated_v1_${userId}`;
-  if (localStorage.getItem(flagKey) === 'done') return false;
+  if (safeLocalGet(flagKey) === 'done') return false;
 
   try {
     const [sendSnap, recvSnap] = await Promise.all([
@@ -395,7 +396,7 @@ export const migrateUserFriendshipsOnce = async (userId: string): Promise<boolea
       }
     }
 
-    localStorage.setItem(flagKey, 'done');
+    safeLocalSet(flagKey, 'done');
     return importedAny;
   } catch (err) {
     console.warn('Legacy friendship migration warning:', err);
@@ -410,7 +411,7 @@ export const migrateUserFriendshipsOnce = async (userId: string): Promise<boolea
 export const migrateUserMessagesOnce = async (userId: string): Promise<boolean> => {
   if (!userId || typeof window === 'undefined') return false;
   const flagKey = `supa_msgs_migrated_v1_${userId}`;
-  if (localStorage.getItem(flagKey) === 'done') return false;
+  if (safeLocalGet(flagKey) === 'done') return false;
 
   try {
     const [sendSnap, recvSnap] = await Promise.all([
@@ -451,7 +452,7 @@ export const migrateUserMessagesOnce = async (userId: string): Promise<boolean> 
       if (!error) importedAny = true;
     }
 
-    localStorage.setItem(flagKey, 'done');
+    safeLocalSet(flagKey, 'done');
     return importedAny;
   } catch (err) {
     console.warn('Legacy messages migration warning:', err);

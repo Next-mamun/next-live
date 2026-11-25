@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { Home, PlusSquare, MessageCircle, User, Users, BookOpen } from 'lucide-react';
 import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
+import { safeLocalSet } from '@/lib/safeStorage';
 
 const BottomNav: React.FC = () => {
   const location = useLocation();
@@ -108,7 +109,7 @@ const BottomNav: React.FC = () => {
         className="flex flex-col items-center justify-center w-full h-full relative" 
         style={{ color: isActive('/messages') ? activeColor : inactiveColor }}
         onClick={() => {
-          localStorage.setItem('inbox_cleared_at', Date.now().toString());
+          safeLocalSet('inbox_cleared_at', Date.now().toString());
         }}
       >
         <div className="relative">

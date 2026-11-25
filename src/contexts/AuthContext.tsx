@@ -1,7 +1,13 @@
 
 import React, { createContext, useContext } from 'react';
 import { UserProfile as User } from '@/types';
-import { DEFAULT_ROBOT_BRIGHTNESS, DEFAULT_ROBOT_EMOTE, NextoEmoteId } from '@/lib/nextoModel';
+import {
+  AnyNextoEmoteId,
+  DEFAULT_ROBOT_BRIGHTNESS,
+  DEFAULT_ROBOT_EMOTE,
+  DEFAULT_ROBOT_MODE,
+  NextoRobotMode,
+} from '@/lib/nextoModel';
 
 export interface AuthContextType {
   currentUser: User | null;
@@ -24,12 +30,14 @@ export interface ThemeContextType {
   toggleDesktopMode: () => void;
   nextoEnabled: boolean;
   toggleNexto: () => void;
+  robotMode: NextoRobotMode;
+  setRobotMode: (mode: NextoRobotMode) => void;
   robotSize: number;
   setRobotSize: (size: number) => void;
   robotBrightness: number;
   setRobotBrightness: (brightness: number) => void;
-  robotEmote: NextoEmoteId;
-  setRobotEmote: (emote: NextoEmoteId) => void;
+  robotEmote: AnyNextoEmoteId;
+  setRobotEmote: (emote: AnyNextoEmoteId) => void;
   robotEmoteEnabled: boolean;
   setRobotEmoteEnabled: (enabled: boolean) => void;
   robotEmoteNonce: number;
@@ -73,6 +81,8 @@ export const ThemeContext = createContext<ThemeContextType>({
   toggleDesktopMode: () => {},
   nextoEnabled: true,
   toggleNexto: () => {},
+  robotMode: DEFAULT_ROBOT_MODE,
+  setRobotMode: () => {},
   robotSize: 80,
   setRobotSize: () => {},
   robotBrightness: DEFAULT_ROBOT_BRIGHTNESS,

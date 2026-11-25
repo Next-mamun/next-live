@@ -1,15 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
+  AnyNextoEmoteId,
   applyNextoBrightness,
+  buildRiggedNextoRobot,
   DEFAULT_ROBOT_BRIGHTNESS,
   DEFAULT_ROBOT_EMOTE,
   detectSoftwareWebGL,
   disposeNextoRoot,
+  evaluateCustomRobotEmote,
+  evaluateNextoEmote,
+  getCachedNextoPosterSync,
+  getCustomNextoEmotes,
+  getStaticNextoSnapshot,
+  isBuiltinNextoEmote,
+  isCustomEmoteId,
+  loadNextoGltf,
   NEXTO_EMOTES,
-  NextoEmoteId,
   NextoLightingRig,
+  NextoPose,
+  NextoRiggedParts,
+  RobotEmote,
   setupNextoLightingAndEnv,
   tuneNextoMaterials,
 } from '@/lib/nextoModel';
@@ -17,42 +28,33 @@ import {
 interface NextoRobot3DProps {
   size: number;
   brightness?: number;
-  emote?: NextoEmoteId;
+  emote?: AnyNextoEmoteId;
+  activeEmote?: RobotEmote | null;
+  loopEmote?: boolean;
   emoteEnabled?: boolean;
   emoteNonce?: number;
   animationsEnabled?: boolean;
   lookTarget?: { x: number; y: number } | null;
-  fallback: React.ReactNode;
-}
-
-interface EyeTarget {
-  mesh: THREE.Mesh;
-  baseScale: THREE.Vector3;
-  side: 'left' | 'right';
-}
-
-interface ArmTarget {
-  mesh: THREE.Mesh;
-  side: 'left' | 'right';
+  voiceState?: 'idle' | 'listening' | 'speaking';
+  audioLevel?: number;
 }
 
 function afterDraw(cb: () => void): number {
   return window.setTimeout(cb, 16);
 }
 
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
 const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
   size,
   brightness = DEFAULT_ROBOT_BRIGHTNESS,
   emote = DEFAULT_ROBOT_EMOTE,
+  activeEmote = null,
+  loopEmote = false,
   emoteEnabled = true,
   emoteNonce = 0,
   animationsEnabled = true,
   lookTarget = null,
-  fallback,
+  voiceState = 'idle',
+  audioLevel = 0,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -62,24 +64,39 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
 
   const sizeRef = useRef(size);
   const brightnessRef = useRef(brightness);
-  const emoteRef = useRef<NextoEmoteId>(emote);
+  const emoteRef = useRef<AnyNextoEmoteId>(emote);
+  const activeEmoteRef = useRef<RobotEmote | null>(activeEmote);
+  const loopEmoteRef = useRef(loopEmote);
   const emoteEnabledRef = useRef(emoteEnabled);
   const animationsEnabledRef = useRef(animationsEnabled);
   const lookTargetRef = useRef(lookTarget);
+  const voiceStateRef = useRef(voiceState);
+  const audioLevelRef = useRef(audioLevel);
   const forceTriggerEmoteRef = useRef<(() => void) | null>(null);
   const cancelEmoteRef = useRef<(() => void) | null>(null);
 
   const [isModelReady, setIsModelReady] = useState(false);
-  const [hasWebGLError, setHasWebGLError] = useState(false);
+  const [posterUrl, setPosterUrl] = useState<string | null>(() => getCachedNextoPosterSync());
 
   sizeRef.current = size;
   brightnessRef.current = brightness;
   emoteRef.current = emote;
+  activeEmoteRef.current = activeEmote;
+  loopEmoteRef.current = loopEmote;
   emoteEnabledRef.current = emoteEnabled;
   animationsEnabledRef.current = animationsEnabled;
   lookTargetRef.current = lookTarget;
+  voiceStateRef.current = voiceState;
+  audioLevelRef.current = audioLevel;
 
-  // Resize WebGL canvas cleanly when robotSize slider changes in Settings without reloading GLB
+  useEffect(() => {
+    if (posterUrl) return;
+    getStaticNextoSnapshot().then((url) => {
+      if (url) setPosterUrl(url);
+    });
+  }, [posterUrl]);
+
+  // Resize WebGL canvas cleanly when robotSize slider changes without reloading GLB
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
@@ -121,8 +138,9 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
     let rafId = 0;
     let timeoutId = 0;
     let renderer: THREE.WebGLRenderer | null = null;
-    let rig: NextoLightingRig | null = null;
+    let lightingRig: NextoLightingRig | null = null;
     let loadedModelRoot: THREE.Object3D | null = null;
+    let riggedParts: NextoRiggedParts | null = null;
 
     const isSoftwareGl = detectSoftwareWebGL();
 
@@ -133,7 +151,6 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
         powerPreference: 'high-performance',
       });
     } catch {
-      setHasWebGLError(true);
       return;
     }
 
@@ -152,9 +169,6 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
 
     const handleContextLost = (e: Event) => {
       e.preventDefault();
-      if (!disposed) {
-        setHasWebGLError(true);
-      }
     };
     canvas.addEventListener('webglcontextlost', handleContextLost, false);
 
@@ -164,19 +178,14 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
     const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
     camera.position.set(0, 0.14, 5.45);
 
-    rig = setupNextoLightingAndEnv(renderer, scene, brightnessRef.current);
-    rigRef.current = rig;
+    lightingRig = setupNextoLightingAndEnv(renderer, scene, brightnessRef.current);
+    rigRef.current = lightingRig;
 
     const modelPivot = new THREE.Group();
     scene.add(modelPivot);
 
-    const eyeTargets: EyeTarget[] = [];
-    const armTargets: ArmTarget[] = [];
-
-    const loader = new GLTFLoader();
-    loader.load(
-      '/nexto-final.glb',
-      (gltf) => {
+    loadNextoGltf()
+      .then((gltf) => {
         if (disposed) return;
 
         const root = gltf.scene;
@@ -189,6 +198,9 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
         const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z) || 1;
         const normScale = 2.08 / maxDim;
 
+        // Prefix-based hierarchical joint rigging (00_..19_)
+        riggedParts = buildRiggedNextoRobot(root);
+
         root.scale.setScalar(normScale);
         root.position.set(
           -rawCenter.x * normScale,
@@ -198,81 +210,31 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
 
         tuneNextoMaterials(root, brightnessRef.current);
 
-        // Re-pivot eyes & arms around their natural centers / shoulders
-        root.traverse((obj) => {
-          if (!(obj instanceof THREE.Mesh)) return;
-
-          if (obj.name === '12_Black eye' || obj.name === '14_Black eye' || /black.?eye/i.test(obj.name)) {
-            if (obj.geometry) {
-              obj.geometry.computeBoundingBox();
-              const eyeBox = obj.geometry.boundingBox;
-              if (eyeBox) {
-                const eyeCenter = eyeBox.getCenter(new THREE.Vector3());
-                obj.geometry.translate(-eyeCenter.x, -eyeCenter.y, -eyeCenter.z);
-                obj.position.add(eyeCenter);
-                eyeTargets.push({
-                  mesh: obj,
-                  baseScale: obj.scale.clone(),
-                  side: eyeCenter.x < 0 ? 'left' : 'right',
-                });
-                return;
-              }
-            }
-          }
-
-          if (obj.name === '04_Rounded arm left' || obj.name === '05_Rounded arm right') {
-            if (obj.geometry) {
-              obj.geometry.computeBoundingBox();
-              const armBox = obj.geometry.boundingBox;
-              if (armBox) {
-                const isLeft = obj.name.includes('left');
-                const shoulder = new THREE.Vector3(
-                  isLeft ? armBox.max.x - 0.1 : armBox.min.x + 0.1,
-                  armBox.max.y - 0.14,
-                  (armBox.min.z + armBox.max.z) / 2
-                );
-                obj.geometry.translate(-shoulder.x, -shoulder.y, -shoulder.z);
-                obj.position.add(shoulder);
-                armTargets.push({
-                  mesh: obj,
-                  side: isLeft ? 'left' : 'right',
-                });
-              }
-            }
-          }
-        });
-
         modelPivot.add(root);
         if (renderer) {
-          applyNextoBrightness(renderer, scene, rig!, root, brightnessRef.current);
+          applyNextoBrightness(renderer, scene, lightingRig!, root, brightnessRef.current);
           renderer.render(scene, camera);
         }
         setIsModelReady(true);
-      },
-      undefined,
-      () => {
-        if (!disposed) {
-          setHasWebGLError(true);
-        }
-      }
-    );
+      })
+      .catch(() => {});
 
     const clock = new THREE.Clock();
     let elapsed = 0;
 
-    // Blink schedule state
+    // Blink schedule state (~every 3.2s)
     let nextBlinkAt = 0.85;
     let blinkStartAt = -1;
     let pendingDoubleBlink = false;
-    const BLINK_DURATION = 0.17;
+    const BLINK_DURATION = 0.16;
 
     // Emote schedule state
-    let nextEmoteAt = 1.35;
+    let nextEmoteAt = 0.35;
     let emoteStartAt = -1;
-    let activeEmoteId: NextoEmoteId = emoteRef.current;
+    let runningEmoteId: AnyNextoEmoteId = emoteRef.current;
 
     forceTriggerEmoteRef.current = () => {
-      activeEmoteId = emoteRef.current;
+      runningEmoteId = emoteRef.current;
       emoteStartAt = elapsed;
     };
     cancelEmoteRef.current = () => {
@@ -284,14 +246,19 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
     let currentPitch = 0;
     let currentRoll = 0;
 
+    const resolveCustomById = (id: AnyNextoEmoteId): RobotEmote | null => {
+      if (!isCustomEmoteId(id)) return null;
+      return getCustomNextoEmotes().find((c) => c.id === id) || null;
+    };
+
     const tick = () => {
       if (disposed || !renderer) return;
 
       const delta = Math.min(clock.getDelta(), 0.05);
       elapsed += delta;
 
-      // 1. Eye blink state machine
-      if (blinkStartAt < 0 && elapsed >= nextBlinkAt && eyeTargets.length > 0) {
+      // 1. Natural eye blink state machine
+      if (blinkStartAt < 0 && elapsed >= nextBlinkAt && riggedParts) {
         blinkStartAt = elapsed;
       }
 
@@ -305,8 +272,8 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
             pendingDoubleBlink = false;
             nextBlinkAt = elapsed + 0.14;
           } else {
-            pendingDoubleBlink = Math.random() < 0.24;
-            nextBlinkAt = elapsed + 2.3 + Math.random() * 2.5;
+            pendingDoubleBlink = Math.random() < 0.22;
+            nextBlinkAt = elapsed + 2.4 + Math.random() * 2.2;
           }
         } else {
           blinkClose =
@@ -316,264 +283,234 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
         }
       }
 
-      // 2. Idle / Bored Emote state machine
+      // 2. Emote evaluation (looped preview custom RobotEmote OR triggered/idle 100+ emotes)
       const targetLook = lookTargetRef.current;
-      if (emoteEnabledRef.current && emoteStartAt < 0 && loadedModelRoot && elapsed >= nextEmoteAt) {
-        if (!targetLook) {
-          activeEmoteId = emoteRef.current;
-          emoteStartAt = elapsed;
+      const previewEmote = activeEmoteRef.current;
+      let pose: NextoPose | null = null;
+
+      if (previewEmote && loopEmoteRef.current && loadedModelRoot) {
+        const dur = Math.max(0.4, previewEmote.duration || 1.3);
+        const p = (elapsed % dur) / dur;
+        pose = evaluateCustomRobotEmote(previewEmote, p);
+      } else if (previewEmote && loadedModelRoot) {
+        if (emoteStartAt < 0) emoteStartAt = elapsed;
+        const dur = Math.max(0.4, previewEmote.duration || 1.3);
+        const p = (elapsed - emoteStartAt) / dur;
+        if (p < 1) {
+          pose = evaluateCustomRobotEmote(previewEmote, p);
         } else {
-          nextEmoteAt = elapsed + 2.5;
-        }
-      }
-
-      let emoteRotX = 0;
-      let emoteRotY = 0;
-      let emoteRotZ = 0;
-      let emotePosX = 0;
-      let emotePosY = 0;
-      let emoteScaleX = 1;
-      let emoteScaleY = 1;
-      let emoteScaleZ = 1;
-      let leftArmRotZ = 0;
-      let leftArmRotX = 0;
-      let rightArmRotZ = 0;
-      let rightArmRotX = 0;
-      let leftEyeExtraClose = 0;
-      let rightEyeExtraClose = 0;
-      let eyePopScale = 1;
-
-      if (emoteStartAt >= 0 && emoteEnabledRef.current) {
-        const meta = NEXTO_EMOTES.find((m) => m.id === activeEmoteId) || NEXTO_EMOTES[0];
-        const p = (elapsed - emoteStartAt) / meta.duration;
-        if (p >= 1) {
           emoteStartAt = -1;
-          nextEmoteAt = elapsed + 8.5 + Math.random() * 5.0;
-        } else {
-          const ease = easeInOutCubic(p);
-          const bell = Math.sin(p * Math.PI);
+        }
+      } else {
+        if (emoteEnabledRef.current && emoteStartAt < 0 && loadedModelRoot && elapsed >= nextEmoteAt) {
+          if (!targetLook) {
+            runningEmoteId = emoteRef.current;
+            emoteStartAt = elapsed;
+          } else {
+            nextEmoteAt = elapsed + 2.5;
+          }
+        }
 
-          switch (activeEmoteId) {
-            case 'flip':
-              emoteRotX = -ease * Math.PI * 2;
-              emotePosY = bell * 0.28;
-              emoteRotZ = Math.sin(p * Math.PI * 2) * 0.1;
-              leftArmRotZ = -bell * 0.35;
-              rightArmRotZ = bell * 0.35;
-              break;
-            case 'frontflip':
-              emoteRotX = ease * Math.PI * 2;
-              emotePosY = bell * 0.26;
-              if (p > 0.8) {
-                const land = Math.sin(((p - 0.8) / 0.2) * Math.PI);
-                emoteScaleY = 1 - land * 0.1;
-                emoteScaleX = 1 + land * 0.06;
-                emoteScaleZ = 1 + land * 0.06;
-              }
-              break;
-            case 'spin':
-              emoteRotY = ease * Math.PI * 2;
-              emotePosY = bell * 0.18;
-              leftArmRotZ = -bell * 0.45;
-              rightArmRotZ = bell * 0.45;
-              break;
-            case 'double_spin':
-              emoteRotY = ease * Math.PI * 4;
-              emotePosY = bell * 0.24;
-              leftArmRotZ = -bell * 0.55;
-              rightArmRotZ = bell * 0.55;
-              break;
-            case 'wave': {
-              const envelope = Math.sin(p * Math.PI);
-              emoteRotZ = -0.14 * envelope;
-              emoteRotY = 0.22 * envelope;
-              rightArmRotZ = envelope * (0.85 + Math.sin(p * Math.PI * 6) * 0.35);
-              rightArmRotX = -envelope * 0.25;
-              rightEyeExtraClose = envelope > 0.55 ? (envelope - 0.55) * 1.4 : 0;
-              break;
+        if (emoteStartAt >= 0 && emoteEnabledRef.current) {
+          const customObj = resolveCustomById(runningEmoteId);
+          if (customObj) {
+            const dur = Math.max(0.4, customObj.duration || 1.3);
+            const p = (elapsed - emoteStartAt) / dur;
+            if (p >= 1) {
+              emoteStartAt = -1;
+              nextEmoteAt = elapsed + 8.5 + Math.random() * 5.0;
+            } else {
+              pose = evaluateCustomRobotEmote(customObj, p);
             }
-            case 'cheer': {
-              const hops = Math.abs(Math.sin(p * Math.PI * 2));
-              emotePosY = hops * 0.22;
-              leftArmRotZ = -hops * 0.88;
-              rightArmRotZ = hops * 0.88;
-              emoteScaleY = 1 + hops * 0.06;
-              emoteScaleX = 1 - hops * 0.03;
-              break;
+          } else if (isBuiltinNextoEmote(runningEmoteId)) {
+            const meta = NEXTO_EMOTES.find((m) => m.id === runningEmoteId) || NEXTO_EMOTES[0];
+            const p = (elapsed - emoteStartAt) / meta.duration;
+            if (p >= 1) {
+              emoteStartAt = -1;
+              nextEmoteAt = elapsed + 8.5 + Math.random() * 5.0;
+            } else {
+              pose = evaluateNextoEmote(runningEmoteId, p);
             }
-            case 'dance': {
-              const sway = Math.sin(p * Math.PI * 4);
-              const env = Math.sin(p * Math.PI);
-              emoteRotZ = sway * 0.18 * env;
-              emoteRotY = sway * 0.24 * env;
-              emotePosX = sway * 0.08 * env;
-              emotePosY = Math.abs(Math.cos(p * Math.PI * 4)) * 0.09 * env;
-              leftArmRotZ = (-0.35 + sway * 0.45) * env;
-              rightArmRotZ = (0.35 + sway * 0.45) * env;
-              break;
-            }
-            case 'bounce': {
-              const jump = Math.abs(Math.sin(p * Math.PI * 2));
-              const squash = p < 0.16 || (p > 0.42 && p < 0.58) || p > 0.84 ? Math.sin(p * Math.PI * 6) : 0;
-              emotePosY = jump * 0.26 - Math.max(0, -squash) * 0.06;
-              emoteScaleY = 1 + (jump - 0.3) * 0.14;
-              emoteScaleX = 1 - (jump - 0.3) * 0.08;
-              emoteScaleZ = emoteScaleX;
-              break;
-            }
-            case 'nod': {
-              const nodWave = Math.max(0, Math.sin(p * Math.PI * 4));
-              emoteRotX = nodWave * 0.32;
-              emotePosY = -nodWave * 0.04;
-              leftEyeExtraClose = nodWave * 0.5;
-              rightEyeExtraClose = nodWave * 0.5;
-              break;
-            }
-            case 'peek':
-              if (p < 0.48) {
-                const hide = easeInOutCubic(p / 0.48);
-                emotePosY = -hide * 0.32;
-                emoteRotX = hide * 0.28;
-                emoteScaleX = 1 - hide * 0.12;
-                emoteScaleY = 1 - hide * 0.12;
-                emoteScaleZ = 1 - hide * 0.12;
-                leftArmRotZ = -hide * 0.6;
-                rightArmRotZ = hide * 0.6;
-              } else {
-                const pop = Math.sin(((p - 0.48) / 0.52) * Math.PI);
-                emotePosY = pop * 0.2;
-                emoteScaleX = 1 + pop * 0.1;
-                emoteScaleY = 1 + pop * 0.1;
-                emoteScaleZ = 1 + pop * 0.1;
-                eyePopScale = 1 + pop * 0.16;
-                leftArmRotZ = -pop * 0.65;
-                rightArmRotZ = pop * 0.65;
-              }
-              break;
-            case 'shy': {
-              const wiggle = Math.sin(p * Math.PI * 3);
-              const env = Math.sin(p * Math.PI);
-              emoteRotY = wiggle * 0.34 * env;
-              emoteRotX = 0.14 * env;
-              emoteRotZ = -wiggle * 0.08 * env;
-              leftArmRotZ = 0.25 * env;
-              rightArmRotZ = -0.25 * env;
-              leftEyeExtraClose = Math.abs(wiggle) * 0.35 * env;
-              rightEyeExtraClose = Math.abs(wiggle) * 0.35 * env;
-              break;
-            }
-            case 'salute': {
-              const bowCurve = Math.sin(p * Math.PI);
-              emoteRotX = bowCurve * 0.45;
-              emotePosY = -bowCurve * 0.08;
-              rightArmRotZ = bowCurve * 0.72;
-              rightArmRotX = -bowCurve * 0.45;
-              break;
-            }
-            case 'rocket':
-              if (p < 0.25) {
-                const coil = easeInOutCubic(p / 0.25);
-                emotePosY = -coil * 0.12;
-                emoteScaleY = 1 - coil * 0.14;
-                emoteScaleX = 1 + coil * 0.08;
-                emoteScaleZ = emoteScaleX;
-              } else {
-                const air = (p - 0.25) / 0.75;
-                const arc = Math.sin(air * Math.PI);
-                emotePosY = arc * 0.34;
-                emoteRotY = Math.sin(air * Math.PI * 2) * 0.25;
-                emoteScaleY = 1 + arc * 0.08;
-                emoteScaleX = 1 - arc * 0.05;
-                emoteScaleZ = emoteScaleX;
-                leftArmRotZ = -arc * 0.5;
-                rightArmRotZ = arc * 0.5;
-              }
-              break;
-            case 'shiver': {
-              const env = Math.sin(p * Math.PI);
-              const buzz = Math.sin(p * Math.PI * 12);
-              emoteRotZ = buzz * 0.16 * env;
-              emotePosX = buzz * 0.07 * env;
-              emotePosY = Math.abs(Math.sin(p * Math.PI * 4)) * 0.1 * env;
-              leftArmRotZ = (-0.3 + buzz * 0.3) * env;
-              rightArmRotZ = (0.3 - buzz * 0.3) * env;
-              break;
-            }
-            case 'barrel':
-              emoteRotZ = ease * Math.PI * 2;
-              emotePosY = bell * 0.24;
-              leftArmRotZ = -bell * 0.4;
-              rightArmRotZ = bell * 0.4;
-              break;
-            case 'wink_tilt': {
-              const env = Math.sin(p * Math.PI);
-              emoteRotZ = 0.24 * env;
-              emoteRotY = -0.22 * env;
-              emotePosY = env * 0.08;
-              rightArmRotZ = env * 0.45;
-              rightEyeExtraClose = Math.min(1, env * 1.45);
-              break;
+          } else {
+            const fallbackMeta = NEXTO_EMOTES[0];
+            const p = (elapsed - emoteStartAt) / fallbackMeta.duration;
+            if (p >= 1) {
+              emoteStartAt = -1;
+              nextEmoteAt = elapsed + 8.5 + Math.random() * 5.0;
+            } else {
+              pose = evaluateNextoEmote(fallbackMeta.id, p);
             }
           }
         }
       }
 
-      // Apply Eye Blink + Wink + Pop scales
-      for (const eye of eyeTargets) {
-        const specificClose = eye.side === 'left' ? leftEyeExtraClose : rightEyeExtraClose;
-        const closeAmount = Math.min(1, Math.max(blinkClose, specificClose));
-        eye.mesh.scale.y = eye.baseScale.y * eyePopScale * (1 - 0.94 * closeAmount);
-        eye.mesh.scale.x = eye.baseScale.x * eyePopScale * (1 + 0.12 * closeAmount);
-        eye.mesh.scale.z = eye.baseScale.z * eyePopScale;
-      }
+      // 3. Apply articulated joint poses via smooth THREE.MathUtils.damp
+      if (riggedParts) {
+        const idleOn = animationsEnabledRef.current;
+        let targetHeadRotX = idleOn ? Math.sin(elapsed * 1.7) * 0.03 : 0;
+        let targetHeadRotY = idleOn ? Math.sin(elapsed * 1.15) * 0.06 : 0;
+        let targetHeadRotZ = 0;
 
-      // Apply Shoulder-pivoted Arm Animations
-      for (const arm of armTargets) {
-        if (arm.side === 'left') {
-          arm.mesh.rotation.z = leftArmRotZ;
-          arm.mesh.rotation.x = leftArmRotX;
-        } else {
-          arm.mesh.rotation.z = rightArmRotZ;
-          arm.mesh.rotation.x = rightArmRotX;
+        let targetLeftArmX = 0;
+        let targetLeftArmY = 0;
+        let targetLeftArmZ = idleOn ? -Math.abs(Math.sin(elapsed * 2.15) * 0.04) : 0;
+
+        let targetRightArmX = 0;
+        let targetRightArmY = 0;
+        let targetRightArmZ = idleOn ? Math.abs(Math.sin(elapsed * 2.15) * 0.04) : 0;
+
+        let targetLeftAntX = 0;
+        let targetLeftAntZ = idleOn ? Math.sin(elapsed * 2.2) * 0.04 : 0;
+        let targetRightAntX = 0;
+        let targetRightAntZ = idleOn ? -Math.sin(elapsed * 2.2) * 0.04 : 0;
+
+        let targetMouthX = 1;
+        let targetMouthY = 1;
+        let targetCheekScale = 1;
+
+        let targetLeftEyeX = 1;
+        let targetLeftEyeY = 1;
+        let targetRightEyeX = 1;
+        let targetRightEyeY = 1;
+
+        if (targetLook) {
+          targetHeadRotY = THREE.MathUtils.clamp(targetLook.x * 0.28, -0.28, 0.28);
+          targetHeadRotX = THREE.MathUtils.clamp(targetLook.y * 0.16, -0.16, 0.16);
         }
+
+        // Optional voice state reactivity (listening / speaking)
+        const vState = voiceStateRef.current;
+        if (!pose && vState === 'listening') {
+          targetHeadRotZ = -0.28;
+          targetHeadRotY = 0.38;
+          targetRightArmZ = 1.48;
+          targetRightArmX = -0.68;
+          targetRightAntZ = -0.22;
+        } else if (!pose && vState === 'speaking') {
+          const voiceNorm = THREE.MathUtils.clamp(audioLevelRef.current / 100, 0, 1);
+          const speakAmt = Math.min(1, voiceNorm + Math.abs(Math.sin(elapsed * 13)) * 0.35);
+          targetMouthY = 0.78 + speakAmt * 0.65;
+          targetLeftArmZ = -0.25 - speakAmt * 0.25;
+          targetRightArmZ = 0.25 + speakAmt * 0.25;
+          targetHeadRotX = Math.sin(elapsed * 6) * 0.06;
+        }
+
+        if (pose) {
+          targetHeadRotX += pose.headRotX;
+          targetHeadRotY += pose.headRotY;
+          targetHeadRotZ += pose.headRotZ;
+
+          targetLeftArmX = pose.leftArmRotX;
+          targetLeftArmY = pose.leftArmRotY;
+          targetLeftArmZ = pose.leftArmRotZ;
+
+          targetRightArmX = pose.rightArmRotX;
+          targetRightArmY = pose.rightArmRotY;
+          targetRightArmZ = pose.rightArmRotZ;
+
+          targetLeftAntX = pose.leftEarRotX;
+          targetLeftAntZ += pose.leftEarRotZ;
+          targetRightAntX = pose.rightEarRotX;
+          targetRightAntZ += pose.rightEarRotZ;
+
+          targetMouthX = THREE.MathUtils.clamp(pose.mouthScaleX, 0.85, 1.15);
+          targetMouthY = THREE.MathUtils.clamp(pose.mouthScaleY, 0.8, 1.55);
+          targetCheekScale = THREE.MathUtils.clamp(pose.cheekScale, 0.95, 1.12);
+
+          targetLeftEyeX = pose.leftEyeScaleX;
+          targetLeftEyeY = pose.leftEyeScaleY;
+          targetRightEyeX = pose.rightEyeScaleX;
+          targetRightEyeY = pose.rightEyeScaleY;
+        }
+
+        // Apply idle blink smoothly on top of expression scale (z stays fixed at 1 inside headGroup!)
+        const blinkFactor = 1 - 0.9 * blinkClose;
+        targetLeftEyeY *= blinkFactor;
+        targetRightEyeY *= blinkFactor;
+        targetLeftEyeX *= 1 + 0.06 * blinkClose;
+        targetRightEyeX *= 1 + 0.06 * blinkClose;
+
+        const dampSpeed = pose ? 18 : 11;
+        riggedParts.headGroup.rotation.x = THREE.MathUtils.damp(riggedParts.headGroup.rotation.x, targetHeadRotX, dampSpeed, delta);
+        riggedParts.headGroup.rotation.y = THREE.MathUtils.damp(riggedParts.headGroup.rotation.y, targetHeadRotY, dampSpeed, delta);
+        riggedParts.headGroup.rotation.z = THREE.MathUtils.damp(riggedParts.headGroup.rotation.z, targetHeadRotZ, dampSpeed, delta);
+
+        riggedParts.leftArmGroup.rotation.x = THREE.MathUtils.damp(riggedParts.leftArmGroup.rotation.x, targetLeftArmX, dampSpeed, delta);
+        riggedParts.leftArmGroup.rotation.y = THREE.MathUtils.damp(riggedParts.leftArmGroup.rotation.y, targetLeftArmY, dampSpeed, delta);
+        riggedParts.leftArmGroup.rotation.z = THREE.MathUtils.damp(riggedParts.leftArmGroup.rotation.z, targetLeftArmZ, dampSpeed, delta);
+
+        riggedParts.rightArmGroup.rotation.x = THREE.MathUtils.damp(riggedParts.rightArmGroup.rotation.x, targetRightArmX, dampSpeed, delta);
+        riggedParts.rightArmGroup.rotation.y = THREE.MathUtils.damp(riggedParts.rightArmGroup.rotation.y, targetRightArmY, dampSpeed, delta);
+        riggedParts.rightArmGroup.rotation.z = THREE.MathUtils.damp(riggedParts.rightArmGroup.rotation.z, targetRightArmZ, dampSpeed, delta);
+
+        riggedParts.leftAntennaGroup.rotation.x = THREE.MathUtils.damp(riggedParts.leftAntennaGroup.rotation.x, targetLeftAntX, dampSpeed, delta);
+        riggedParts.leftAntennaGroup.rotation.z = THREE.MathUtils.damp(riggedParts.leftAntennaGroup.rotation.z, targetLeftAntZ, dampSpeed, delta);
+        riggedParts.rightAntennaGroup.rotation.x = THREE.MathUtils.damp(riggedParts.rightAntennaGroup.rotation.x, targetRightAntX, dampSpeed, delta);
+        riggedParts.rightAntennaGroup.rotation.z = THREE.MathUtils.damp(riggedParts.rightAntennaGroup.rotation.z, targetRightAntZ, dampSpeed, delta);
+
+        riggedParts.mouthGroup.scale.x = THREE.MathUtils.damp(riggedParts.mouthGroup.scale.x, targetMouthX, 20, delta);
+        riggedParts.mouthGroup.scale.y = THREE.MathUtils.damp(riggedParts.mouthGroup.scale.y, targetMouthY, 20, delta);
+
+        riggedParts.leftCheekGroup.scale.x = THREE.MathUtils.damp(riggedParts.leftCheekGroup.scale.x, targetCheekScale, 14, delta);
+        riggedParts.leftCheekGroup.scale.y = THREE.MathUtils.damp(riggedParts.leftCheekGroup.scale.y, targetCheekScale, 14, delta);
+        riggedParts.rightCheekGroup.scale.x = THREE.MathUtils.damp(riggedParts.rightCheekGroup.scale.x, targetCheekScale, 14, delta);
+        riggedParts.rightCheekGroup.scale.y = THREE.MathUtils.damp(riggedParts.rightCheekGroup.scale.y, targetCheekScale, 14, delta);
+
+        // Eyes stay glued in their face sockets: scale.z locked to 1, position unchanged
+        riggedParts.leftEyeGroup.scale.x = THREE.MathUtils.damp(riggedParts.leftEyeGroup.scale.x, targetLeftEyeX, 24, delta);
+        riggedParts.leftEyeGroup.scale.y = THREE.MathUtils.damp(riggedParts.leftEyeGroup.scale.y, targetLeftEyeY, 24, delta);
+        riggedParts.rightEyeGroup.scale.x = THREE.MathUtils.damp(riggedParts.rightEyeGroup.scale.x, targetRightEyeX, 24, delta);
+        riggedParts.rightEyeGroup.scale.y = THREE.MathUtils.damp(riggedParts.rightEyeGroup.scale.y, targetRightEyeY, 24, delta);
       }
 
-      // 3. Subtle floating + pointer look-at damping combined with active emote
+      // 4. Whole-body floating + look damping combined with active emote
       if (animationsEnabledRef.current) {
-        const idleYaw = Math.sin(elapsed * 0.95) * 0.11;
-        const idlePitch = Math.sin(elapsed * 1.45) * 0.035;
-        const idleRoll = Math.sin(elapsed * 0.8) * 0.025;
+        const idleYaw = Math.sin(elapsed * 0.95) * 0.08;
+        const idlePitch = Math.sin(elapsed * 1.45) * 0.025;
+        const idleRoll = Math.sin(elapsed * 0.8) * 0.02;
 
-        const targetYaw = targetLook ? THREE.MathUtils.clamp(targetLook.x * 0.34, -0.34, 0.34) : idleYaw;
-        const targetPitch = targetLook ? THREE.MathUtils.clamp(targetLook.y * 0.18, -0.18, 0.18) : idlePitch;
-        const targetRoll = targetLook ? THREE.MathUtils.clamp(-targetLook.x * 0.08, -0.08, 0.08) : idleRoll;
+        const targetYaw = targetLook ? THREE.MathUtils.clamp(targetLook.x * 0.24, -0.24, 0.24) : idleYaw;
+        const targetPitch = targetLook ? THREE.MathUtils.clamp(targetLook.y * 0.12, -0.12, 0.12) : idlePitch;
+        const targetRoll = targetLook ? THREE.MathUtils.clamp(-targetLook.x * 0.06, -0.06, 0.06) : idleRoll;
 
         currentYaw = THREE.MathUtils.damp(currentYaw, targetYaw, 6, delta);
         currentPitch = THREE.MathUtils.damp(currentPitch, targetPitch, 6, delta);
         currentRoll = THREE.MathUtils.damp(currentRoll, targetRoll, 6, delta);
 
         modelPivot.rotation.set(
-          currentPitch + emoteRotX,
-          currentYaw + emoteRotY,
-          currentRoll + emoteRotZ
+          currentPitch + (pose ? pose.bodyRotX : 0),
+          currentYaw + (pose ? pose.bodyRotY : 0),
+          currentRoll + (pose ? pose.bodyRotZ : 0)
         );
         modelPivot.position.set(
-          emotePosX,
-          Math.sin(elapsed * 2.15) * 0.055 + emotePosY,
-          0
+          pose ? pose.bodyPosX : 0,
+          Math.sin(elapsed * 2.15) * 0.05 + (pose ? pose.bodyPosY : 0),
+          pose ? pose.bodyPosZ : 0
         );
-        modelPivot.scale.set(emoteScaleX, emoteScaleY, emoteScaleZ);
+        modelPivot.scale.set(
+          pose ? pose.bodyScaleX : 1,
+          pose ? pose.bodyScaleY : 1,
+          pose ? pose.bodyScaleZ : 1
+        );
       } else {
         currentYaw = THREE.MathUtils.damp(currentYaw, 0, 8, delta);
         currentPitch = THREE.MathUtils.damp(currentPitch, 0, 8, delta);
         currentRoll = THREE.MathUtils.damp(currentRoll, 0, 8, delta);
         modelPivot.rotation.set(
-          currentPitch + emoteRotX,
-          currentYaw + emoteRotY,
-          currentRoll + emoteRotZ
+          currentPitch + (pose ? pose.bodyRotX : 0),
+          currentYaw + (pose ? pose.bodyRotY : 0),
+          currentRoll + (pose ? pose.bodyRotZ : 0)
         );
-        modelPivot.position.set(emotePosX, emotePosY, 0);
-        modelPivot.scale.set(emoteScaleX, emoteScaleY, emoteScaleZ);
+        modelPivot.position.set(
+          pose ? pose.bodyPosX : 0,
+          pose ? pose.bodyPosY : 0,
+          pose ? pose.bodyPosZ : 0
+        );
+        modelPivot.scale.set(
+          pose ? pose.bodyScaleX : 1,
+          pose ? pose.bodyScaleY : 1,
+          pose ? pose.bodyScaleZ : 1
+        );
       }
 
       renderer.render(scene, camera);
@@ -605,8 +542,8 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
       }
       loadedRootRef.current = null;
 
-      if (rig) {
-        rig.envRenderTarget.dispose();
+      if (lightingRig) {
+        lightingRig.envRenderTarget.dispose();
       }
       rigRef.current = null;
       scene.environment = null;
@@ -622,25 +559,24 @@ const NextoRobot3D: React.FC<NextoRobot3DProps> = ({
     };
   }, []);
 
-  if (hasWebGLError) {
-    return <>{fallback}</>;
-  }
-
   return (
     <div
       style={{ width: size, height: size }}
       className="relative cursor-pointer active:cursor-grabbing select-none drop-shadow-[0_10px_18px_rgba(24,119,242,0.28)]"
       aria-label="Nexto 3D Robot"
     >
-      {!isModelReady && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          {fallback}
-        </div>
+      {!isModelReady && posterUrl && (
+        <img
+          src={posterUrl}
+          alt="Nexto 3D Robot"
+          draggable={false}
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
+        />
       )}
       <div
         ref={containerRef}
         style={{ width: size, height: size }}
-        className={`w-full h-full transition-opacity duration-200 pointer-events-none select-none ${
+        className={`w-full h-full transition-opacity duration-150 pointer-events-none select-none ${
           isModelReady ? 'opacity-100' : 'opacity-0'
         }`}
       />

@@ -6,6 +6,7 @@ import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import * as idb from 'idb-keyval';
 import { registerSW } from 'virtual:pwa-register';
+import { safeSessionGet, safeSessionSet } from './lib/safeStorage';
 
 // 1. Immediate Top-Level Chunk Loading Failure Handler (Prevents White Screen on deployment updates)
 const handleTopLevelChunkFailure = async (err: any) => {
@@ -30,9 +31,9 @@ const handleTopLevelChunkFailure = async (err: any) => {
 
     console.warn("⚠️ [Deploy Recovery] Chunk load failure intercepted. Cleaning transient script cache...", msg);
     const reloadKey = 'chunk_reload_lock_root';
-    const lastReload = Number(sessionStorage.getItem(reloadKey) || '0');
-    if (Date.now() - lastReload > 15000) {
-      sessionStorage.setItem(reloadKey, String(Date.now()));
+    const lastReload = Number(safeSessionGet(reloadKey) || '0');
+    if (navigator.onLine && Date.now() - lastReload > 15000) {
+      safeSessionSet(reloadKey, String(Date.now()));
       if ('caches' in window) {
         try {
           const names = await caches.keys();

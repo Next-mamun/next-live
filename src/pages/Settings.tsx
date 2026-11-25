@@ -1,5 +1,5 @@
 import { localDB } from '@/lib/dexie';
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, Suspense, lazy } from 'react';
 import { Link } from 'react-router-dom';
 import { requestNotificationPermission, showNotification } from '@/services/notificationService';
 import { toast } from 'sonner';
@@ -8,7 +8,7 @@ import {
   Monitor, Smartphone, UserX, MessageSquare, Minimize2, Maximize2,
   Moon, Sun, Type, Download, AlertTriangle, FileText, RefreshCw,
   Trash2, Users, BellRing, Camera, ArrowLeft, AlertCircle, X,
-  LogOut, ExternalLink
+  LogOut, ExternalLink, Check, Plus, Sliders
 } from 'lucide-react';
 import { useAuth, useTheme } from '@/contexts/AuthContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -30,8 +30,29 @@ import { updatePassword, signOut, signInWithEmailAndPassword } from 'firebase/au
 import { VerifiedBadge } from '@/components/VerifiedBadge';
 import NextoRobotStatic from '@/components/NextoRobotStatic';
 import {
+  safeLocalClear,
+  safeLocalGet,
+  safeLocalSet,
+  safeSessionClear,
+} from '@/lib/safeStorage';
+
+const NextoRobot3D = lazy(() => import('@/components/NextoRobot3D'));
+import {
+  AnyNextoEmoteId,
+  createDefaultCustomEmote,
   DEFAULT_ROBOT_BRIGHTNESS,
+  DEFAULT_ROBOT_EMOTE,
+  getCustomNextoEmotes,
+  isCustomEmoteId,
+  MAX_ROBOT_BRIGHTNESS,
+  MIN_ROBOT_BRIGHTNESS,
+  NEXTO_EMOTE_CATEGORIES,
   NEXTO_EMOTES,
+  NextoEmoteCategory,
+  RobotEmote,
+  RobotEmoteBounceStyle,
+  RobotEmoteEyeExpression,
+  saveCustomNextoEmotes,
 } from '@/lib/nextoModel';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useContentFilter } from '@/hooks/useContentFilter';
@@ -331,6 +352,8 @@ const Settings: React.FC = () => {
     toggleDesktopMode,
     nextoEnabled,
     toggleNexto,
+    robotMode,
+    setRobotMode,
     robotSize,
     setRobotSize,
     robotBrightness,
@@ -402,12 +425,12 @@ const Settings: React.FC = () => {
   const queryClient = useQueryClient();
   const [savedAccounts, setSavedAccounts] = useState<any[]>(() => {
     try {
-      const saved = localStorage.getItem('next_saved_accounts');
+      const saved = safeLocalGet('next_saved_accounts');
       const parsed = saved ? JSON.parse(saved) : [];
       if (!Array.isArray(parsed)) return [];
       const scrubbed = parsed.map(({ password: _pwd, ...rest }: any) => rest);
       if (parsed.some((a: any) => a && 'password' in a)) {
-        localStorage.setItem('next_saved_accounts', JSON.stringify(scrubbed));
+        safeLocalSet('next_saved_accounts', JSON.stringify(scrubbed));
       }
       return scrubbed;
     } catch {
@@ -444,7 +467,7 @@ const Settings: React.FC = () => {
         };
         const updated = [...savedAccounts, newAcc];
         setSavedAccounts(updated);
-        localStorage.setItem('next_saved_accounts', JSON.stringify(updated));
+        safeLocalSet('next_saved_accounts', JSON.stringify(updated));
       } else {
         const existing = savedAccounts[existingIdx];
         if (
@@ -458,7 +481,7 @@ const Settings: React.FC = () => {
               : a
           );
           setSavedAccounts(updated);
-          localStorage.setItem('next_saved_accounts', JSON.stringify(updated));
+          safeLocalSet('next_saved_accounts', JSON.stringify(updated));
         }
       }
     }
@@ -475,39 +498,41 @@ const Settings: React.FC = () => {
   };
 
   const preservePreferenceKeys = () => ({
-    savedTheme: localStorage.getItem('next_media_theme'),
-    savedDesktop: localStorage.getItem('next_media_desktop'),
-    savedNexto: localStorage.getItem('next_media_nexto'),
-    savedRobotSize: localStorage.getItem('next_media_robot_size'),
-    savedRobotBrightness: localStorage.getItem('next_media_robot_brightness'),
-    savedRobotEmote: localStorage.getItem('next_media_robot_emote'),
-    savedRobotEmoteEnabled: localStorage.getItem('next_media_robot_emote_enabled'),
-    savedKeyboard: localStorage.getItem('saved_keyboard_height'),
-    savedAutoLoginReinstall: localStorage.getItem('next_auto_login_reinstall'),
-    savedPwaInstalled: localStorage.getItem('next_pwa_installed'),
-    savedTextSize: localStorage.getItem('next_media_textsize'),
-    savedMsgAlerts: localStorage.getItem('next_media_msg_alerts'),
-    savedMentionAlerts: localStorage.getItem('next_media_mention_alerts')
+    savedTheme: safeLocalGet('next_media_theme'),
+    savedDesktop: safeLocalGet('next_media_desktop'),
+    savedNexto: safeLocalGet('next_media_nexto'),
+    savedRobotMode: safeLocalGet('next_media_robot_mode'),
+    savedRobotSize: safeLocalGet('next_media_robot_size'),
+    savedRobotBrightness: safeLocalGet('next_media_robot_brightness'),
+    savedRobotEmote: safeLocalGet('next_media_robot_emote'),
+    savedRobotEmoteEnabled: safeLocalGet('next_media_robot_emote_enabled'),
+    savedKeyboard: safeLocalGet('saved_keyboard_height'),
+    savedAutoLoginReinstall: safeLocalGet('next_auto_login_reinstall'),
+    savedPwaInstalled: safeLocalGet('next_pwa_installed'),
+    savedTextSize: safeLocalGet('next_media_textsize'),
+    savedMsgAlerts: safeLocalGet('next_media_msg_alerts'),
+    savedMentionAlerts: safeLocalGet('next_media_mention_alerts')
   });
 
   const restorePreferenceKeys = (p: ReturnType<typeof preservePreferenceKeys>) => {
-    if (p.savedTheme) localStorage.setItem('next_media_theme', p.savedTheme);
-    if (p.savedDesktop) localStorage.setItem('next_media_desktop', p.savedDesktop);
-    if (p.savedNexto) localStorage.setItem('next_media_nexto', p.savedNexto);
-    if (p.savedRobotSize) localStorage.setItem('next_media_robot_size', p.savedRobotSize);
+    if (p.savedTheme) safeLocalSet('next_media_theme', p.savedTheme);
+    if (p.savedDesktop) safeLocalSet('next_media_desktop', p.savedDesktop);
+    if (p.savedNexto) safeLocalSet('next_media_nexto', p.savedNexto);
+    if (p.savedRobotMode) safeLocalSet('next_media_robot_mode', p.savedRobotMode);
+    if (p.savedRobotSize) safeLocalSet('next_media_robot_size', p.savedRobotSize);
     if (p.savedRobotBrightness)
-      localStorage.setItem('next_media_robot_brightness', p.savedRobotBrightness);
-    if (p.savedRobotEmote) localStorage.setItem('next_media_robot_emote', p.savedRobotEmote);
+      safeLocalSet('next_media_robot_brightness', p.savedRobotBrightness);
+    if (p.savedRobotEmote) safeLocalSet('next_media_robot_emote', p.savedRobotEmote);
     if (p.savedRobotEmoteEnabled !== null)
-      localStorage.setItem('next_media_robot_emote_enabled', p.savedRobotEmoteEnabled);
-    if (p.savedKeyboard) localStorage.setItem('saved_keyboard_height', p.savedKeyboard);
+      safeLocalSet('next_media_robot_emote_enabled', p.savedRobotEmoteEnabled);
+    if (p.savedKeyboard) safeLocalSet('saved_keyboard_height', p.savedKeyboard);
     if (p.savedAutoLoginReinstall !== null)
-      localStorage.setItem('next_auto_login_reinstall', p.savedAutoLoginReinstall);
-    if (p.savedPwaInstalled !== null) localStorage.setItem('next_pwa_installed', p.savedPwaInstalled);
-    if (p.savedTextSize) localStorage.setItem('next_media_textsize', p.savedTextSize);
-    if (p.savedMsgAlerts !== null) localStorage.setItem('next_media_msg_alerts', p.savedMsgAlerts);
+      safeLocalSet('next_auto_login_reinstall', p.savedAutoLoginReinstall);
+    if (p.savedPwaInstalled !== null) safeLocalSet('next_pwa_installed', p.savedPwaInstalled);
+    if (p.savedTextSize) safeLocalSet('next_media_textsize', p.savedTextSize);
+    if (p.savedMsgAlerts !== null) safeLocalSet('next_media_msg_alerts', p.savedMsgAlerts);
     if (p.savedMentionAlerts !== null)
-      localStorage.setItem('next_media_mention_alerts', p.savedMentionAlerts);
+      safeLocalSet('next_media_mention_alerts', p.savedMentionAlerts);
   };
 
   const confirmSwitchAccount = async (e: React.FormEvent) => {
@@ -555,12 +580,12 @@ const Settings: React.FC = () => {
         });
 
         const prefs = preservePreferenceKeys();
-        localStorage.clear();
-        sessionStorage.clear();
+        safeLocalClear();
+        safeSessionClear();
 
-        localStorage.setItem('next_saved_accounts', JSON.stringify(updatedAccounts));
+        safeLocalSet('next_saved_accounts', JSON.stringify(updatedAccounts));
         restorePreferenceKeys(prefs);
-        localStorage.setItem('next_media_user', JSON.stringify(freshUser));
+        safeLocalSet('next_media_user', JSON.stringify(freshUser));
         setCurrentUser(freshUser as any);
       }
 
@@ -658,12 +683,12 @@ const Settings: React.FC = () => {
       const freshUser = { id: newAcc.id, ...cleanProfile };
       const prefs = preservePreferenceKeys();
 
-      localStorage.clear();
-      sessionStorage.clear();
+      safeLocalClear();
+      safeSessionClear();
 
-      localStorage.setItem('next_saved_accounts', JSON.stringify(updatedList));
+      safeLocalSet('next_saved_accounts', JSON.stringify(updatedList));
       restorePreferenceKeys(prefs);
-      localStorage.setItem('next_media_user', JSON.stringify(freshUser));
+      safeLocalSet('next_media_user', JSON.stringify(freshUser));
       setCurrentUser(freshUser as any);
 
       toast.success(`Account @${resolvedUsername} added and activated!`);
@@ -812,6 +837,8 @@ const Settings: React.FC = () => {
         'text size',
         'nexto',
         'robot',
+        '3d',
+        '2d',
         'brightness',
         'emote',
         'flip',
@@ -894,6 +921,64 @@ const Settings: React.FC = () => {
       setActiveTab(filteredTabs[0].id);
     }
   }, [searchQuery, filteredTabs, activeTab]);
+
+  const [showEmoteModal, setShowEmoteModal] = useState(false);
+  const [emoteCategoryFilter, setEmoteCategoryFilter] = useState<'all' | NextoEmoteCategory | 'custom'>('all');
+  const [emoteSearchQuery, setEmoteSearchQuery] = useState('');
+  const [customEmotes, setCustomEmotes] = useState<RobotEmote[]>(() => getCustomNextoEmotes());
+  const [emoteStudioOpen, setEmoteStudioOpen] = useState(false);
+  const [draftEmote, setDraftEmote] = useState<RobotEmote>(() => createDefaultCustomEmote());
+
+  const selectedEmoteMeta = useMemo(() => {
+    if (isCustomEmoteId(robotEmote)) {
+      const foundCustom = customEmotes.find((c) => c.id === robotEmote);
+      if (foundCustom) {
+        return {
+          id: foundCustom.id as AnyNextoEmoteId,
+          label: foundCustom.name,
+          emoji: foundCustom.icon,
+          isCustom: true,
+        };
+      }
+    }
+    const builtin = NEXTO_EMOTES.find((em) => em.id === robotEmote) || NEXTO_EMOTES[0];
+    return {
+      id: builtin.id as AnyNextoEmoteId,
+      label: builtin.label,
+      emoji: builtin.emoji,
+      isCustom: false,
+    };
+  }, [robotEmote, customEmotes]);
+
+  const filteredEmotes = useMemo(() => {
+    const q = emoteSearchQuery.trim().toLowerCase();
+    const customList = customEmotes.map((c) => ({
+      id: c.id as AnyNextoEmoteId,
+      label: c.name,
+      emoji: c.icon,
+      category: 'custom' as const,
+      rawCustom: c,
+    }));
+    const builtinList = NEXTO_EMOTES.map((b) => ({
+      id: b.id as AnyNextoEmoteId,
+      label: b.label,
+      emoji: b.emoji,
+      category: b.category as NextoEmoteCategory | 'custom',
+      rawCustom: null as RobotEmote | null,
+    }));
+
+    const combined =
+      emoteCategoryFilter === 'custom'
+        ? customList
+        : emoteCategoryFilter === 'all'
+          ? [...customList, ...builtinList]
+          : builtinList.filter((em) => em.category === emoteCategoryFilter);
+
+    return combined.filter((em) => {
+      if (q && !em.label.toLowerCase().includes(q) && !em.id.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [emoteCategoryFilter, emoteSearchQuery, customEmotes]);
 
   const [notificationPermission, setNotificationPermission] = useState(
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied'
@@ -1221,6 +1306,51 @@ const Settings: React.FC = () => {
                   />
                   {nextoEnabled && (
                     <div className="divide-y divide-gray-100 dark:divide-gray-800 bg-gray-50/60 dark:bg-gray-950/50">
+                      {/* Robot Style: 3D (Default) vs 2D Classic */}
+                      <div className="p-3.5 sm:p-4">
+                        <div className="mb-2.5">
+                          <p className="font-bold text-gray-900 dark:text-white text-sm">
+                            Robot Style
+                          </p>
+                          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                            Switch between the 3D Nexto model (default) and classic 2D robot.
+                          </p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setRobotMode('3d')}
+                            className={`flex items-center gap-2.5 p-2.5 sm:p-3 rounded-xl border-2 text-left transition-all ${
+                              robotMode === '3d'
+                                ? 'border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2] dark:bg-[#1877F2]/20 dark:text-blue-300 shadow-xs'
+                                : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <NextoRobotStatic size={28} forceMode="3d" />
+                            <div className="min-w-0">
+                              <p className="text-xs sm:text-sm font-extrabold truncate">3D Robot</p>
+                              <p className="text-[10px] opacity-80 truncate">Default · 100 Emotes</p>
+                            </div>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setRobotMode('2d')}
+                            className={`flex items-center gap-2.5 p-2.5 sm:p-3 rounded-xl border-2 text-left transition-all ${
+                              robotMode === '2d'
+                                ? 'border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2] dark:bg-[#1877F2]/20 dark:text-blue-300 shadow-xs'
+                                : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            <NextoRobotStatic size={28} forceMode="2d" />
+                            <div className="min-w-0">
+                              <p className="text-xs sm:text-sm font-extrabold truncate">2D Classic</p>
+                              <p className="text-[10px] opacity-80 truncate">Lightweight SVG</p>
+                            </div>
+                          </button>
+                        </div>
+                      </div>
+
                       {/* Robot Size */}
                       <div className="p-3.5 sm:p-4">
                         <div className="flex items-center justify-between mb-2">
@@ -1259,124 +1389,125 @@ const Settings: React.FC = () => {
                         </div>
                       </div>
 
-                      {/* Robot Brightness / Color Tone */}
-                      <div className="p-3.5 sm:p-4">
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <div>
-                            <p className="font-bold text-gray-900 dark:text-white text-sm">
-                              Robot Brightness & Color
-                            </p>
-                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                              Adjust how light or deep the 3D robot appears.
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {robotBrightness !== DEFAULT_ROBOT_BRIGHTNESS && (
-                              <button
-                                type="button"
-                                onClick={() => setRobotBrightness(DEFAULT_ROBOT_BRIGHTNESS)}
-                                className="text-[11px] font-bold text-gray-500 hover:text-[#1877F2] underline transition-colors"
-                              >
-                                Reset
-                              </button>
-                            )}
-                            <span className="text-xs font-black text-[#1877F2] tabular-nums">
-                              {robotBrightness}%
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => setRobotBrightness(Math.max(60, robotBrightness - 5))}
-                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
-                            aria-label="Decrease robot brightness"
-                          >
-                            <Moon size={17} />
-                          </button>
-                          <input
-                            type="range"
-                            min="60"
-                            max="155"
-                            value={robotBrightness}
-                            onChange={(e) => setRobotBrightness(parseInt(e.target.value, 10))}
-                            className="flex-1 min-w-0 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setRobotBrightness(Math.min(155, robotBrightness + 5))}
-                            className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
-                            aria-label="Increase robot brightness"
-                          >
-                            <Sun size={17} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Idle Emote Toggle + 16 Emote Selector */}
-                      <div className="p-3.5 sm:p-4">
-                        <div className="flex items-center justify-between gap-3 mb-3">
-                          <div className="min-w-0">
-                            <p className="font-bold text-gray-900 dark:text-white text-sm">
-                              Robot Idle Emotes
-                            </p>
-                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                              Play animations when Nexto sits idle on screen (tap any emote to preview).
-                            </p>
-                          </div>
-                          <Toggle
-                            checked={robotEmoteEnabled}
-                            onChange={() => setRobotEmoteEnabled(!robotEmoteEnabled)}
-                            label="Toggle robot idle emotes"
-                          />
-                        </div>
-
-                        {robotEmoteEnabled && (
-                          <div className="space-y-2.5">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                                Choose Emote (16 Animations)
-                              </span>
-                              <button
-                                type="button"
-                                onClick={triggerRobotEmote}
-                                className="inline-flex items-center gap-1 text-xs font-bold text-[#1877F2] hover:underline"
-                              >
-                                <RefreshCw size={12} />
-                                <span>Preview</span>
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                              {NEXTO_EMOTES.map((em) => {
-                                const isSelected = robotEmote === em.id;
-                                return (
+                      {robotMode === '3d' && (
+                        <>
+                          {/* Robot Brightness / Color Tone */}
+                          <div className="p-3.5 sm:p-4">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div>
+                                <p className="font-bold text-gray-900 dark:text-white text-sm">
+                                  Robot Brightness & Color
+                                </p>
+                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                  Adjust how light or deep the 3D robot appears.
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {robotBrightness !== DEFAULT_ROBOT_BRIGHTNESS && (
                                   <button
                                     type="button"
-                                    key={em.id}
-                                    onClick={() => {
-                                      setRobotEmote(em.id);
-                                      triggerRobotEmote();
-                                    }}
-                                    className={`min-h-[42px] px-2.5 py-2 rounded-xl border text-left flex items-center gap-2 transition-all ${
-                                      isSelected
-                                        ? 'border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2] dark:bg-[#1877F2]/20 dark:text-blue-300 shadow-xs'
-                                        : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:border-gray-300 dark:hover:border-gray-700'
-                                    }`}
+                                    onClick={() => setRobotBrightness(DEFAULT_ROBOT_BRIGHTNESS)}
+                                    className="text-[11px] font-bold text-gray-500 hover:text-[#1877F2] underline transition-colors"
                                   >
-                                    <span className="text-base leading-none shrink-0" aria-hidden="true">
-                                      {em.emoji}
-                                    </span>
-                                    <span className="text-xs font-bold truncate">
-                                      {em.label}
-                                      {em.id === 'flip' ? ' (Default)' : ''}
-                                    </span>
+                                    Max Default
                                   </button>
-                                );
-                              })}
+                                )}
+                                <span className="text-xs font-black text-[#1877F2] tabular-nums">
+                                  {robotBrightness}%
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => setRobotBrightness(Math.max(MIN_ROBOT_BRIGHTNESS, robotBrightness - 5))}
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                                aria-label="Decrease robot brightness"
+                              >
+                                <Moon size={17} />
+                              </button>
+                              <input
+                                type="range"
+                                min={MIN_ROBOT_BRIGHTNESS}
+                                max={MAX_ROBOT_BRIGHTNESS}
+                                value={robotBrightness}
+                                onChange={(e) => setRobotBrightness(parseInt(e.target.value, 10))}
+                                className="flex-1 min-w-0 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setRobotBrightness(Math.min(MAX_ROBOT_BRIGHTNESS, robotBrightness + 5))}
+                                className="min-w-[36px] min-h-[36px] flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg text-gray-500 transition-colors"
+                                aria-label="Increase robot brightness"
+                              >
+                                <Sun size={17} />
+                              </button>
                             </div>
                           </div>
-                        )}
-                      </div>
+
+                          {/* Idle Emote Toggle + Button to Open All 100 Emotes */}
+                          <div className="p-3.5 sm:p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-bold text-gray-900 dark:text-white text-sm">
+                                  Robot Idle Emotes
+                                </p>
+                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                  Turn 3D body, arm, ear &amp; face animations on or off anytime.
+                                </p>
+                              </div>
+                              <Toggle
+                                checked={robotEmoteEnabled}
+                                onChange={() => setRobotEmoteEnabled(!robotEmoteEnabled)}
+                                label="Toggle robot idle emotes"
+                              />
+                            </div>
+
+                            {robotEmoteEnabled && (
+                              <div className="mt-3 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEmoteCategoryFilter('all');
+                                    setEmoteSearchQuery('');
+                                    setShowEmoteModal(true);
+                                  }}
+                                  className="flex-1 min-w-0 min-h-[46px] px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:border-[#1877F2] dark:hover:border-[#1877F2] transition-all flex items-center justify-between gap-3 shadow-xs group"
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <span className="text-xl leading-none shrink-0" aria-hidden="true">
+                                      {selectedEmoteMeta.emoji}
+                                    </span>
+                                    <div className="text-left min-w-0">
+                                      <p className="text-xs sm:text-sm font-bold text-gray-900 dark:text-white truncate">
+                                        {selectedEmoteMeta.label}
+                                        {selectedEmoteMeta.id === 'flip' ? ' (Default)' : ''}
+                                      </p>
+                                      <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                                        Tap to pick from {NEXTO_EMOTES.length + customEmotes.length} emotes or build yours
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#1877F2]/10 text-[#1877F2] dark:text-blue-400 text-xs font-extrabold shrink-0 group-hover:bg-[#1877F2] group-hover:text-white transition-colors">
+                                    <span>All {NEXTO_EMOTES.length + customEmotes.length} Emotes</span>
+                                    <ChevronRight size={14} />
+                                  </span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={triggerRobotEmote}
+                                  className="min-h-[46px] px-3 rounded-xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 hover:bg-gray-100 dark:hover:bg-gray-800 text-[#1877F2] font-bold text-xs flex items-center gap-1.5 shrink-0 transition-colors"
+                                  title="Preview current emote"
+                                >
+                                  <RefreshCw size={14} />
+                                  <span className="hidden sm:inline">Play</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </Section>
@@ -2383,12 +2514,550 @@ const Settings: React.FC = () => {
           if (removeAccountTarget) {
             const updated = savedAccounts.filter((a: any) => a.id !== removeAccountTarget.id);
             setSavedAccounts(updated);
-            localStorage.setItem('next_saved_accounts', JSON.stringify(updated));
+            safeLocalSet('next_saved_accounts', JSON.stringify(updated));
             toast.success('Account removed.');
           }
           setRemoveAccountTarget(null);
         }}
       />
+
+      {/* Nexto All Emotes Picker & Custom Studio Modal */}
+      {showEmoteModal && (
+        <div
+          className="fixed inset-0 z-[10050] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => {
+            setEmoteStudioOpen(false);
+            setShowEmoteModal(false);
+          }}
+        >
+          <div
+            className="bg-white dark:bg-gray-900 w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden flex flex-col max-h-[88vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="px-4 py-3.5 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <NextoRobotStatic size={28} />
+                <div className="min-w-0">
+                  <h3 className="text-base font-black text-gray-900 dark:text-white truncate">
+                    {emoteStudioOpen
+                      ? 'Custom Emote Studio'
+                      : `Nexto Emotes (${NEXTO_EMOTES.length + customEmotes.length})`}
+                  </h3>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                    {emoteStudioOpen
+                      ? 'Design arms, head, antennas & eyes with live 3D preview'
+                      : 'Tap any emote to preview it live & set as default'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!emoteStudioOpen) {
+                      setDraftEmote(createDefaultCustomEmote());
+                    }
+                    setEmoteStudioOpen(!emoteStudioOpen);
+                  }}
+                  className={`min-h-[34px] px-2.5 rounded-xl text-xs font-extrabold flex items-center gap-1 transition-colors ${
+                    emoteStudioOpen
+                      ? 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200'
+                      : 'bg-[#1877F2]/10 text-[#1877F2] dark:text-blue-400 hover:bg-[#1877F2] hover:text-white'
+                  }`}
+                >
+                  {emoteStudioOpen ? (
+                    <>
+                      <ArrowLeft size={14} />
+                      <span>Back</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={14} />
+                      <span>Create</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEmoteStudioOpen(false);
+                    setShowEmoteModal(false);
+                  }}
+                  className="min-w-[36px] min-h-[36px] rounded-xl bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                  aria-label="Close emotes"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {emoteStudioOpen ? (
+              <>
+                <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                  {/* Live 3D Preview Stage */}
+                  <div className="rounded-2xl border border-blue-200/70 dark:border-blue-900/40 bg-gradient-to-b from-blue-50/70 to-white dark:from-gray-950 dark:to-gray-900 p-3 flex items-center gap-3">
+                    <div className="w-[126px] h-[126px] shrink-0 flex items-center justify-center rounded-xl bg-white/80 dark:bg-gray-900/80 border border-gray-100 dark:border-gray-800 overflow-hidden">
+                      <Suspense fallback={<NextoRobotStatic size={96} />}>
+                        <NextoRobot3D
+                          size={122}
+                          brightness={robotBrightness}
+                          activeEmote={draftEmote}
+                          loopEmote={true}
+                          emoteEnabled={true}
+                          animationsEnabled={true}
+                        />
+                      </Suspense>
+                    </div>
+                    <div className="flex-1 min-w-0 space-y-2">
+                      <div>
+                        <label className="text-[11px] font-bold text-gray-500 dark:text-gray-400">
+                          Emote Name
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={24}
+                          value={draftEmote.name}
+                          onChange={(e) => setDraftEmote((d) => ({ ...d, name: e.target.value }))}
+                          placeholder="My Cool Move"
+                          className="mt-1 w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs sm:text-sm font-bold text-gray-900 dark:text-white outline-none focus:border-[#1877F2]"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
+                        {['🌟', '👋', '👂', '🤖', '💃', '🔥', '🚀', '😎', '🎉', '❤️'].map((ic) => (
+                          <button
+                            type="button"
+                            key={ic}
+                            onClick={() => setDraftEmote((d) => ({ ...d, icon: ic }))}
+                            className={`w-8 h-8 rounded-lg text-base flex items-center justify-center shrink-0 transition-all ${
+                              draftEmote.icon === ic
+                                ? 'bg-[#1877F2]/15 ring-2 ring-[#1877F2]'
+                                : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                            }`}
+                          >
+                            {ic}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Arm Controls */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-extrabold text-gray-900 dark:text-white">
+                          Left Arm ({draftEmote.leftArmRaise.toFixed(2)})
+                        </span>
+                        <label className="flex items-center gap-1.5 text-[11px] font-bold text-[#1877F2] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={draftEmote.leftArmWave}
+                            onChange={(e) =>
+                              setDraftEmote((d) => ({ ...d, leftArmWave: e.target.checked }))
+                            }
+                            className="accent-[#1877F2] rounded"
+                          />
+                          Wave
+                        </label>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1.85}
+                        step={0.05}
+                        value={draftEmote.leftArmRaise}
+                        onChange={(e) =>
+                          setDraftEmote((d) => ({ ...d, leftArmRaise: parseFloat(e.target.value) }))
+                        }
+                        className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                      />
+                    </div>
+
+                    <div className="p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-extrabold text-gray-900 dark:text-white">
+                          Right Arm ({draftEmote.rightArmRaise.toFixed(2)})
+                        </span>
+                        <label className="flex items-center gap-1.5 text-[11px] font-bold text-[#1877F2] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={draftEmote.rightArmWave}
+                            onChange={(e) =>
+                              setDraftEmote((d) => ({ ...d, rightArmWave: e.target.checked }))
+                            }
+                            className="accent-[#1877F2] rounded"
+                          />
+                          Wave
+                        </label>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1.85}
+                        step={0.05}
+                        value={draftEmote.rightArmRaise}
+                        onChange={(e) =>
+                          setDraftEmote((d) => ({ ...d, rightArmRaise: parseFloat(e.target.value) }))
+                        }
+                        className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Head Controls */}
+                  <div className="p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-gray-900 dark:text-white flex items-center gap-1.5">
+                        <Sliders size={13} className="text-[#1877F2]" />
+                        Head &amp; Ears
+                      </span>
+                      <span className="text-[11px] text-gray-400">Real-time 3D</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                          <span>Head Tilt Z</span>
+                          <span>{draftEmote.headTiltZ.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-0.45}
+                          max={0.45}
+                          step={0.03}
+                          value={draftEmote.headTiltZ}
+                          onChange={(e) =>
+                            setDraftEmote((d) => ({ ...d, headTiltZ: parseFloat(e.target.value) }))
+                          }
+                          className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                          <span>Head Nod X</span>
+                          <span>{draftEmote.headTiltX.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-0.35}
+                          max={0.35}
+                          step={0.03}
+                          value={draftEmote.headTiltX}
+                          onChange={(e) =>
+                            setDraftEmote((d) => ({ ...d, headTiltX: parseFloat(e.target.value) }))
+                          }
+                          className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                          <span>Head Turn Y</span>
+                          <span>{draftEmote.headTurnY.toFixed(2)}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={-0.5}
+                          max={0.5}
+                          step={0.04}
+                          value={draftEmote.headTurnY}
+                          onChange={(e) =>
+                            setDraftEmote((d) => ({ ...d, headTurnY: parseFloat(e.target.value) }))
+                          }
+                          className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                          <span>Antenna Wiggle</span>
+                          <span>{Math.round(draftEmote.antennaWiggle * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={draftEmote.antennaWiggle}
+                          onChange={(e) =>
+                            setDraftEmote((d) => ({ ...d, antennaWiggle: parseFloat(e.target.value) }))
+                          }
+                          className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bounce/Spin & Eye Mood */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+                      <span className="text-xs font-extrabold text-gray-900 dark:text-white block">
+                        Body Style
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(['none', 'gentle', 'energetic', 'spin', 'flip'] as RobotEmoteBounceStyle[]).map(
+                          (style) => (
+                            <button
+                              type="button"
+                              key={style}
+                              onClick={() => setDraftEmote((d) => ({ ...d, bounceStyle: style }))}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold capitalize transition-colors ${
+                                draftEmote.bounceStyle === style
+                                  ? 'bg-[#1877F2] text-white'
+                                  : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700'
+                              }`}
+                            >
+                              {style}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40 space-y-2">
+                      <span className="text-xs font-extrabold text-gray-900 dark:text-white block">
+                        Eye Mood
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(['normal', 'happy', 'wink', 'wide'] as RobotEmoteEyeExpression[]).map(
+                          (expr) => (
+                            <button
+                              type="button"
+                              key={expr}
+                              onClick={() => setDraftEmote((d) => ({ ...d, eyeExpression: expr }))}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold capitalize transition-colors ${
+                                draftEmote.eyeExpression === expr
+                                  ? 'bg-[#1877F2] text-white'
+                                  : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700'
+                              }`}
+                            >
+                              {expr}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Speed & Duration */}
+                  <div className="grid grid-cols-2 gap-3 p-3 rounded-2xl border border-gray-200 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40">
+                    <div>
+                      <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                        <span>Speed</span>
+                        <span>{draftEmote.speed.toFixed(1)}x</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.6}
+                        max={2.0}
+                        step={0.1}
+                        value={draftEmote.speed}
+                        onChange={(e) =>
+                          setDraftEmote((d) => ({ ...d, speed: parseFloat(e.target.value) }))
+                        }
+                        className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-[11px] font-bold text-gray-600 dark:text-gray-300 mb-1">
+                        <span>Duration</span>
+                        <span>{draftEmote.duration.toFixed(1)}s</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.8}
+                        max={2.5}
+                        step={0.1}
+                        value={draftEmote.duration}
+                        onChange={(e) =>
+                          setDraftEmote((d) => ({ ...d, duration: parseFloat(e.target.value) }))
+                        }
+                        className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-[#1877F2]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Studio Footer */}
+                <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-950/50 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDraftEmote(createDefaultCustomEmote())}
+                    className="px-3.5 min-h-[40px] rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-300 font-bold text-xs"
+                  >
+                    Reset Draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cleanName = draftEmote.name.trim() || 'Custom Emote';
+                      const toSave: RobotEmote = { ...draftEmote, name: cleanName };
+                      const existingIdx = customEmotes.findIndex((c) => c.id === toSave.id);
+                      const updated =
+                        existingIdx >= 0
+                          ? customEmotes.map((c) => (c.id === toSave.id ? toSave : c))
+                          : [toSave, ...customEmotes];
+                      saveCustomNextoEmotes(updated);
+                      setCustomEmotes(updated);
+                      setRobotEmote(toSave.id as AnyNextoEmoteId);
+                      triggerRobotEmote();
+                      setEmoteStudioOpen(false);
+                      setEmoteCategoryFilter('custom');
+                      toast.success(`Saved "${cleanName}"!`);
+                    }}
+                    className="px-5 min-h-[40px] rounded-xl bg-[#1877F2] text-white font-bold text-xs sm:text-sm hover:bg-blue-600 transition-colors flex items-center gap-1.5"
+                  >
+                    <Check size={15} />
+                    <span>Save &amp; Use Emote</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Search & Category Filter */}
+                <div className="px-4 pt-3 pb-2 space-y-2.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/60 dark:bg-gray-950/40">
+                  <div className="bg-white dark:bg-gray-900 rounded-xl flex items-center px-3 min-h-[40px] border border-gray-200 dark:border-gray-800 focus-within:border-[#1877F2]">
+                    <Search size={15} className="text-gray-400 shrink-0" />
+                    <input
+                      type="text"
+                      value={emoteSearchQuery}
+                      onChange={(e) => setEmoteSearchQuery(e.target.value)}
+                      placeholder="Search emotes (flip, dance, listen, dab...)"
+                      className="bg-transparent border-none outline-none px-2.5 text-xs sm:text-sm w-full text-gray-900 dark:text-white placeholder:text-gray-400"
+                    />
+                    {emoteSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setEmoteSearchQuery('')}
+                        className="text-gray-400 hover:text-gray-600 p-1"
+                        aria-label="Clear emote search"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                    {NEXTO_EMOTE_CATEGORIES.map((cat) => (
+                      <button
+                        type="button"
+                        key={cat.id}
+                        onClick={() => setEmoteCategoryFilter(cat.id)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-colors ${
+                          emoteCategoryFilter === cat.id
+                            ? 'bg-[#1877F2] text-white shadow-xs'
+                            : 'bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-800'
+                        }`}
+                      >
+                        {cat.id === 'custom' ? `My Custom (${customEmotes.length})` : cat.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Emotes Grid */}
+                <div className="p-4 overflow-y-auto flex-1">
+                  {filteredEmotes.length === 0 ? (
+                    <div className="py-10 text-center space-y-2">
+                      <p className="text-sm text-gray-400">
+                        {emoteCategoryFilter === 'custom'
+                          ? 'No custom emotes saved yet.'
+                          : 'No matching emotes found.'}
+                      </p>
+                      {emoteCategoryFilter === 'custom' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraftEmote(createDefaultCustomEmote());
+                            setEmoteStudioOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1877F2] text-white text-xs font-bold"
+                        >
+                          <Plus size={14} />
+                          <span>Create Your First Emote</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      {filteredEmotes.map((em) => {
+                        const isSelected = robotEmote === em.id;
+                        return (
+                          <div
+                            key={em.id}
+                            className={`relative rounded-xl border transition-all flex items-center ${
+                              isSelected
+                                ? 'border-[#1877F2] bg-[#1877F2]/10 text-[#1877F2] dark:bg-[#1877F2]/20 dark:text-blue-300 shadow-xs'
+                                : 'border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 hover:border-gray-300 dark:hover:border-gray-700'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRobotEmote(em.id);
+                                triggerRobotEmote();
+                              }}
+                              className="flex-1 min-w-0 min-h-[48px] px-3 py-2 text-left flex items-center justify-between gap-2"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-lg leading-none shrink-0" aria-hidden="true">
+                                  {em.emoji}
+                                </span>
+                                <span className="text-xs font-bold truncate">
+                                  {em.label}
+                                  {em.id === 'flip' ? ' • Default' : ''}
+                                </span>
+                              </div>
+                              {isSelected && <Check size={14} className="shrink-0 text-[#1877F2]" />}
+                            </button>
+                            {em.rawCustom && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const nextList = customEmotes.filter((c) => c.id !== em.id);
+                                  saveCustomNextoEmotes(nextList);
+                                  setCustomEmotes(nextList);
+                                  if (robotEmote === em.id) {
+                                    setRobotEmote(DEFAULT_ROBOT_EMOTE);
+                                  }
+                                  toast.success('Custom emote deleted');
+                                }}
+                                className="pr-2 py-2 text-gray-400 hover:text-red-500 shrink-0"
+                                title="Delete custom emote"
+                                aria-label="Delete custom emote"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="px-4 py-3 border-t border-gray-100 dark:border-gray-800 bg-gray-50/70 dark:bg-gray-950/50 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={triggerRobotEmote}
+                    className="px-3.5 min-h-[40px] rounded-xl bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 text-[#1877F2] font-bold text-xs flex items-center gap-1.5"
+                  >
+                    <RefreshCw size={14} />
+                    <span>Replay {selectedEmoteMeta.label}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmoteModal(false)}
+                    className="px-5 min-h-[40px] rounded-xl bg-[#1877F2] text-white font-bold text-xs sm:text-sm hover:bg-blue-600 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Sign Out Confirm Dialog */}
       <ConfirmDialog

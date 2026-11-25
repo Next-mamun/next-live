@@ -45,6 +45,27 @@ export default defineConfig(({ mode }) => {
         'import.meta.env.VITE_BUILD_TIME': JSON.stringify(buildTime),
         'import.meta.env.VITE_APP_VERSION': JSON.stringify(autoVersion)
       },
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (id.includes('node_modules')) {
+                if (id.includes('/three/')) return 'vendor-three';
+                if (id.includes('/firebase/') || id.includes('/@firebase/')) return 'vendor-firebase';
+                if (id.includes('/@supabase/')) return 'vendor-supabase';
+                if (id.includes('/@tanstack/')) return 'vendor-tanstack';
+                if (id.includes('/motion/') || id.includes('/framer-motion/')) return 'vendor-motion';
+                if (id.includes('/lucide-react/')) return 'vendor-icons';
+                if (id.includes('/dexie')) return 'vendor-dexie';
+                if (id.includes('/peerjs')) return 'vendor-peerjs';
+                if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-router') || id.includes('/scheduler/')) {
+                  return 'vendor-react';
+                }
+              }
+            },
+          },
+        },
+      },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, './src'),

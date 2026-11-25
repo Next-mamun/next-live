@@ -6,31 +6,45 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  
   <script>
-    // Failsafe White Screen Prevention: Non-blocking immediate watchdog & asset mismatch recovery
+    // Failsafe White Screen Prevention: Storage-safe, non-blocking watchdog & genuine asset mismatch recovery
     (function() {
       var reloadLockKey = 'next_chunk_reload_lock';
       var watchdogLockKey = 'next_root_watchdog_tried';
       var isRecovering = false;
+      var hasScriptError = false;
       window.__NEXT_APP_MOUNTED = false;
+
+      function safeGetSession(key) {
+        try { return window.sessionStorage ? window.sessionStorage.getItem(key) : null; } catch (_) { return null; }
+      }
+      function safeSetSession(key, val) {
+        try { if (window.sessionStorage) window.sessionStorage.setItem(key, val); } catch (_) {}
+      }
+      function safeGetLocal(key) {
+        try { return window.localStorage ? window.localStorage.getItem(key) : null; } catch (_) { return null; }
+      }
 
       function clearSwAndCaches() {
         var tasks = [];
-        if ('serviceWorker' in navigator) {
-          tasks.push(
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-              return Promise.all(regs.map(function(r) { return r.unregister(); }));
-            }).catch(function() {})
-          );
-        }
-        if ('caches' in window && window.caches) {
-          tasks.push(
-            window.caches.keys().then(function(names) {
-              return Promise.all(names.map(function(n) { return window.caches.delete(n); }));
-            }).catch(function() {})
-          );
-        }
+        try {
+          if ('serviceWorker' in navigator && navigator.serviceWorker) {
+            tasks.push(
+              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                return Promise.all(regs.map(function(r) { return r.unregister(); }));
+              }).catch(function() {})
+            );
+          }
+        } catch (_) {}
+        try {
+          if ('caches' in window && window.caches) {
+            tasks.push(
+              window.caches.keys().then(function(names) {
+                return Promise.all(names.map(function(n) { return window.caches.delete(n); }));
+              }).catch(function() {})
+            );
+          }
+        } catch (_) {}
         return Promise.all(tasks);
       }
 
@@ -46,10 +60,11 @@
 
       function triggerFailsafeReload(reason) {
         if (isRecovering || window.__NEXT_APP_MOUNTED) return;
-        var lastReload = Number(sessionStorage.getItem(reloadLockKey) || '0');
-        if (Date.now() - lastReload > 12000) {
+        var lastReload = Number(safeGetSession(reloadLockKey) || '0');
+        var alreadyBusted = window.location.search.indexOf('_bust=') > -1;
+        if (navigator.onLine && !alreadyBusted && Date.now() - lastReload > 15000) {
           isRecovering = true;
-          sessionStorage.setItem(reloadLockKey, String(Date.now()));
+          safeSetSession(reloadLockKey, String(Date.now()));
           console.warn('⚠️ [White Screen Prevention] Reloading due to asset/chunk error:', reason);
           clearSwAndCaches().finally(function() {
             window.location.replace(buildBustUrl());
@@ -58,30 +73,34 @@
       }
 
       // 1. Trigger SW update check in background without blocking boot
-      if ('serviceWorker' in navigator) {
-        setTimeout(function() {
-          try {
-            navigator.serviceWorker.getRegistrations().then(function(regs) {
-              regs.forEach(function(r) {
-                try { r.update(); } catch (_) {}
-              });
-            }).catch(function() {});
-          } catch (_) {}
-        }, 1200);
-      }
+      try {
+        if ('serviceWorker' in navigator && navigator.serviceWorker) {
+          setTimeout(function() {
+            try {
+              navigator.serviceWorker.getRegistrations().then(function(regs) {
+                regs.forEach(function(r) {
+                  try { r.update(); } catch (_) {}
+                });
+              }).catch(function() {});
+            } catch (_) {}
+          }, 1800);
+        }
+      } catch (_) {}
 
-      // 2. Catch critical bundle load failures before React mounts
+      // 2. Catch genuine bundle load failures before React mounts
       window.addEventListener('error', function(e) {
         var target = e && e.target;
         if (target && target.tagName === 'SCRIPT') {
           var src = target.src || '';
           if (src.indexOf(window.location.origin) === 0 || src.indexOf('/assets/') > -1 || src.indexOf('/src/') > -1) {
+            hasScriptError = true;
             triggerFailsafeReload('Script load failed: ' + src);
             return;
           }
         }
         var msg = (e && (e.message || (e.error && e.error.message))) ? String(e.message || e.error.message) : '';
         if (msg.indexOf('dynamically imported module') > -1 || msg.indexOf('Loading chunk') > -1 || msg.indexOf('Importing a module script failed') > -1) {
+          hasScriptError = true;
           triggerFailsafeReload(msg);
         }
       }, true);
@@ -89,20 +108,22 @@
       window.addEventListener('unhandledrejection', function(e) {
         var reasonMsg = (e && e.reason) ? String(e.reason.message || e.reason) : '';
         if (reasonMsg.indexOf('dynamically imported module') > -1 || reasonMsg.indexOf('Loading chunk') > -1 || reasonMsg.indexOf('Importing a module script failed') > -1) {
+          hasScriptError = true;
           triggerFailsafeReload(reasonMsg);
         }
       });
 
-      // 3. Independent White-screen watchdog (NEVER gated behind DOMContentLoaded!)
+      // 3. Generous White-screen watchdog (22s so 3G/slow mobile downloads are never aborted mid-flight)
       setTimeout(function() {
         if (window.__NEXT_APP_MOUNTED) return;
         var root = document.getElementById('root');
         var hasAppContent = root && root.childElementCount > 0 && !document.getElementById('next-boot-splash');
         if (hasAppContent) return;
 
-        var lastWatchdog = Number(sessionStorage.getItem(watchdogLockKey) || '0');
-        if (navigator.onLine && Date.now() - lastWatchdog > 35000) {
-          sessionStorage.setItem(watchdogLockKey, String(Date.now()));
+        var lastWatchdog = Number(safeGetSession(watchdogLockKey) || '0');
+        var alreadyBusted = window.location.search.indexOf('_bust=') > -1;
+        if (hasScriptError && navigator.onLine && !alreadyBusted && Date.now() - lastWatchdog > 45000) {
+          safeSetSession(watchdogLockKey, String(Date.now()));
           clearSwAndCaches().finally(function() {
             window.location.replace(buildBustUrl());
           });
@@ -110,8 +131,7 @@
         }
 
         if (!root) return;
-        var isDark = false;
-        try { isDark = localStorage.getItem('next_media_theme') === 'dark'; } catch (_) {}
+        var isDark = safeGetLocal('next_media_theme') === 'dark';
         root.innerHTML =
           '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:' + (isDark ? '#000000' : '#f0f2f5') + ';font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">' +
             '<div style="max-width:380px;width:100%;background:' + (isDark ? '#18191a' : '#ffffff') + ';border-radius:20px;padding:28px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.12);">' +
@@ -130,7 +150,7 @@
             });
           });
         }
-      }, 8000);
+      }, 22000);
     })();
   </script>
   

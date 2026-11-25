@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { safeLocalGet, safeLocalRemove, safeLocalSet } from './safeStorage';
 
 const getValidSupabaseUrl = () => {
   let raw = 
@@ -175,6 +176,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
+    storage: {
+      getItem: (key: string) => safeLocalGet(key),
+      setItem: (key: string, value: string) => safeLocalSet(key, value),
+      removeItem: (key: string) => safeLocalRemove(key),
+    },
   },
   global: {
     fetch: resilientSupabaseFetch,

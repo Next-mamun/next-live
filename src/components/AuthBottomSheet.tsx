@@ -9,7 +9,6 @@ import {
   GoogleAuthProvider 
 } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { generateBio } from '@/services/geminiService';
 import { ensureUniqueUsername, syncProfileToSupabase, cacheUserInDexie } from '@/lib/profileSync';
 import { X, LogIn, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
@@ -66,6 +65,7 @@ export const AuthBottomSheet: React.FC = () => {
           const uniqueUsername = await ensureUniqueUsername(emailBase, uid);
           let bio = 'Hello! I am using Next.';
           try {
+            const { generateBio } = await import('@/services/geminiService');
             bio = await generateBio(uniqueUsername);
           } catch (e) {}
 

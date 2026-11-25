@@ -8,14 +8,13 @@ import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import Draggable from 'react-draggable';
 import { Pause, Play, X, RefreshCw } from 'lucide-react';
 import * as idb from 'idb-keyval';
-import * as tus from 'tus-js-client';
 import { invalidatePostsCache, redis } from '@/lib/redis';
 import { triggerNotification } from '@/services/notificationService';
 import { getSafeMessagePreview, parseMessageJsonMeta } from '@/lib/utils';
 import { toast } from 'sonner';
 
-import imageCompression from 'browser-image-compression';
 import { scanMediaContent, showAdultContentBlockedAlert } from '@/services/contentModeration';
+import { safeLocalGet, safeLocalSet, safeLocalRemove } from '@/lib/safeStorage';
 
 interface UploadTask {
   id: string;
@@ -48,24 +47,32 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     uploadsRef.current = uploads;
   }, [uploads]);
 
-  // Persistence: Load from localStorage on mount
+  // Persistence: Load from safeStorage on mount
   useEffect(() => {
-    const saved = localStorage.getItem('next_uploads');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      // Set all to paused on reload to allow user to resume
-      setUploads(parsed.map((u: any) => ({ ...u, status: u.status === 'success' ? 'success' : 'paused' })));
+    try {
+      const saved = safeLocalGet('next_uploads');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          // Set all to paused on reload to allow user to resume
+          setUploads(parsed.map((u: any) => ({ ...u, status: u.status === 'success' ? 'success' : 'paused' })));
+        }
+      }
+    } catch {
+      safeLocalRemove('next_uploads');
     }
   }, []);
 
-  // Persistence: Save to localStorage on change
+  // Persistence: Save to safeStorage on change
   useEffect(() => {
-    const toSave = uploads.filter(u => u.status !== 'success');
-    if (toSave.length > 0) {
-      localStorage.setItem('next_uploads', JSON.stringify(toSave.map(({ file, ...rest }) => rest)));
-    } else {
-      localStorage.removeItem('next_uploads');
-    }
+    try {
+      const toSave = uploads.filter(u => u.status !== 'success');
+      if (toSave.length > 0) {
+        safeLocalSet('next_uploads', JSON.stringify(toSave.map(({ file, ...rest }) => rest)));
+      } else {
+        safeLocalRemove('next_uploads');
+      }
+    } catch {}
   }, [uploads]);
 
   const abortControllers = useRef<{ [key: string]: AbortController }>({});
@@ -154,6 +161,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               
               if (isImage) {
                 try {
+                  const { default: imageCompression } = await import('browser-image-compression');
                   const options = { maxSizeMB: 1, maxWidthOrHeight: 1024, useWebWorker: true };
                   fileBody = await imageCompression(fileBody as File, options);
                   if (fileBody.type && fileBody.type.includes('/')) {
@@ -198,6 +206,7 @@ export const UploadProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             } else {
               if (isImage && fileBody.size > 400 * 1024) {
                 try {
+                  const { default: imageCompression } = await import('browser-image-compression');
                   const options = {
                     maxSizeMB: 2,
                     maxWidthOrHeight: 1920,

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, Suspense, lazy } from 'react';
 import {
   Plus,
   Camera,
@@ -21,9 +21,12 @@ import {
   saveStatusPrivacy,
 } from '@/services/statusService';
 import { useActiveStatuses } from '@/hooks/useActiveStatuses';
-import { StatusCreatorModal } from './StatusCreatorModal';
 import { StatusViewerModal } from './StatusViewerModal';
 import { StatusPrivacyModal } from './StatusPrivacyModal';
+
+const StatusCreatorModal = lazy(() =>
+  import('./StatusCreatorModal').then((m) => ({ default: m.StatusCreatorModal }))
+);
 
 interface StatusRibbonProps {
   variant?: 'ribbon' | 'list';
@@ -365,12 +368,16 @@ export const StatusRibbon: React.FC<StatusRibbonProps> = ({ variant = 'ribbon' }
         )}
 
         {/* Modals */}
-        <StatusCreatorModal
-          isOpen={creatorOpen}
-          initialMode={creatorMode}
-          onClose={() => setCreatorOpen(false)}
-          onCreated={() => refetch()}
-        />
+        {creatorOpen && (
+          <Suspense fallback={null}>
+            <StatusCreatorModal
+              isOpen={creatorOpen}
+              initialMode={creatorMode}
+              onClose={() => setCreatorOpen(false)}
+              onCreated={() => refetch()}
+            />
+          </Suspense>
+        )}
         <StatusViewerModal
           isOpen={viewerOpen}
           groups={groups}
@@ -574,12 +581,16 @@ export const StatusRibbon: React.FC<StatusRibbonProps> = ({ variant = 'ribbon' }
         )}
       </div>
 
-      <StatusCreatorModal
-        isOpen={creatorOpen}
-        initialMode={creatorMode}
-        onClose={() => setCreatorOpen(false)}
-        onCreated={() => refetch()}
-      />
+      {creatorOpen && (
+        <Suspense fallback={null}>
+          <StatusCreatorModal
+            isOpen={creatorOpen}
+            initialMode={creatorMode}
+            onClose={() => setCreatorOpen(false)}
+            onCreated={() => refetch()}
+          />
+        </Suspense>
+      )}
       <StatusViewerModal
         isOpen={viewerOpen}
         groups={groups}

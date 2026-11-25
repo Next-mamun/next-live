@@ -3,6 +3,13 @@ import { useLocation } from 'react-router-dom';
 import { RefreshCw, X, Sparkles } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGlobalStore } from '@/store/useGlobalStore';
+import {
+  safeLocalGet,
+  safeLocalSet,
+  safeSessionGet,
+  safeSessionRemove,
+  safeSessionSet,
+} from '@/lib/safeStorage';
 
 const AUTO_UPDATE_SECONDS = 10;
 
@@ -18,12 +25,20 @@ export const OTAUpdateBanner: React.FC = () => {
   const { currentUser } = useAuth();
   const isChatOpen = useGlobalStore((state) => state.isChatOpen);
 
-  // Clean up cache-busting query param after reload so address bar stays tidy
+  // Clean up cache-busting query params after reload so address bar stays tidy
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
+      let changed = false;
       if (url.searchParams.has('_v')) {
         url.searchParams.delete('_v');
+        changed = true;
+      }
+      if (url.searchParams.has('_bust')) {
+        url.searchParams.delete('_bust');
+        changed = true;
+      }
+      if (changed) {
         window.history.replaceState({}, '', url.pathname + url.search + url.hash);
       }
     } catch (_) {}
@@ -69,20 +84,20 @@ export const OTAUpdateBanner: React.FC = () => {
       if (!remoteVersion) return;
 
       const runningVersion = ((import.meta as any).env?.VITE_APP_VERSION || '').trim();
-      const localVersion = runningVersion || localStorage.getItem('app_version') || '';
+      const localVersion = runningVersion || safeLocalGet('app_version') || '';
 
       // If we are already running the remote version, clear any old OTA flags and keep banner hidden
       if (localVersion && remoteVersion === localVersion) {
-        localStorage.setItem('app_version', remoteVersion);
-        sessionStorage.removeItem('ota_just_updated_version');
-        sessionStorage.removeItem('ota_just_updated_at');
+        safeLocalSet('app_version', remoteVersion);
+        safeSessionRemove('ota_just_updated_version');
+        safeSessionRemove('ota_just_updated_at');
         setNewVersion(null);
         return;
       }
 
       // Guard against infinite reload loop if user just clicked update for this version within last 25s
-      const justUpdatedVer = sessionStorage.getItem('ota_just_updated_version');
-      const justUpdatedAt = Number(sessionStorage.getItem('ota_just_updated_at') || '0');
+      const justUpdatedVer = safeSessionGet('ota_just_updated_version');
+      const justUpdatedAt = Number(safeSessionGet('ota_just_updated_at') || '0');
       if (justUpdatedVer === remoteVersion && now - justUpdatedAt < 25000) {
         return;
       }
@@ -96,7 +111,7 @@ export const OTAUpdateBanner: React.FC = () => {
           return remoteVersion;
         });
       } else if (runningVersion) {
-        localStorage.setItem('app_version', runningVersion);
+        safeLocalSet('app_version', runningVersion);
       }
     } catch (_) {
       // Silently ignore network errors
@@ -162,10 +177,10 @@ export const OTAUpdateBanner: React.FC = () => {
 
     try {
       // Record that we triggered update to this target version to prevent any re-prompt loop
-      sessionStorage.setItem('ota_just_updated_version', newVersion);
-      sessionStorage.setItem('ota_just_updated_at', String(Date.now()));
+      safeSessionSet('ota_just_updated_version', newVersion);
+      safeSessionSet('ota_just_updated_at', String(Date.now()));
       if (newVersion !== 'latest') {
-        localStorage.setItem('app_version', newVersion);
+        safeLocalSet('app_version', newVersion);
       }
 
       // 1. Clear Cache Storage (IndexedDB / Dexie / Auth remain untouched)
