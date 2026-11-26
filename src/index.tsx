@@ -141,26 +141,30 @@ if (isStandaloneMode()) {
 // Expose queryClient globally
 (window as any).queryClient = queryClient;
 
-// 3. Register PWA service worker without blind forced mid-session reload
-registerSW({
-  onNeedRefresh() {
-    console.log("New version available; notifying OTAUpdateBanner without forced reload.");
-    window.dispatchEvent(new CustomEvent('next_sw_updated'));
-  },
-  onOfflineReady() {
-    console.log('App is ready to work offline');
-  },
-});
+// 3. Register PWA service worker safely without crashing restricted WebViews
+try {
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker) {
+    registerSW({
+      onNeedRefresh() {
+        console.log("New version available; notifying OTAUpdateBanner without forced reload.");
+        window.dispatchEvent(new CustomEvent('next_sw_updated'));
+      },
+      onOfflineReady() {
+        console.log('App is ready to work offline');
+      },
+    });
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    window.dispatchEvent(new CustomEvent('next_sw_updated'));
-  });
-  navigator.serviceWorker.addEventListener('message', (event) => {
-    if (event.data?.type === 'SW_UPDATED') {
-      window.dispatchEvent(new CustomEvent('next_sw_updated', { detail: { version: event.data.version } }));
-    }
-  });
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      window.dispatchEvent(new CustomEvent('next_sw_updated'));
+    });
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'SW_UPDATED') {
+        window.dispatchEvent(new CustomEvent('next_sw_updated', { detail: { version: event.data.version } }));
+      }
+    });
+  }
+} catch (swErr) {
+  console.warn('ServiceWorker registration skipped in restricted environment:', swErr);
 }
 
 const rootElement = document.getElementById('root');
@@ -250,7 +254,6 @@ import { UploadProvider } from './contexts/UploadContext';
 import { Toaster } from 'sonner';
 
 const root = ReactDOM.createRoot(rootElement);
-(window as any).__NEXT_APP_MOUNTED = true;
 root.render(
   <React.StrictMode>
     <ErrorBoundary>

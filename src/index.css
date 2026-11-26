@@ -76,6 +76,10 @@ html, body {
 
 #root {
   position: fixed !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
   inset: 0 !important;
   margin: 0;
   padding: 0;
@@ -85,6 +89,11 @@ html, body {
   max-height: 100dvh !important;
   overflow: hidden !important;
   overscroll-behavior: none;
+  background-color: #f0f2f5;
+}
+
+.dark #root {
+  background-color: #000000;
 }
 
 .app-viewport-shell {
@@ -97,10 +106,20 @@ html, body {
   height: 100vh;
   max-height: 100vh;
   max-height: 100dvh !important;
+  display: flex;
+  flex-direction: column;
+  background-color: #f0f2f5;
   overflow: hidden !important;
 }
 
+.dark .app-viewport-shell {
+  background-color: #000000;
+}
+
 .app-inner-shell {
+  display: flex;
+  flex: 1 1 0%;
+  width: 100%;
   min-height: 0 !important;
   max-height: 100% !important;
   height: 100%;

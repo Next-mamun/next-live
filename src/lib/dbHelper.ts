@@ -7,6 +7,15 @@ import { safeLocalGet, safeLocalRemove, safeLocalSet } from './safeStorage';
 const DB_SWITCH_KEY = 'next_media_db_fallback';
 const DB_SWITCH_EXPIRY = 2 * 60 * 1000; // 2 minutes temporary fallback only
 
+const safeRandomUUID = (): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {}
+  return `id_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
 export const getActiveDB = (): 'firebase' | 'supabase' => {
   try {
     const data = safeLocalGet(DB_SWITCH_KEY);
@@ -62,7 +71,7 @@ export const dualWritePost = async (postData: any) => {
 
     const userId = postData.user_id || postData.userId;
     const basePayload: Record<string, any> = {
-      id: postRef?.id || crypto.randomUUID(),
+      id: postRef?.id || safeRandomUUID(),
       user_id: userId,
       content: postData.content || '',
       media_url: postData.media_url || postData.image_url || postData.video_url || null,
@@ -93,7 +102,7 @@ export const dualWritePost = async (postData: any) => {
  * Writes a chat message directly to Dexie (instant local cache) and Supabase `messages` (100% Supabase, no Firestore).
  */
 export const writeSupabaseMessage = async (messageData: any) => {
-  const msgRefId = messageData.id || crypto.randomUUID();
+  const msgRefId = messageData.id || safeRandomUUID();
 
   let createdAtStr = new Date().toISOString();
   if (messageData.created_at && typeof messageData.created_at === 'string') {

@@ -185,6 +185,7 @@ const AppLayout: React.FC = () => {
   const setIsChatOpen = useGlobalStore(state => state.setIsChatOpen);
 
   useEffect(() => {
+    (window as any).__NEXT_APP_MOUNTED = true;
     if (isAuthPage) {
       useGlobalStore.getState().closeAuthModal();
     }
@@ -216,7 +217,7 @@ const AppLayout: React.FC = () => {
 
   // Handle messages from service worker (e.g. notificationclick navigation)
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker) {
       const handleSwMsg = (event: MessageEvent) => {
         if (event.data?.type === 'NAVIGATE' && event.data?.url) {
           const target = normalizeAppRoute(event.data.url);
@@ -235,10 +236,12 @@ const AppLayout: React.FC = () => {
           }
         }
       };
-      navigator.serviceWorker.addEventListener('message', handleSwMsg);
-      return () => {
-        navigator.serviceWorker.removeEventListener('message', handleSwMsg);
-      };
+      try {
+        navigator.serviceWorker.addEventListener('message', handleSwMsg);
+        return () => {
+          try { navigator.serviceWorker.removeEventListener('message', handleSwMsg); } catch (_) {}
+        };
+      } catch (_) {}
     }
   }, [navigate]);
 
@@ -441,24 +444,24 @@ const AppLayout: React.FC = () => {
   const [viewportHeight, setViewportHeight] = useState<string | number>('100dvh');
 
   useEffect(() => {
-    const initialHeight = window.innerHeight;
+    const initialHeight = window.innerHeight > 100 ? window.innerHeight : 0;
     
     const handleResize = () => {
       let keyboardOpen = false;
       
-      if (window.visualViewport) {
+      if (window.visualViewport && window.visualViewport.height > 100) {
         setViewportHeight(window.visualViewport.height);
-      } else {
+      } else if (window.innerHeight > 100) {
         setViewportHeight(window.innerHeight);
       }
       
       // Check window shrink (Android)
-      if (window.innerHeight < initialHeight * 0.8) {
+      if (initialHeight > 100 && window.innerHeight > 100 && window.innerHeight < initialHeight * 0.8) {
         keyboardOpen = true;
       }
       
       // Check visual viewport (iOS)
-      if (window.visualViewport) {
+      if (window.visualViewport && window.innerHeight > 100 && window.visualViewport.height > 100) {
         const offset = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.pageTop);
         if (offset > 50) {
           keyboardOpen = true;
@@ -729,7 +732,7 @@ const App: React.FC = () => {
   useWakeLock();
 
   useEffect(() => {
-    // 1. STATIC BUILD VERSION TRACKING & SILENT STALE CACHE CLEANUP (already on fresh bundle, no extra reload needed)
+    // 1. STATIC BUILD VERSION TRACKING & SILENT LEGACY CACHE CLEANUP (preserve active workbox precache)
     const isProd = Boolean((import.meta as any).env?.PROD);
     const currentVersion = (import.meta as any).env?.VITE_BUILD_TIME;
     if (isProd && typeof window !== 'undefined' && currentVersion) {
@@ -739,7 +742,7 @@ const App: React.FC = () => {
         if ('caches' in window && (window as any).caches) {
           (window as any).caches.keys().then((names: string[]) => {
             names.forEach((name) => {
-              if (name.includes('precache') || name.includes('workbox')) {
+              if (name.startsWith('precache-v') || name === 'next-html-shell-v1' || name === 'next-assets-v1') {
                 (window as any).caches.delete(name).catch(() => {});
               }
             });

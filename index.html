@@ -115,10 +115,11 @@
 
       // 3. Generous White-screen watchdog (22s so 3G/slow mobile downloads are never aborted mid-flight)
       setTimeout(function() {
-        if (window.__NEXT_APP_MOUNTED) return;
         var root = document.getElementById('root');
-        var hasAppContent = root && root.childElementCount > 0 && !document.getElementById('next-boot-splash');
-        if (hasAppContent) return;
+        var hasSplash = !!document.getElementById('next-boot-splash');
+        var hasRenderedText = root && root.innerText && root.innerText.trim().length > 0 && !hasSplash;
+        var hasAppContent = root && root.childElementCount > 0 && !hasSplash && hasRenderedText;
+        if (window.__NEXT_APP_MOUNTED && hasAppContent) return;
 
         var lastWatchdog = Number(safeGetSession(watchdogLockKey) || '0');
         var alreadyBusted = window.location.search.indexOf('_bust=') > -1;
@@ -538,32 +539,16 @@
       }
     })();
 
-    // Deep-link launcher for Android browsers only (never executes inside TWA/WebView/Standalone/Loops)
+    // Clean up legacy deep-link query params without hijacking navigation via intent:// (Android App Links handle native opening cleanly via assetlinks.json)
     (function() {
       try {
-        var userAgent = navigator.userAgent || navigator.vendor || window.opera || '';
-        var isAndroid = /android/i.test(userAgent);
-        var isBot = /bot|googlebot|crawler|spider|robot|crawling|facebook|twitter|whatsapp|telegram/i.test(userAgent);
-        var path = window.location.pathname || '/';
         var search = window.location.search || '';
-        var hash = window.location.hash || '';
-        var mm = window.matchMedia;
-        var isStandalone = (mm && (mm('(display-mode: standalone)').matches || mm('(display-mode: fullscreen)').matches || mm('(display-mode: minimal-ui)').matches || mm('(display-mode: window-controls-overlay)').matches)) || window.navigator.standalone || (document.referrer && document.referrer.indexOf('android-app://') > -1);
-        var isWebview = Boolean(window.AndroidApp || window.ReactNativeWebView || window.Capacitor || window.cordova || (window.webkit && window.webkit.messageHandlers)) || /Next|wv|WebView|Android.*Version\/|Themes|Appilix|WebIntoApp|Median|GoNative|Sketchware|Kodular|Flutter|next\.isbest|FB_IAB|FBAN|FBAV|Instagram|Line\//i.test(userAgent);
-        var intentAttemptKey = 'next_intent_tried_' + path;
-        var alreadyTried = false;
-        try { alreadyTried = sessionStorage.getItem(intentAttemptKey) === '1'; } catch (_) {}
-
-        if (isAndroid && !isBot && !isStandalone && !isWebview && !alreadyTried && search.indexOf('fallback=1') === -1 && search.indexOf('app=1') === -1) {
-          if (path.indexOf('/post') === 0 || path.indexOf('/reels') === 0 || path.indexOf('/messages') === 0 || path.indexOf('/profile') === 0 || path.indexOf('/cinema') === 0 || path.indexOf('/meet') === 0) {
-            try { sessionStorage.setItem(intentAttemptKey, '1'); } catch (_) {}
-            var baseWithoutHash = window.location.origin + path + search;
-            var fallbackUrl = baseWithoutHash + (search ? '&' : '?') + 'fallback=1' + hash;
-            var intentUrl = "intent://" + window.location.host + path + search + "#Intent;scheme=https;package=next.isbest;S.browser_fallback_url=" + encodeURIComponent(fallbackUrl) + ";end";
-            window.location.replace(intentUrl);
-          }
+        if (search.indexOf('fallback=1') > -1 && window.history && window.history.replaceState) {
+          var cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('fallback');
+          window.history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
         }
-      } catch (e) { console.error('Deep link error', e); }
+      } catch (_) {}
     })();
   </script>
 </head>

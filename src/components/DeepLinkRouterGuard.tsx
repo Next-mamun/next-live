@@ -34,15 +34,6 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
   const location = useLocation();
   const hasResolvedRef = useRef(false);
 
-  const isAndroidApp = typeof navigator !== 'undefined' && (
-    Boolean((window as any).AndroidApp) ||
-    navigator.userAgent.includes('Next') ||
-    navigator.userAgent.includes('wv') ||
-    /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
-  );
-
-  const [isResolving, setIsResolving] = useState<boolean>(() => isAndroidApp);
-
   const routeDeepLink = useCallback((rawUrl: string) => {
     const targetRoute = normalizeAppRoute(rawUrl);
     if (!targetRoute) return;
@@ -78,57 +69,23 @@ export const DeepLinkRouterGuard: React.FC<DeepLinkRouterGuardProps> = ({ childr
   }, [routeDeepLink]);
 
   useEffect(() => {
-    if (!isAndroidApp) {
-      setIsResolving(false);
-      return;
-    }
+    if (hasResolvedRef.current) return;
+    hasResolvedRef.current = true;
+    try {
+      const rawPath = window.location.pathname || '/';
+      const rawSearch = window.location.search || '';
+      const rawHash = window.location.hash || '';
+      const normalizedPath = rawPath === '/index.html' ? '/' : rawPath;
+      const fullTarget = normalizeAppRoute(`${normalizedPath}${rawSearch}${rawHash}`);
+      const currentRouterTarget = `${location.pathname}${location.search}${location.hash}`;
 
-    if (!hasResolvedRef.current) {
-      hasResolvedRef.current = true;
-      try {
-        const rawPath = window.location.pathname || '/';
-        const rawSearch = window.location.search || '';
-        const rawHash = window.location.hash || '';
-        const fullTarget = normalizeAppRoute(`${rawPath}${rawSearch}${rawHash}`);
-        const currentRouterTarget = `${location.pathname}${location.search}${location.hash}`;
-
-        if (fullTarget && fullTarget !== '/' && fullTarget !== currentRouterTarget) {
-          navigate(fullTarget, { replace: true });
-        }
-      } catch (err) {
-        console.warn('[DeepLinkRouterGuard] Error navigating to deep link:', err);
+      if (fullTarget && fullTarget !== currentRouterTarget) {
+        navigate(fullTarget, { replace: true });
       }
+    } catch (err) {
+      console.warn('[DeepLinkRouterGuard] Error normalizing initial route:', err);
     }
-
-    const timer = setTimeout(() => {
-      setIsResolving(false);
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [isAndroidApp, navigate, location.pathname, location.search, location.hash]);
-
-  if (isResolving) {
-    return (
-      <div 
-        id="deep-link-splash"
-        className="fixed inset-0 z-[99999] bg-[#f0f2f5] dark:bg-[#000000] flex flex-col items-center justify-center select-none"
-      >
-        <div className="flex flex-col items-center gap-4 animate-in fade-in zoom-in-95 duration-200">
-          <div className="relative flex items-center justify-center">
-            <div className="w-16 h-16 rounded-full border-4 border-gray-200 dark:border-gray-800 border-t-[#1877F2] animate-spin" />
-            <img
-              src="/Next-AppLogo.jpg"
-              alt="Next"
-              className="absolute w-11 h-11 rounded-full object-cover shadow-sm"
-            />
-          </div>
-          <p className="text-gray-600 dark:text-gray-300 font-bold text-sm tracking-wide animate-pulse">
-            Opening Next...
-          </p>
-        </div>
-      </div>
-    );
-  }
+  }, [navigate, location.pathname, location.search, location.hash]);
 
   return <>{children}</>;
 };

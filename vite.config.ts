@@ -46,6 +46,8 @@ export default defineConfig(({ mode }) => {
         'import.meta.env.VITE_APP_VERSION': JSON.stringify(autoVersion)
       },
       build: {
+        target: ['chrome79', 'edge79', 'firefox75', 'safari13.1'],
+        cssTarget: ['chrome79', 'safari13.1'],
         rollupOptions: {
           output: {
             manualChunks(id) {
