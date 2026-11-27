@@ -8,37 +8,18 @@ import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 
 declare let self: ServiceWorkerGlobalScope;
 
-const SW_VERSION = (import.meta as any).env?.VITE_BUILD_TIME || 'v2';
-const HTML_SHELL_CACHE = 'next-html-shell-v2';
-const ASSETS_CACHE = 'next-assets-v2';
+const SW_VERSION = String((import.meta as any).env?.VITE_BUILD_TIME || 'v3');
+// Versioned HTML shell cache guarantees stale index.html from old builds is purged automatically on activate
+const HTML_SHELL_CACHE = `next-html-shell-${SW_VERSION}`;
+const ASSETS_CACHE = 'next-assets-v3';
 const SW_META_CACHE = 'next-sw-meta';
 
 self.skipWaiting();
 clientsClaim();
 
-// Clean up any outdated Workbox precaches from prior versions
 cleanupOutdatedCaches();
-
-// Precache lightweight PWA assets (icons & manifest)
 precacheAndRoute((self as any).__WB_MANIFEST || []);
 
-// Seed offline HTML shell on install so offline/slow deep-link launches always boot cleanly
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(HTML_SHELL_CACHE).then((cache) =>
-      fetch('/', { cache: 'no-store' })
-        .then(async (resp) => {
-          if (resp && resp.ok) {
-            await cache.put('/', resp.clone());
-            await cache.put('/index.html', resp);
-          }
-        })
-        .catch(() => {})
-    )
-  );
-});
-
-// Purge stale caches from legacy versions without touching active Workbox precache or forcing reloads
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     try {
@@ -49,12 +30,12 @@ self.addEventListener('activate', (event) => {
       const allKeys = await caches.keys();
       await Promise.all(
         allKeys.map((key) => {
-          if (
-            key !== HTML_SHELL_CACHE &&
-            key !== ASSETS_CACHE &&
-            key !== SW_META_CACHE &&
-            !key.startsWith('workbox-')
-          ) {
+          const isCurrentWorkbox = key.startsWith('workbox-');
+          const isCurrentCustom =
+            key === HTML_SHELL_CACHE ||
+            key === ASSETS_CACHE ||
+            key === SW_META_CACHE;
+          if (!isCurrentWorkbox && !isCurrentCustom) {
             return caches.delete(key);
           }
           return Promise.resolve(false);
@@ -82,13 +63,15 @@ registerRoute(
   new NetworkOnly()
 );
 
-// Always use NetworkFirst for page navigations so Web/PWA users get latest index.html,
-// while falling back cleanly to the cached SPA shell on slow carriers or deep-link URLs (/messages, /post/:id, etc.)
+// Always prioritize fresh network HTML with a generous 12s timeout so mobile carriers aren't falsely timed out into stale caches
 registerRoute(
   ({ request }) => request.mode === 'navigate',
   new NetworkFirst({
     cacheName: HTML_SHELL_CACHE,
-    networkTimeoutSeconds: 4,
+    networkTimeoutSeconds: 12,
+    fetchOptions: {
+      cache: 'no-store',
+    },
     plugins: [
       new CacheableResponsePlugin({ statuses: [200] }),
       {
@@ -102,8 +85,6 @@ registerRoute(
           return (
             (await shellCache.match('/')) ||
             (await shellCache.match('/index.html')) ||
-            (await caches.match('/')) ||
-            (await caches.match('/index.html')) ||
             Response.error()
           );
         },
@@ -137,7 +118,7 @@ registerRoute(
   })
 );
 
-// Cache 3D Nexto GLB model so the floating 3D robot loads instantaneously on repeat opens
+// Cache 3D Nexto GLB model lazily once fetched
 registerRoute(
   ({ url }) => url.pathname.endsWith('.glb'),
   new CacheFirst({
@@ -165,81 +146,73 @@ self.addEventListener('message', (event) => {
   }
 });
 
-declare const importScripts: (...urls: string[]) => void;
-
-const firebaseConfig = {
-  projectId: "next-489515",
-  appId: "1:947258146571:web:2dd66aa09474e5f7d22c0e",
-  apiKey: "AIzaSyAiczfp6lTr57-VrZyJXZKWbHKx32kBBtg",
-  authDomain: "next-489515.firebaseapp.com",
-  storageBucket: "next-489515.firebasestorage.app",
-  messagingSenderId: "947258146571"
-};
-
-try {
-  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-  importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
-  (self as any).firebase.initializeApp(firebaseConfig);
-  const messaging = (self as any).firebase.messaging();
-
-  messaging.onBackgroundMessage((payload: any) => {
-    console.log('[sw.ts] Received background message ', payload);
-    
-    // Module 2: Silent FCM Push Purge
-    if (payload.data && payload.data.action === 'DELETE_POST' && payload.data.postId) {
-      console.log('[sw.ts] Silent push purge for post:', payload.data.postId);
-      const targetId = payload.data.postId;
-      try {
-        const req = indexedDB.open('NextAppDB');
-        req.onsuccess = () => {
-          const idb = req.result;
-          try {
-            const storesToClean = ['feed_videos', 'posts'].filter((name) => idb.objectStoreNames.contains(name));
-            if (storesToClean.length > 0) {
-              const tx = idb.transaction(storesToClean, 'readwrite');
-              storesToClean.forEach((storeName) => {
-                tx.objectStore(storeName).delete(targetId);
-              });
-            }
-          } catch (txErr) {
-            console.warn('[sw.ts] IndexedDB purge error:', txErr);
-          } finally {
-            idb.close();
-          }
-        };
-      } catch (err) {
-        console.warn('[sw.ts] IndexedDB open failed:', err);
+// Handle FCM / Web Push notifications natively without blocking Service Worker startup on external gstatic importScripts
+self.addEventListener('push', (event: any) => {
+  if (!event) return;
+  event.waitUntil((async () => {
+    try {
+      let payload: any = {};
+      if (event.data) {
+        try {
+          payload = event.data.json();
+        } catch {
+          const txt = event.data.text ? event.data.text() : '';
+          payload = { notification: { title: 'Next', body: txt || 'New notification' } };
+        }
       }
-      
-      // Do not show a notification for silent background sync
-      return;
-    }
 
-    const notificationTitle = payload.notification?.title || payload.data?.title || 'New Message';
-    const safeIcon = (payload.data?.sender_avatar && String(payload.data.sender_avatar).startsWith('https://'))
-      ? payload.data.sender_avatar
-      : '/favicon.ico';
-    const notificationOptions: NotificationOptions & { renotify?: boolean } = {
-      body: payload.notification?.body || payload.data?.body || 'You have a new notification',
-      icon: safeIcon,
-      badge: '/favicon.ico',
-      tag: payload.data?.chat_id || payload.data?.sender_id || 'next_notification',
-      renotify: true,
-      data: payload.data || {}
-    };
+      const data = payload?.data || {};
 
-    self.registration.showNotification(notificationTitle, notificationOptions);
-  });
-} catch(e) {
-  console.log('Firebase messaging not initialized in sw.ts');
-}
+      // Silent FCM Push Purge
+      if (data.action === 'DELETE_POST' && data.postId) {
+        const targetId = data.postId;
+        try {
+          const req = indexedDB.open('NextAppDB');
+          req.onsuccess = () => {
+            const idb = req.result;
+            try {
+              const storesToClean = ['feed_videos', 'posts'].filter((name) => idb.objectStoreNames.contains(name));
+              if (storesToClean.length > 0) {
+                const tx = idb.transaction(storesToClean, 'readwrite');
+                storesToClean.forEach((storeName) => {
+                  tx.objectStore(storeName).delete(targetId);
+                });
+              }
+            } catch (_) {
+            } finally {
+              idb.close();
+            }
+          };
+        } catch (_) {}
+        return;
+      }
+
+      const notificationTitle = payload?.notification?.title || data.title || 'New Message';
+      const safeIcon =
+        data.sender_avatar && String(data.sender_avatar).startsWith('https://')
+          ? data.sender_avatar
+          : '/favicon.ico';
+
+      const notificationOptions: NotificationOptions & { renotify?: boolean } = {
+        body: payload?.notification?.body || data.body || 'You have a new notification',
+        icon: safeIcon,
+        badge: '/favicon.ico',
+        tag: data.chat_id || data.sender_id || 'next_notification',
+        renotify: true,
+        data,
+      };
+
+      await self.registration.showNotification(notificationTitle, notificationOptions);
+    } catch (_) {}
+  })());
+});
 
 self.addEventListener('notificationclick', (event: any) => {
   event.notification.close();
-  
+
   let urlToOpen = '/';
   const data = event.notification.data;
-  
+
   if (data) {
     if (data.type === 'message' && data.sender_id) {
       urlToOpen = `/messages?user=${encodeURIComponent(data.sender_id)}`;
@@ -252,7 +225,6 @@ self.addEventListener('notificationclick', (event: any) => {
     }
   }
 
-  // Strictly enforce same-origin relative routes (block external phishing redirects or // scheme-relative URLs)
   try {
     if (typeof urlToOpen !== 'string') {
       urlToOpen = '/';
@@ -282,7 +254,6 @@ self.addEventListener('notificationclick', (event: any) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients: any) => {
-      // If a window is already open, focus it and soft-navigate via postMessage (avoids destroying SPA state)
       if (windowClients && windowClients.length > 0) {
         const client = windowClients[0];
         try {
@@ -293,7 +264,6 @@ self.addEventListener('notificationclick', (event: any) => {
         }
         return client;
       }
-      // If no open tab, launch a new window with the deep link target
       if (self.clients.openWindow) {
         return self.clients.openWindow(urlToOpen);
       }

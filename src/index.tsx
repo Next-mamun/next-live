@@ -34,12 +34,12 @@ const handleTopLevelChunkFailure = async (err: any) => {
     const lastReload = Number(safeSessionGet(reloadKey) || '0');
     if (navigator.onLine && Date.now() - lastReload > 15000) {
       safeSessionSet(reloadKey, String(Date.now()));
-      if ('caches' in window) {
-        try {
-          const names = await caches.keys();
-          await Promise.all(names.map(n => caches.delete(n)));
-        } catch (_) {}
-      }
+      try {
+        if ('caches' in window && window.caches) {
+          const names = await window.caches.keys();
+          await Promise.all(names.map(n => window.caches.delete(n)));
+        }
+      } catch (_) {}
       window.location.reload();
     }
   }
@@ -80,14 +80,20 @@ const idbStorage = {
   },
   setItem: async (key: string, value: any) => {
     try {
-      await idb.set(key, value);
+      await Promise.race([
+        idb.set(key, value),
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ]);
     } catch (e) {
       console.warn("idbStorage write warning:", e);
     }
   },
   removeItem: async (key: string) => {
     try {
-      await idb.del(key);
+      await Promise.race([
+        idb.del(key),
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ]);
     } catch (e) {
       console.warn("idbStorage delete warning:", e);
     }
@@ -127,41 +133,49 @@ window.addEventListener('appinstalled', () => {
 
 const isNativeWebView = typeof navigator !== 'undefined' && (
   Boolean((window as any).AndroidApp) ||
-  navigator.userAgent.includes('Next') ||
-  navigator.userAgent.includes('wv') ||
+  /\bNextAndroid\b/i.test(navigator.userAgent) ||
+  /\bwv\b/.test(navigator.userAgent) ||
   /Android.*Version\/[0-9.]+/i.test(navigator.userAgent)
 );
 
-if (isStandaloneMode()) {
-  markPwaInstalled();
-} else if (!isNativeWebView) {
-  checkRelatedAppsForUninstall().catch(() => {});
-}
+try {
+  if (isStandaloneMode()) {
+    markPwaInstalled();
+  } else if (!isNativeWebView) {
+    checkRelatedAppsForUninstall().catch(() => {});
+  }
+} catch (_) {}
 
 // Expose queryClient globally
 (window as any).queryClient = queryClient;
 
-// 3. Register PWA service worker safely without crashing restricted WebViews
+// 3. Register PWA service worker safely; in Android WebView wrappers, clear stale SWs so WebApp updates never trap on old HTML
 try {
   if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker) {
-    registerSW({
-      onNeedRefresh() {
-        console.log("New version available; notifying OTAUpdateBanner without forced reload.");
-        window.dispatchEvent(new CustomEvent('next_sw_updated'));
-      },
-      onOfflineReady() {
-        console.log('App is ready to work offline');
-      },
-    });
+    if (isNativeWebView) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((r) => r.unregister().catch(() => {}));
+      }).catch(() => {});
+    } else {
+      const hadControllerAtBoot = Boolean(navigator.serviceWorker.controller);
+      registerSW({
+        onNeedRefresh() {
+          window.dispatchEvent(new CustomEvent('next_sw_updated'));
+        },
+        onOfflineReady() {},
+      });
 
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      window.dispatchEvent(new CustomEvent('next_sw_updated'));
-    });
-    navigator.serviceWorker.addEventListener('message', (event) => {
-      if (event.data?.type === 'SW_UPDATED') {
-        window.dispatchEvent(new CustomEvent('next_sw_updated', { detail: { version: event.data.version } }));
-      }
-    });
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadControllerAtBoot) {
+          window.dispatchEvent(new CustomEvent('next_sw_updated'));
+        }
+      });
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'SW_UPDATED') {
+          window.dispatchEvent(new CustomEvent('next_sw_updated', { detail: { version: event.data.version } }));
+        }
+      });
+    }
   }
 } catch (swErr) {
   console.warn('ServiceWorker registration skipped in restricted environment:', swErr);
@@ -198,10 +212,12 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
         const regs = await navigator.serviceWorker.getRegistrations();
         await Promise.all(regs.map(r => r.unregister()));
       }
-      if ('caches' in window) {
-        const names = await caches.keys();
-        await Promise.all(names.map(n => caches.delete(n)));
-      }
+      try {
+        if ('caches' in window && window.caches) {
+          const names = await window.caches.keys();
+          await Promise.all(names.map(n => window.caches.delete(n)));
+        }
+      } catch (_) {}
     } catch (_) {}
     const cleanUrl = window.location.origin + window.location.pathname + '?_bust=' + Date.now() + window.location.hash;
     window.location.replace(cleanUrl);
@@ -253,16 +269,28 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
 import { UploadProvider } from './contexts/UploadContext';
 import { Toaster } from 'sonner';
 
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <ErrorBoundary>
-      <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}>
-        <UploadProvider>
-          <Toaster position="top-center" richColors theme="system" />
-          <App />
-        </UploadProvider>
-      </PersistQueryClientProvider>
-    </ErrorBoundary>
-  </React.StrictMode>
-);
+try {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <PersistQueryClientProvider client={queryClient} persistOptions={{ persister }}>
+          <UploadProvider>
+            <Toaster position="top-center" richColors theme="system" />
+            <App />
+          </UploadProvider>
+        </PersistQueryClientProvider>
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+} catch (bootErr: any) {
+  console.error('Fatal boot render error:', bootErr);
+  rootElement.innerHTML =
+    '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#f0f2f5;font-family:sans-serif;text-align:center;">' +
+      '<div style="max-width:360px;background:#fff;padding:24px;border-radius:18px;box-shadow:0 8px 24px rgba(0,0,0,0.1);">' +
+        '<h2 style="margin:0 0 8px;font-size:18px;font-weight:700;color:#111827;">Next Update Ready</h2>' +
+        '<p style="margin:0 0 16px;font-size:13px;color:#4b5563;">Tap below to refresh and open the latest version.</p>' +
+        '<button onclick="window.location.reload()" style="width:100%;padding:12px;border:none;border-radius:12px;background:#1877F2;color:#fff;font-weight:700;cursor:pointer;">Reload App</button>' +
+      '</div>' +
+    '</div>';
+}

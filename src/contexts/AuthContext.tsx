@@ -7,7 +7,7 @@ import {
   DEFAULT_ROBOT_EMOTE,
   DEFAULT_ROBOT_MODE,
   NextoRobotMode,
-} from '@/lib/nextoModel';
+} from '@/lib/nextoConfig';
 
 export interface AuthContextType {
   currentUser: User | null;

@@ -14,7 +14,7 @@ import {
   MIN_ROBOT_BRIGHTNESS,
   NextoRobotMode,
   preloadNextoGlbBuffer,
-} from '@/lib/nextoModel';
+} from '@/lib/nextoConfig';
 import OTAUpdateBanner from '@/components/OTAUpdateBanner';
 import { UserProfile as User } from '@/types';
 import { auth, db } from '@/lib/firebase';
@@ -109,12 +109,12 @@ const safeLazy = (importFn: () => Promise<any>) =>
       return await importFn();
     } catch (err: any) {
       console.warn('⚠️ [SafeLazy] Chunk loading failed, attempting recovery...', err);
-      if ('caches' in window && window.caches) {
-        try {
-          const names = await caches.keys();
-          await Promise.all(names.map(n => caches.delete(n)));
-        } catch (_) {}
-      }
+      try {
+        if ('caches' in window && window.caches) {
+          const names = await window.caches.keys();
+          await Promise.all(names.map(n => window.caches.delete(n)));
+        }
+      } catch (_) {}
       const reloadKey = 'safe_lazy_reload_' + window.location.pathname;
       const lastReload = Number(safeSessionGet(reloadKey) || '0');
       const alreadyBusted = window.location.search.includes('_bust=');
@@ -127,8 +127,8 @@ const safeLazy = (importFn: () => Promise<any>) =>
     }
   });
 
-import Login from '@/pages/Login';
-import Register from '@/pages/Register';
+const Login = safeLazy(() => import('@/pages/Login'));
+const Register = safeLazy(() => import('@/pages/Register'));
 
 const NextoRobot = safeLazy(() => import('@/components/NextoRobot'));
 const Messages = safeLazy(() => import('@/pages/Messages'));
@@ -728,8 +728,26 @@ const AppLayout: React.FC = () => {
   );
 };
 
+class RobotErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(err: any) {
+    console.warn('NextoRobot render skipped due to device/WebGL issue:', err);
+  }
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 const App: React.FC = () => {
   useWakeLock();
+  const [robotBootReady, setRobotBootReady] = useState(false);
 
   useEffect(() => {
     // 1. STATIC BUILD VERSION TRACKING & SILENT LEGACY CACHE CLEANUP (preserve active workbox precache)
@@ -739,20 +757,38 @@ const App: React.FC = () => {
       const storedVersion = safeLocalGet('app_build_version');
       if (storedVersion !== currentVersion) {
         safeLocalSet('app_build_version', currentVersion);
-        if ('caches' in window && (window as any).caches) {
-          (window as any).caches.keys().then((names: string[]) => {
-            names.forEach((name) => {
-              if (name.startsWith('precache-v') || name === 'next-html-shell-v1' || name === 'next-assets-v1') {
-                (window as any).caches.delete(name).catch(() => {});
-              }
-            });
-          }).catch(() => {});
-        }
+        try {
+          if ('caches' in window && (window as any).caches) {
+            (window as any).caches.keys().then((names: string[]) => {
+              names.forEach((name) => {
+                if (
+                  name.startsWith('precache-v') ||
+                  name === 'next-html-shell-v1' ||
+                  name === 'next-html-shell-v2' ||
+                  name === 'next-assets-v1' ||
+                  (name.startsWith('next-html-shell-') && name !== `next-html-shell-${currentVersion}`)
+                ) {
+                  (window as any).caches.delete(name).catch(() => {});
+                }
+              });
+            }).catch(() => {});
+          }
+        } catch (_) {}
       }
     }
     if (isStandaloneMode()) {
       markPwaInstalled();
     }
+
+    // Mount floating robot right after initial UI paint so home feed is interactive in 0ms
+    let cancelled = false;
+    const bootTimer = window.setTimeout(() => {
+      if (!cancelled) setRobotBootReady(true);
+    }, 650);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(bootTimer);
+    };
   }, []);
 
   const reinstallLogoutPendingRef = useRef<boolean>(consumePendingReinstallLogout());
@@ -1010,12 +1046,16 @@ const App: React.FC = () => {
   }, [animationsEnabled]);
 
   useEffect(() => {
-    if (!nextoEnabled || robotMode === '2d') return;
+    if (!nextoEnabled || robotMode === '2d' || saveDataMode) return;
+    const navConn = typeof navigator !== 'undefined' ? (navigator as any).connection : null;
+    if (navConn && (navConn.saveData || navConn.effectiveType === '2g' || navConn.effectiveType === 'slow-2g')) {
+      return;
+    }
     const timer = setTimeout(() => {
       preloadNextoGlbBuffer().catch(() => {});
-    }, 1800);
+    }, 2400);
     return () => clearTimeout(timer);
-  }, [nextoEnabled, robotMode]);
+  }, [nextoEnabled, robotMode, saveDataMode]);
 
   useEffect(() => {
     let viewportMeta = document.querySelector('meta[name="viewport"]');
@@ -1130,23 +1170,26 @@ const App: React.FC = () => {
       if ((window as any).AndroidApp && typeof (window as any).AndroidApp.requestPushPermission === 'function') {
         requestNotificationPermission();
       } else if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission === 'default') {
-           setTimeout(() => {
-             toast('Enable Push Notifications', {
-                description: 'Get real-time alerts for new messages.',
-                action: {
-                  label: 'Allow',
-                  onClick: async () => {
-                    await requestNotificationPermission();
-                  }
-                },
-                duration: Infinity,
-                id: 'notif-prompt'
-             });
-           }, 2000);
-        } else if (Notification.permission === 'granted') {
-           requestNotificationPermission(); // Gets FCM token silently
-        }
+        try {
+          const perm = Notification.permission;
+          if (perm === 'default') {
+             setTimeout(() => {
+               toast('Enable Push Notifications', {
+                  description: 'Get real-time alerts for new messages.',
+                  action: {
+                    label: 'Allow',
+                    onClick: async () => {
+                      await requestNotificationPermission();
+                    }
+                  },
+                  duration: Infinity,
+                  id: 'notif-prompt'
+               });
+             }, 2000);
+          } else if (perm === 'granted') {
+             requestNotificationPermission(); // Gets FCM token silently
+          }
+        } catch (_) {}
       }
 
       // One-time background sync of current user & public legacy profiles to Supabase (deferred so startup stays 100% responsive)
@@ -1404,10 +1447,12 @@ const App: React.FC = () => {
             </DeepLinkRouterGuard>
           </BrowserRouter>
         )}
-        {nextoEnabled && !loadingAuth && (
-          <Suspense fallback={null}>
-            <NextoRobot />
-          </Suspense>
+        {nextoEnabled && !loadingAuth && robotBootReady && (
+          <RobotErrorBoundary>
+            <Suspense fallback={null}>
+              <NextoRobot />
+            </Suspense>
+          </RobotErrorBoundary>
         )}
       </ThemeContext.Provider>
     </AuthContext.Provider>

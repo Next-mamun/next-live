@@ -53,7 +53,7 @@ import {
   RobotEmoteBounceStyle,
   RobotEmoteEyeExpression,
   saveCustomNextoEmotes,
-} from '@/lib/nextoModel';
+} from '@/lib/nextoConfig';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { useContentFilter } from '@/hooks/useContentFilter';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -980,9 +980,13 @@ const Settings: React.FC = () => {
     });
   }, [emoteCategoryFilter, emoteSearchQuery, customEmotes]);
 
-  const [notificationPermission, setNotificationPermission] = useState(
-    typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied'
-  );
+  const [notificationPermission, setNotificationPermission] = useState(() => {
+    try {
+      return typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'denied';
+    } catch {
+      return 'denied';
+    }
+  });
 
   const openCategory = (tabId: string) => {
     setActiveTab(tabId);
@@ -1762,9 +1766,11 @@ const Settings: React.FC = () => {
                           const granted = await requestNotificationPermission();
                           if (granted) {
                             toast.success('Notifications Enabled!');
-                            if ('Notification' in window) {
-                              setNotificationPermission(Notification.permission);
-                            }
+                            try {
+                              if ('Notification' in window) {
+                                setNotificationPermission(Notification.permission);
+                              }
+                            } catch {}
                           } else {
                             toast.error(
                               'Notification permission is blocked. Please allow notifications in your browser settings.'

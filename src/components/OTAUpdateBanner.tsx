@@ -45,6 +45,7 @@ export const OTAUpdateBanner: React.FC = () => {
   }, []);
 
   const checkForUpdate = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     const now = Date.now();
     if (now - lastCheckRef.current < 15000 || isCheckingRef.current) {
       return;
@@ -129,7 +130,7 @@ export const OTAUpdateBanner: React.FC = () => {
       } else {
         checkForUpdate();
       }
-    }, 1500);
+    }, 4000);
 
     const handleSwUpdateEvent = (ev: Event) => {
       const detail = (ev as CustomEvent)?.detail;
@@ -184,12 +185,12 @@ export const OTAUpdateBanner: React.FC = () => {
       }
 
       // 1. Clear Cache Storage (IndexedDB / Dexie / Auth remain untouched)
-      if ('caches' in window && window.caches) {
-        try {
+      try {
+        if ('caches' in window && window.caches) {
           const cacheKeys = await window.caches.keys();
           await Promise.all(cacheKeys.map((key) => window.caches.delete(key)));
-        } catch (_) {}
-      }
+        }
+      } catch (_) {}
 
       // 2. Activate waiting SW or unregister stale SWs
       if ('serviceWorker' in navigator) {

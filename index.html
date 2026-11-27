@@ -9,8 +9,8 @@
   <script>
     // Failsafe White Screen Prevention: Storage-safe, non-blocking watchdog & genuine asset mismatch recovery
     (function() {
-      var reloadLockKey = 'next_chunk_reload_lock';
-      var watchdogLockKey = 'next_root_watchdog_tried';
+      var retryCountKey = 'next_boot_retry_count';
+      var retryTimeKey = 'next_boot_retry_at';
       var isRecovering = false;
       var hasScriptError = false;
       window.__NEXT_APP_MOUNTED = false;
@@ -58,36 +58,32 @@
         }
       }
 
+      function canAutoRetry() {
+        var now = Date.now();
+        var lastAt = Number(safeGetSession(retryTimeKey) || '0');
+        var count = Number(safeGetSession(retryCountKey) || '0');
+        if (now - lastAt > 60000) count = 0;
+        if (count >= 2 || now - lastAt < 4000) return false;
+        safeSetSession(retryCountKey, String(count + 1));
+        safeSetSession(retryTimeKey, String(now));
+        return true;
+      }
+
       function triggerFailsafeReload(reason) {
         if (isRecovering || window.__NEXT_APP_MOUNTED) return;
-        var lastReload = Number(safeGetSession(reloadLockKey) || '0');
-        var alreadyBusted = window.location.search.indexOf('_bust=') > -1;
-        if (navigator.onLine && !alreadyBusted && Date.now() - lastReload > 15000) {
+        if (navigator.onLine !== false && canAutoRetry()) {
           isRecovering = true;
-          safeSetSession(reloadLockKey, String(Date.now()));
-          console.warn('⚠️ [White Screen Prevention] Reloading due to asset/chunk error:', reason);
-          clearSwAndCaches().finally(function() {
-            window.location.replace(buildBustUrl());
-          });
+          console.warn('[White Screen Prevention] Recovering from asset error:', reason);
+          var go = function() { window.location.replace(buildBustUrl()); };
+          try {
+            clearSwAndCaches().then(go, go);
+          } catch (_) {
+            go();
+          }
         }
       }
 
-      // 1. Trigger SW update check in background without blocking boot
-      try {
-        if ('serviceWorker' in navigator && navigator.serviceWorker) {
-          setTimeout(function() {
-            try {
-              navigator.serviceWorker.getRegistrations().then(function(regs) {
-                regs.forEach(function(r) {
-                  try { r.update(); } catch (_) {}
-                });
-              }).catch(function() {});
-            } catch (_) {}
-          }, 1800);
-        }
-      } catch (_) {}
-
-      // 2. Catch genuine bundle load failures before React mounts
+      // Catch genuine bundle load failures before React mounts
       window.addEventListener('error', function(e) {
         var target = e && e.target;
         if (target && target.tagName === 'SCRIPT') {
@@ -113,28 +109,25 @@
         }
       });
 
-      // 3. Generous White-screen watchdog (22s so 3G/slow mobile downloads are never aborted mid-flight)
+      // Generous 30s White-screen watchdog: ONLY runs if React has NOT mounted yet (never interrupts slow working mount!)
       setTimeout(function() {
+        if (window.__NEXT_APP_MOUNTED) return;
         var root = document.getElementById('root');
-        var hasSplash = !!document.getElementById('next-boot-splash');
-        var hasRenderedText = root && root.innerText && root.innerText.trim().length > 0 && !hasSplash;
-        var hasAppContent = root && root.childElementCount > 0 && !hasSplash && hasRenderedText;
-        if (window.__NEXT_APP_MOUNTED && hasAppContent) return;
+        if (!root) return;
 
-        var lastWatchdog = Number(safeGetSession(watchdogLockKey) || '0');
-        var alreadyBusted = window.location.search.indexOf('_bust=') > -1;
-        if (hasScriptError && navigator.onLine && !alreadyBusted && Date.now() - lastWatchdog > 45000) {
-          safeSetSession(watchdogLockKey, String(Date.now()));
-          clearSwAndCaches().finally(function() {
-            window.location.replace(buildBustUrl());
-          });
+        if (hasScriptError && navigator.onLine !== false && canAutoRetry()) {
+          var go = function() { window.location.replace(buildBustUrl()); };
+          try {
+            clearSwAndCaches().then(go, go);
+          } catch (_) {
+            go();
+          }
           return;
         }
 
-        if (!root) return;
         var isDark = safeGetLocal('next_media_theme') === 'dark';
         root.innerHTML =
-          '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:' + (isDark ? '#000000' : '#f0f2f5') + ';font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">' +
+          '<div style="min-height:100%;height:100%;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;background:' + (isDark ? '#000000' : '#f0f2f5') + ';font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">' +
             '<div style="max-width:380px;width:100%;background:' + (isDark ? '#18191a' : '#ffffff') + ';border-radius:20px;padding:28px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.12);">' +
               '<img src="/Next-AppLogo.jpg" alt="Next" style="width:56px;height:56px;margin:0 auto 14px;border-radius:16px;object-fit:cover;box-shadow:0 6px 18px rgba(24,119,242,0.22);" />' +
               '<h2 style="margin:0 0 8px;font-size:19px;font-weight:800;color:' + (isDark ? '#f3f4f6' : '#111827') + ';">Connection Slow or Cache Stale</h2>' +
@@ -146,12 +139,15 @@
         if (btn) {
           btn.addEventListener('click', function() {
             btn.textContent = 'Retrying...';
-            clearSwAndCaches().finally(function() {
-              window.location.replace(buildBustUrl());
-            });
+            var go = function() { window.location.replace(buildBustUrl()); };
+            try {
+              clearSwAndCaches().then(go, go);
+            } catch (_) {
+              go();
+            }
           });
         }
-      }, 22000);
+      }, 30000);
     })();
   </script>
   
@@ -634,7 +630,7 @@
   </noscript>
 
   <div id="root">
-    <div id="next-boot-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+    <div id="next-boot-splash" style="width:100%;height:100%;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#f0f2f5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
       <style>@keyframes nextBootSpin{to{transform:rotate(360deg)}}</style>
       <div style="position:relative;width:64px;height:64px;display:flex;align-items:center;justify-content:center;">
         <div style="width:64px;height:64px;border-radius:9999px;border:4px solid rgba(24,119,242,0.18);border-top-color:#1877F2;animation:nextBootSpin 0.8s linear infinite;box-sizing:border-box;"></div>
@@ -653,6 +649,14 @@
           if (s) s.style.background = '#000000';
         }
       } catch (_) {}
+    })();
+  </script>
+  <script nomodule>
+    (function() {
+      var r = document.getElementById('root');
+      if (r) {
+        r.innerHTML = '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#f0f2f5;font-family:sans-serif;text-align:center;"><div style="max-width:380px;background:#fff;padding:24px;border-radius:16px;"><h2 style="margin:0 0 8px;color:#111827;">Browser Update Needed</h2><p style="margin:0;color:#4b5563;font-size:14px;">Please update your browser or Android System WebView from Google Play Store to open Next.</p></div></div>';
+      }
     })();
   </script>
   <script type="module" src="/src/index.tsx"></script>

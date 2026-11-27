@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
   getCachedNextoPosterSync,
-  getStaticNextoSnapshot,
   NextoRobotMode,
-} from '@/lib/nextoModel';
+} from '@/lib/nextoConfig';
 import { useTheme } from '@/contexts/AuthContext';
 
 interface NextoRobotStaticProps {
@@ -92,13 +91,19 @@ const NextoRobotStatic: React.FC<NextoRobotStaticProps> = ({
   useEffect(() => {
     if (mode === '2d' || snapshotUrl) return;
     let active = true;
-    getStaticNextoSnapshot().then((url) => {
-      if (active && url) {
-        setSnapshotUrl(url);
-      }
-    });
+    const timer = window.setTimeout(() => {
+      import('@/lib/nextoModel')
+        .then((mod) => mod.getStaticNextoSnapshot())
+        .then((url) => {
+          if (active && url) {
+            setSnapshotUrl(url);
+          }
+        })
+        .catch(() => {});
+    }, 900);
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
   }, [mode, snapshotUrl]);
 

@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ProfileAvatar } from '@/components/ProfileAvatar';
 import { formatTime, getSafeMessagePreview } from '@/lib/utils';
+import { safeLocalGet, safeLocalSet } from '@/lib/safeStorage';
 
 const Notifications: React.FC = () => {
   const { currentUser } = useAuth();
@@ -52,9 +53,12 @@ const Notifications: React.FC = () => {
         } catch {}
       }
 
-      const locallyReadIds = new Set<string>(
-        JSON.parse(localStorage.getItem('read_msg_ids_' + currentUser.id) || '[]')
-      );
+      let locallyReadIds = new Set<string>();
+      try {
+        locallyReadIds = new Set<string>(
+          JSON.parse(safeLocalGet('read_msg_ids_' + currentUser.id) || '[]')
+        );
+      } catch {}
 
       const { data: supaUnreadMsgs } = await supabase
         .from('messages')
@@ -117,12 +121,14 @@ const Notifications: React.FC = () => {
   const markMessageReadInSupabaseAndStore = async (msgId: string) => {
     if (!currentUser?.id) return;
     await supabase.from('messages').update({ is_read: true }).eq('id', msgId);
-    const key = 'read_msg_ids_' + currentUser.id;
-    const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-    if (!list.includes(msgId)) {
-      list.push(msgId);
-      localStorage.setItem(key, JSON.stringify(list.slice(-100)));
-    }
+    try {
+      const key = 'read_msg_ids_' + currentUser.id;
+      const list: string[] = JSON.parse(safeLocalGet(key) || '[]');
+      if (!list.includes(msgId)) {
+        list.push(msgId);
+        safeLocalSet(key, JSON.stringify(list.slice(-100)));
+      }
+    } catch {}
     const store = useGlobalStore.getState();
     const updatedMessages = store.messages.map(m => (m.id === msgId ? { ...m, is_read: true } : m));
     const unreadCount = updatedMessages.filter(
@@ -174,9 +180,11 @@ const Notifications: React.FC = () => {
               .eq('is_read', false)
           ).catch(() => {})
         );
-        const key = 'read_msg_ids_' + currentUser.id;
-        const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
-        localStorage.setItem(key, JSON.stringify([...new Set([...list, ...unreadMsgIds])].slice(-100)));
+        try {
+          const key = 'read_msg_ids_' + currentUser.id;
+          const list: string[] = JSON.parse(safeLocalGet(key) || '[]');
+          safeLocalSet(key, JSON.stringify([...new Set([...list, ...unreadMsgIds])].slice(-100)));
+        } catch {}
 
         const store = useGlobalStore.getState();
         const updatedMessages = store.messages.map(m =>

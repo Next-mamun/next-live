@@ -16,6 +16,7 @@ import { redis } from '@/lib/redis';
 import { db } from '../lib/firebase';
 import { collection, addDoc } from 'firebase/firestore';
 import { dualWriteMessage } from '@/lib/dbHelper';
+import { safeRandomUUID } from '@/lib/safeStorage';
 import { supabase } from '@/lib/supabase';
 import {
   syncProfileToSupabase,
@@ -2739,7 +2740,7 @@ const Messages: React.FC = () => {
     const isViewOnceMsg = isTextViewOnce;
     const payloadExtra = { JSON_PAYLOAD: true, text: messageText, is_view_once: isViewOnceMsg, parent_message_id: replyingTo?.id || null };
 
-    const msgRefId = crypto.randomUUID();
+    const msgRefId = safeRandomUUID();
     const chatId = selectedChat.is_group
       ? selectedChat.id
       : [currentUser!.id, selectedChat.id].sort().join('_');
@@ -3812,7 +3813,7 @@ const Messages: React.FC = () => {
                               if (grpErr) throw grpErr;
 
                               await dualWriteMessage({
-                                id: crypto.randomUUID(),
+                                id: safeRandomUUID(),
                                 chat_id: selectedChat.id,
                                 sender_id: currentUser?.id,
                                 receiver_id: selectedChat.id,
@@ -4608,7 +4609,7 @@ const Messages: React.FC = () => {
 
                     // Insert Welcome Message so it shows in inbox
                     await dualWriteMessage({
-                      id: crypto.randomUUID(),
+                      id: safeRandomUUID(),
                       chat_id: groupId,
                       sender_id: currentUser?.id,
                       receiver_id: groupId,
